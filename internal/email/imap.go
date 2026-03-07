@@ -938,3 +938,123 @@ func partPathToInts(path string) []int {
 	}
 	return result
 }
+
+// ---- Delta sync helpers ----
+
+// FolderStatus returns the current UIDVALIDITY, UIDNEXT, and message count
+// for a mailbox without fetching any messages.
+type FolderStatus struct {
+	UIDValidity uint32
+	UIDNext     uint32
+	Messages    uint32
+}
+
+func (c *Client) GetFolderStatus(mailboxName string) (*FolderStatus, error) {
+	mbox, err := c.imap.Select(mailboxName, true)
+	if err != nil {
+		return nil, fmt.Errorf("select %s: %w", mailboxName, err)
+	}
+	return &FolderStatus{
+		UIDValidity: mbox.UidValidity,
+		UIDNext:     mbox.UidNext,
+		Messages:    mbox.Messages,
+	}, nil
+}
+
+// ListAllUIDs returns all UIDs currently in the mailbox. Used for purge detection.
+func (c *Client) ListAllUIDs(mailboxName string) ([]uint32, error) {
+	mbox, err := c.imap.Select(mailboxName, true)
+	if err != nil {
+		return nil, fmt.Errorf("select %s: %w", mailboxName, err)
+	}
+	if mbox.Messages == 0 {
+		return nil, nil
+	}
+	uids, err := c.imap.UidSearch(imap.NewSearchCriteria())
+	if err != nil {
+		return nil, fmt.Errorf("uid search all: %w", err)
+	}
+	return uids, nil
+}
+
+// FetchNewMessages fetches only messages with UID > afterUID (incremental).
+func (c *Client) FetchNewMessages(mailboxName string, afterUID uint32) ([]*gomailModels.Message, error) {
+	mbox, err := c.imap.Select(mailboxName, true)
+	if err != nil {
+		return nil, fmt.Errorf("select %s: %w", mailboxName, err)
+	}
+	if mbox.Messages == 0 {
+		return nil, nil
+	}
+
+	// SEARCH UID afterUID+1:*
+	seqSet := new(imap.SeqSet)
+	seqSet.AddRange(afterUID+1, ^uint32(0)) // afterUID+1 to * (max)
+
+	items := []imap.FetchItem{
+		imap.FetchUid, imap.FetchEnvelope,
+		imap.FetchFlags, imap.FetchBodyStructure,
+		imap.FetchRFC822,
+	}
+
+	ch := make(chan *imap.Message, 64)
+	done := make(chan error, 1)
+	go func() { done <- c.imap.UidFetch(seqSet, items, ch) }()
+
+	var results []*gomailModels.Message
+	for msg := range ch {
+		if msg.Uid <= afterUID {
+			continue // skip if server returns older (shouldn't happen)
+		}
+		m, err := parseIMAPMessage(msg, c.account)
+		if err != nil {
+			log.Printf("parse message uid=%d: %v", msg.Uid, err)
+			continue
+		}
+		results = append(results, m)
+	}
+	if err := <-done; err != nil {
+		// UID range with no results gives an error on some servers — treat as empty
+		if strings.Contains(err.Error(), "No matching messages") ||
+			strings.Contains(err.Error(), "BADUID") ||
+			strings.Contains(err.Error(), "UID range") {
+			return nil, nil
+		}
+		return results, fmt.Errorf("uid fetch new: %w", err)
+	}
+	return results, nil
+}
+
+// SyncFlags fetches FLAGS for all messages in a mailbox efficiently.
+// Returns map[uid]->flags for reconciliation with local state.
+func (c *Client) SyncFlags(mailboxName string) (map[uint32][]string, error) {
+	mbox, err := c.imap.Select(mailboxName, true)
+	if err != nil {
+		return nil, fmt.Errorf("select %s: %w", mailboxName, err)
+	}
+	if mbox.Messages == 0 {
+		return map[uint32][]string{}, nil
+	}
+
+	seqSet := new(imap.SeqSet)
+	seqSet.AddRange(1, mbox.Messages)
+	items := []imap.FetchItem{imap.FetchUid, imap.FetchFlags}
+
+	ch := make(chan *imap.Message, 256)
+	done := make(chan error, 1)
+	go func() { done <- c.imap.Fetch(seqSet, items, ch) }()
+
+	result := make(map[uint32][]string, mbox.Messages)
+	for msg := range ch {
+		result[msg.Uid] = msg.Flags
+	}
+	if err := <-done; err != nil {
+		return result, fmt.Errorf("fetch flags: %w", err)
+	}
+	return result, nil
+}
+
+// SelectMailbox selects a mailbox and returns its status info.
+func (c *Client) SelectMailbox(name string) (*imap.MailboxStatus, error) {
+	return c.imap.Select(name, true)
+}

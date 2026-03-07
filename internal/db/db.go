@@ -174,9 +174,28 @@ func (d *DB) Migrate() error {
 		`ALTER TABLE folders ADD COLUMN sync_enabled INTEGER NOT NULL DEFAULT 1`,
 		// Plaintext search index column — stores decrypted subject+from+preview for LIKE search.
 		`ALTER TABLE messages ADD COLUMN search_text TEXT NOT NULL DEFAULT ''`,
+		// Per-folder IMAP sync state for incremental/delta sync.
+		`ALTER TABLE folders ADD COLUMN uid_validity INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE folders ADD COLUMN last_seen_uid INTEGER NOT NULL DEFAULT 0`,
 	}
 	for _, stmt := range alterStmts {
 		d.sql.Exec(stmt) // ignore "duplicate column" errors intentionally
+	}
+
+	// Pending IMAP operations queue — survives server restarts.
+	// op_type: "delete" | "move" | "flag_read" | "flag_star"
+	_, err := d.sql.Exec(`CREATE TABLE IF NOT EXISTS pending_imap_ops (
+		id          INTEGER PRIMARY KEY AUTOINCREMENT,
+		account_id  INTEGER NOT NULL REFERENCES email_accounts(id) ON DELETE CASCADE,
+		op_type     TEXT    NOT NULL,
+		remote_uid  INTEGER NOT NULL,
+		folder_path TEXT    NOT NULL DEFAULT '',
+		extra       TEXT    NOT NULL DEFAULT '',
+		attempts    INTEGER NOT NULL DEFAULT 0,
+		created_at  DATETIME DEFAULT (datetime('now'))
+	)`)
+	if err != nil {
+		return fmt.Errorf("create pending_imap_ops: %w", err)
 	}
 
 	// Bootstrap admin account if no users exist
@@ -1278,4 +1297,171 @@ func (d *DB) ListStarredMessages(userID int64, page, pageSize int) (*models.Page
 		PageSize: pageSize,
 		HasMore:  offset+len(summaries) < total,
 	}, nil
+}
+
+// ---- Pending IMAP ops queue ----
+
+// PendingIMAPOp represents an IMAP write operation that needs to be applied to the server.
+type PendingIMAPOp struct {
+	ID         int64
+	AccountID  int64
+	OpType     string // "delete" | "move" | "flag_read" | "flag_star"
+	RemoteUID  uint32
+	FolderPath string
+	Extra      string // for move: dest folder path; for flag_*: "1" or "0"
+	Attempts   int
+}
+
+// EnqueueIMAPOp adds an operation to the pending queue atomically.
+func (d *DB) EnqueueIMAPOp(op *PendingIMAPOp) error {
+	_, err := d.sql.Exec(
+		`INSERT INTO pending_imap_ops (account_id, op_type, remote_uid, folder_path, extra) VALUES (?,?,?,?,?)`,
+		op.AccountID, op.OpType, op.RemoteUID, op.FolderPath, op.Extra,
+	)
+	return err
+}
+
+// DequeuePendingOps returns up to `limit` pending ops for a given account.
+func (d *DB) DequeuePendingOps(accountID int64, limit int) ([]*PendingIMAPOp, error) {
+	rows, err := d.sql.Query(
+		`SELECT id, account_id, op_type, remote_uid, folder_path, extra, attempts
+		 FROM pending_imap_ops WHERE account_id=? ORDER BY id ASC LIMIT ?`,
+		accountID, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ops []*PendingIMAPOp
+	for rows.Next() {
+		op := &PendingIMAPOp{}
+		rows.Scan(&op.ID, &op.AccountID, &op.OpType, &op.RemoteUID, &op.FolderPath, &op.Extra, &op.Attempts)
+		ops = append(ops, op)
+	}
+	return ops, rows.Err()
+}
+
+// DeletePendingOp removes a successfully applied op.
+func (d *DB) DeletePendingOp(id int64) error {
+	_, err := d.sql.Exec(`DELETE FROM pending_imap_ops WHERE id=?`, id)
+	return err
+}
+
+// IncrementPendingOpAttempts bumps attempt count; ops with >5 attempts are abandoned.
+func (d *DB) IncrementPendingOpAttempts(id int64) {
+	d.sql.Exec(`UPDATE pending_imap_ops SET attempts=attempts+1 WHERE id=?`, id)
+	d.sql.Exec(`DELETE FROM pending_imap_ops WHERE id=? AND attempts>5`, id)
+}
+
+// CountPendingOps returns number of queued ops for an account (for logging).
+func (d *DB) CountPendingOps(accountID int64) int {
+	var n int
+	d.sql.QueryRow(`SELECT COUNT(*) FROM pending_imap_ops WHERE account_id=?`, accountID).Scan(&n)
+	return n
+}
+
+// ---- Folder delta-sync state ----
+
+// GetFolderSyncState returns uid_validity and last_seen_uid for incremental sync.
+func (d *DB) GetFolderSyncState(folderID int64) (uidValidity, lastSeenUID uint32) {
+	d.sql.QueryRow(`SELECT COALESCE(uid_validity,0), COALESCE(last_seen_uid,0) FROM folders WHERE id=?`, folderID).
+		Scan(&uidValidity, &lastSeenUID)
+	return
+}
+
+// SetFolderSyncState persists uid_validity and last_seen_uid after a successful sync.
+func (d *DB) SetFolderSyncState(folderID int64, uidValidity, lastSeenUID uint32) {
+	d.sql.Exec(`UPDATE folders SET uid_validity=?, last_seen_uid=? WHERE id=?`, uidValidity, lastSeenUID, folderID)
+}
+
+// PurgeDeletedMessages removes local messages whose remote_uid is no longer
+// in the server's UID list for a folder. Returns count purged.
+func (d *DB) PurgeDeletedMessages(folderID int64, serverUIDs []uint32) (int, error) {
+	if len(serverUIDs) == 0 {
+		// Don't purge everything if server returned empty (connection issue)
+		return 0, nil
+	}
+	// Build placeholder list
+	args := make([]interface{}, len(serverUIDs)+1)
+	args[0] = folderID
+	placeholders := make([]string, len(serverUIDs))
+	for i, uid := range serverUIDs {
+		args[i+1] = fmt.Sprintf("%d", uid)
+		placeholders[i] = "?"
+	}
+	q := fmt.Sprintf(
+		`DELETE FROM messages WHERE folder_id=? AND remote_uid NOT IN (%s)`,
+		strings.Join(placeholders, ","),
+	)
+	res, err := d.sql.Exec(q, args...)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
+}
+
+// DeleteAllFolderMessages removes all messages from a folder (used on UIDVALIDITY change).
+func (d *DB) DeleteAllFolderMessages(folderID int64) {
+	d.sql.Exec(`DELETE FROM messages WHERE folder_id=?`, folderID)
+}
+
+// GetFolderMessageCount returns the local message count for a folder by account and path.
+func (d *DB) GetFolderMessageCount(accountID int64, folderPath string) int {
+	var n int
+	d.sql.QueryRow(`
+		SELECT COUNT(*) FROM messages m
+		JOIN folders f ON f.id=m.folder_id
+		WHERE f.account_id=? AND f.full_path=?`, accountID, folderPath,
+	).Scan(&n)
+	return n
+}
+
+// ReconcileFlags updates is_read and is_starred from server flags, but ONLY for
+// messages that do NOT have a pending local write op (to avoid overwriting in-flight changes).
+func (d *DB) ReconcileFlags(folderID int64, serverFlags map[uint32][]string) {
+	// Get set of UIDs with pending ops so we don't overwrite them
+	rows, _ := d.sql.Query(
+		`SELECT DISTINCT remote_uid FROM pending_imap_ops po
+		 JOIN folders f ON f.account_id=po.account_id
+		 WHERE f.id=? AND (po.op_type='flag_read' OR po.op_type='flag_star')`, folderID,
+	)
+	pendingUIDs := make(map[uint32]bool)
+	if rows != nil {
+		for rows.Next() {
+			var uid uint32
+			rows.Scan(&uid)
+			pendingUIDs[uid] = true
+		}
+		rows.Close()
+	}
+
+	for uid, flags := range serverFlags {
+		if pendingUIDs[uid] {
+			continue // don't reconcile — we have a pending write for this message
+		}
+		isRead := false
+		isStarred := false
+		for _, f := range flags {
+			switch f {
+			case `\Seen`:
+				isRead = true
+			case `\Flagged`:
+				isStarred = true
+			}
+		}
+		d.sql.Exec(
+			`UPDATE messages SET is_read=?, is_starred=?
+			 WHERE folder_id=? AND remote_uid=?`,
+			boolToInt(isRead), boolToInt(isStarred),
+			folderID, fmt.Sprintf("%d", uid),
+		)
+	}
+}
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }

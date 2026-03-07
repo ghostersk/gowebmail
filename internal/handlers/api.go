@@ -540,19 +540,21 @@ func (h *APIHandler) MarkRead(w http.ResponseWriter, r *http.Request) {
 	messageID := pathInt64(r, "id")
 	var req struct{ Read bool `json:"read"` }
 	json.NewDecoder(r.Body).Decode(&req)
+
+	// Update local DB first
 	h.db.MarkMessageRead(messageID, userID, req.Read)
-	go func() {
-		uid, folderPath, account, err := h.db.GetMessageIMAPInfo(messageID, userID)
-		if err != nil || uid == 0 || account == nil {
-			return
-		}
-		c, err := email.Connect(context.Background(), account)
-		if err != nil {
-			return
-		}
-		defer c.Close()
-		_ = c.SetFlagByUID(folderPath, uid, `\Seen`, req.Read)
-	}()
+
+	// Enqueue IMAP op — drained by background worker with retry
+	uid, folderPath, account, err := h.db.GetMessageIMAPInfo(messageID, userID)
+	if err == nil && uid != 0 && account != nil {
+		val := "0"
+		if req.Read { val = "1" }
+		h.db.EnqueueIMAPOp(&db.PendingIMAPOp{
+			AccountID: account.ID, OpType: "flag_read",
+			RemoteUID: uid, FolderPath: folderPath, Extra: val,
+		})
+		h.syncer.TriggerAccountSync(account.ID)
+	}
 	h.writeJSON(w, map[string]bool{"ok": true})
 }
 
@@ -564,18 +566,16 @@ func (h *APIHandler) ToggleStar(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, http.StatusInternalServerError, "failed to toggle star")
 		return
 	}
-	go func() {
-		uid, folderPath, account, err := h.db.GetMessageIMAPInfo(messageID, userID)
-		if err != nil || uid == 0 || account == nil {
-			return
-		}
-		c, err := email.Connect(context.Background(), account)
-		if err != nil {
-			return
-		}
-		defer c.Close()
-		_ = c.SetFlagByUID(folderPath, uid, `\Flagged`, starred)
-	}()
+	uid, folderPath, account, ierr := h.db.GetMessageIMAPInfo(messageID, userID)
+	if ierr == nil && uid != 0 && account != nil {
+		val := "0"
+		if starred { val = "1" }
+		h.db.EnqueueIMAPOp(&db.PendingIMAPOp{
+			AccountID: account.ID, OpType: "flag_star",
+			RemoteUID: uid, FolderPath: folderPath, Extra: val,
+		})
+		h.syncer.TriggerAccountSync(account.ID)
+	}
 	h.writeJSON(w, map[string]bool{"ok": true, "starred": starred})
 }
 
@@ -588,32 +588,23 @@ func (h *APIHandler) MoveMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// IMAP move (best-effort, non-blocking)
-	go func() {
-		uid, srcPath, account, err := h.db.GetMessageIMAPInfo(messageID, userID)
-		if err != nil || uid == 0 || account == nil {
-			log.Printf("IMAP move: GetMessageIMAPInfo msg=%d err=%v uid=%d", messageID, err, uid)
-			return
-		}
-		destFolder, err := h.db.GetFolderByID(req.FolderID)
-		if err != nil || destFolder == nil {
-			log.Printf("IMAP move: GetFolderByID folder=%d err=%v", req.FolderID, err)
-			return
-		}
-		c, err := email.Connect(context.Background(), account)
-		if err != nil {
-			log.Printf("IMAP move: Connect account=%d err=%v", account.ID, err)
-			return
-		}
-		defer c.Close()
-		if err := c.MoveByUID(srcPath, destFolder.FullPath, uid); err != nil {
-			log.Printf("IMAP move: MoveByUID uid=%d src=%s dst=%s err=%v", uid, srcPath, destFolder.FullPath, err)
-		}
-	}()
+	// Get IMAP info before changing folder_id in DB
+	uid, srcPath, account, imapErr := h.db.GetMessageIMAPInfo(messageID, userID)
+	destFolder, _ := h.db.GetFolderByID(req.FolderID)
 
+	// Update local DB
 	if err := h.db.MoveMessage(messageID, userID, req.FolderID); err != nil {
 		h.writeError(w, http.StatusInternalServerError, "move failed")
 		return
+	}
+
+	// Enqueue IMAP move
+	if imapErr == nil && uid != 0 && account != nil && destFolder != nil {
+		h.db.EnqueueIMAPOp(&db.PendingIMAPOp{
+			AccountID: account.ID, OpType: "move",
+			RemoteUID: uid, FolderPath: srcPath, Extra: destFolder.FullPath,
+		})
+		h.syncer.TriggerAccountSync(account.ID)
 	}
 	h.writeJSON(w, map[string]bool{"ok": true})
 }
@@ -622,35 +613,22 @@ func (h *APIHandler) DeleteMessage(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.GetUserID(r)
 	messageID := pathInt64(r, "id")
 
-	// IMAP delete (best-effort, non-blocking)
-	go func() {
-		uid, folderPath, account, err := h.db.GetMessageIMAPInfo(messageID, userID)
-		if err != nil || uid == 0 || account == nil {
-			log.Printf("IMAP delete: GetMessageIMAPInfo msg=%d err=%v uid=%d", messageID, err, uid)
-			return
-		}
-		c, err := email.Connect(context.Background(), account)
-		if err != nil {
-			log.Printf("IMAP delete: Connect account=%d err=%v", account.ID, err)
-			return
-		}
-		defer c.Close()
-		mailboxes, _ := c.ListMailboxes()
-		var trashName string
-		for _, mb := range mailboxes {
-			if email.InferFolderType(mb.Name, mb.Attributes) == "trash" {
-				trashName = mb.Name
-				break
-			}
-		}
-		if err := c.DeleteByUID(folderPath, uid, trashName); err != nil {
-			log.Printf("IMAP delete: DeleteByUID uid=%d folder=%s trash=%s err=%v", uid, folderPath, trashName, err)
-		}
-	}()
+	// Get IMAP info before deleting from DB
+	uid, folderPath, account, imapErr := h.db.GetMessageIMAPInfo(messageID, userID)
 
+	// Delete from local DB
 	if err := h.db.DeleteMessage(messageID, userID); err != nil {
 		h.writeError(w, http.StatusInternalServerError, "delete failed")
 		return
+	}
+
+	// Enqueue IMAP delete
+	if imapErr == nil && uid != 0 && account != nil {
+		h.db.EnqueueIMAPOp(&db.PendingIMAPOp{
+			AccountID: account.ID, OpType: "delete",
+			RemoteUID: uid, FolderPath: folderPath,
+		})
+		h.syncer.TriggerAccountSync(account.ID)
 	}
 	h.writeJSON(w, map[string]bool{"ok": true})
 }
