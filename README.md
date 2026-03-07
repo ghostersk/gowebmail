@@ -2,6 +2,11 @@
 
 A self-hosted, encrypted web email client written entirely in Go. Supports Gmail and Outlook via OAuth2, plus any standard IMAP/SMTP provider.
 
+# Notes:
+- work still in progress
+- AI is involved in making this work, as I do not have the skill and time to do it on my own
+- looking for any advice and suggestions to improve it!
+
 ## Features
 
 - **Unified inbox** — view emails from all connected accounts in one stream
