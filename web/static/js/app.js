@@ -10,6 +10,9 @@ const S = {
   remoteWhitelist: new Set(),
   draftTimer: null, draftDirty: false,
   composeVisible: false, composeMinimised: false,
+  // Message list filters
+  filterUnread: false,
+  sortOrder: 'date-desc', // 'date-desc' | 'date-asc' | 'size-desc'
 };
 
 // ── Boot ───────────────────────────────────────────────────────────────────
@@ -280,7 +283,6 @@ function renderFolders() {
   const el=document.getElementById('folders-by-account');
   const accMap={}; S.accounts.forEach(a=>accMap[a.id]=a);
   const byAcc={};
-  // Only show non-hidden folders
   S.folders.filter(f=>!f.is_hidden).forEach(f=>{(byAcc[f.account_id]=byAcc[f.account_id]||[]).push(f);});
   const prio=['inbox','sent','drafts','trash','spam','archive'];
   el.innerHTML=Object.entries(byAcc).map(([accId,folders])=>{
@@ -291,7 +293,10 @@ function renderFolders() {
     const sorted=[...prio.map(t=>folders.find(f=>f.folder_type===t)).filter(Boolean),...folders.filter(f=>f.folder_type==='custom')];
     return `<div class="nav-folder-header">
         <span style="width:6px;height:6px;border-radius:50%;background:${accColor};display:inline-block;flex-shrink:0"></span>
-        ${esc(accEmail)}
+        <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(accEmail)}</span>
+        <button class="icon-sync-btn" title="Sync account" onclick="syncNow(${parseInt(accId)},event)" style="margin-left:4px">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg>
+        </button>
       </div>`+sorted.map(f=>`
       <div class="nav-item${f.sync_enabled?'':' folder-nosync'}" id="nav-f${f.id}" onclick="selectFolder(${f.id},'${esc(f.name)}')"
            oncontextmenu="showFolderMenu(event,${f.id})">
@@ -308,12 +313,15 @@ function showFolderMenu(e, folderId) {
   const f = S.folders.find(f=>f.id===folderId);
   if (!f) return;
   const syncLabel = f.sync_enabled ? '⊘ Disable sync' : '↻ Enable sync';
-  const hideLabel = '👁 Hide from sidebar';
+  const otherFolders = S.folders.filter(x=>x.id!==folderId&&x.account_id===f.account_id&&!x.is_hidden).slice(0,12);
+  const moveSub = otherFolders.map(x=>`<div class="ctx-item" style="padding-left:22px" onclick="moveFolderContents(${folderId},${x.id});closeMenu()">${esc(x.name)}</div>`).join('');
   showCtxMenu(e, `
     <div class="ctx-item" onclick="syncFolderNow(${folderId});closeMenu()">↻ Sync this folder</div>
     <div class="ctx-item" onclick="toggleFolderSync(${folderId});closeMenu()">${syncLabel}</div>
     <div class="ctx-sep"></div>
-    <div class="ctx-item" onclick="hideFolder(${folderId});closeMenu()">${hideLabel}</div>`);
+    ${moveSub?`<div style="font-size:10px;color:var(--muted);padding:4px 12px;text-transform:uppercase;letter-spacing:.7px">Move messages to</div>${moveSub}<div class="ctx-sep"></div>`:''}
+    <div class="ctx-item" onclick="confirmHideFolder(${folderId});closeMenu()">👁 Hide from sidebar</div>
+    <div class="ctx-item danger" onclick="confirmDeleteFolder(${folderId});closeMenu()">🗑 Delete folder</div>`);
 }
 
 async function syncFolderNow(folderId) {
@@ -335,14 +343,50 @@ async function toggleFolderSync(folderId) {
   } else toast('Update failed','error');
 }
 
-async function hideFolder(folderId) {
+async function confirmHideFolder(folderId) {
   const f = S.folders.find(f=>f.id===folderId);
   if (!f) return;
-  const r = await api('PUT','/folders/'+folderId+'/visibility',{is_hidden:true, sync_enabled:false});
-  if (r?.ok) {
-    toast('Folder hidden. Manage in account settings.','success');
-    await loadFolders();
-  } else toast('Update failed','error');
+  inlineConfirm(
+    `Hide "${f.name}" from sidebar? You can unhide it from account settings.`,
+    async () => {
+      const r = await api('PUT','/folders/'+folderId+'/visibility',{is_hidden:true, sync_enabled:false});
+      if (r?.ok) { toast('Folder hidden','success'); await loadFolders(); }
+      else toast('Update failed','error');
+    }
+  );
+}
+
+async function confirmDeleteFolder(folderId) {
+  const f = S.folders.find(f=>f.id===folderId);
+  if (!f) return;
+  const countRes = await api('GET','/folders/'+folderId+'/count');
+  const count = countRes?.count ?? '?';
+  inlineConfirm(
+    `Delete folder "${f.name}"? This will permanently delete all ${count} message${count===1?'':'s'} inside it. This cannot be undone.`,
+    async () => {
+      const r = await api('DELETE','/folders/'+folderId);
+      if (r?.ok) {
+        toast('Folder deleted','success');
+        S.folders = S.folders.filter(x=>x.id!==folderId);
+        if (S.currentFolder===folderId) selectFolder('unified','Unified Inbox');
+        renderFolders(); loadMessages();
+      } else toast(r?.error||'Delete failed','error');
+    }
+  );
+}
+
+async function moveFolderContents(fromId, toId) {
+  const from = S.folders.find(f=>f.id===fromId);
+  const to   = S.folders.find(f=>f.id===toId);
+  if (!from||!to) return;
+  inlineConfirm(
+    `Move all messages from "${from.name}" into "${to.name}"?`,
+    async () => {
+      const r = await api('POST','/folders/'+fromId+'/move-to/'+toId);
+      if (r?.ok) { toast(`Moved ${r.moved||0} messages`,'success'); loadFolders(); loadMessages(); }
+      else toast(r?.error||'Move failed','error');
+    }
+  );
 }
 
 function updateUnreadBadge() {
@@ -386,13 +430,52 @@ async function loadMessages(append) {
   document.getElementById('panel-count').textContent=S.totalMessages>0?S.totalMessages+' messages':'';
 }
 
+function setFilter(mode) {
+  S.filterUnread = (mode === 'unread');
+  S.sortOrder = (mode === 'unread' || mode === 'default') ? 'date-desc' : mode;
+
+  // Update checkmarks
+  ['default','unread','date-desc','date-asc','size-desc'].forEach(k => {
+    const el = document.getElementById('fopt-'+k);
+    if (el) el.textContent = (k === mode ? '✓ ' : '○ ') + el.textContent.slice(2);
+  });
+
+  // Update button label
+  const labels = {
+    'default':'Filter', 'unread':'Unread', 'date-desc':'↓ Date',
+    'date-asc':'↑ Date', 'size-desc':'↓ Size'
+  };
+  const labelEl = document.getElementById('filter-label');
+  if (labelEl) {
+    labelEl.textContent = labels[mode] || 'Filter';
+    labelEl.style.color = mode !== 'default' ? 'var(--accent)' : '';
+  }
+  const menuEl = document.getElementById('filter-dropdown-menu');
+  if (menuEl) menuEl.style.display = 'none';
+  renderMessageList();
+}
+
+// Keep old names as aliases so nothing else breaks
+function toggleFilterUnread() { setFilter(S.filterUnread ? 'default' : 'unread'); }
+function setSortOrder(order) { setFilter(order); }
+
 function renderMessageList() {
   const list=document.getElementById('message-list');
-  if (!S.messages.length){
-    list.innerHTML=`<div class="empty-state"><svg viewBox="0 0 24 24"><path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"/></svg><p>No messages</p></div>`;
+  let msgs = [...S.messages];
+
+  // Filter
+  if (S.filterUnread) msgs = msgs.filter(m => !m.is_read);
+
+  // Sort
+  if (S.sortOrder === 'date-asc') msgs.sort((a,b) => new Date(a.date)-new Date(b.date));
+  else if (S.sortOrder === 'size-desc') msgs.sort((a,b) => (b.size||0)-(a.size||0));
+  else msgs.sort((a,b) => new Date(b.date)-new Date(a.date)); // date-desc default
+
+  if (!msgs.length){
+    list.innerHTML=`<div class="empty-state"><svg viewBox="0 0 24 24"><path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"/></svg><p>${S.filterUnread?'No unread messages':'No messages'}</p></div>`;
     return;
   }
-  list.innerHTML=S.messages.map(m=>`
+  list.innerHTML=msgs.map(m=>`
     <div class="message-item ${m.id===S.selectedMessageId?'active':''} ${!m.is_read?'unread':''}"
          onclick="openMessage(${m.id})" oncontextmenu="showMessageMenu(event,${m.id})">
       <div class="msg-top">
@@ -404,6 +487,7 @@ function renderMessageList() {
       <div class="msg-meta">
         <span class="msg-dot" style="background:${m.account_color}"></span>
         <span class="msg-acct">${esc(m.account_email||'')}</span>
+        ${m.size?`<span style="font-size:10px;color:var(--muted);margin-left:4px">${formatSize(m.size)}</span>`:''}
         ${m.has_attachment?'<svg width="11" height="11" viewBox="0 0 24 24" fill="var(--muted)" style="margin-left:4px"><path d="M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5c0-1.38 1.12-2.5 2.5-2.5s2.5 1.12 2.5 2.5v10.5c0 .55-.45 1-1 1s-1-.45-1-1V6H10v9.5c0 1.38 1.12 2.5 2.5 2.5s2.5-1.12 2.5-2.5V5c0-2.21-1.79-4-4-4S7 2.79 7 5v12.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5V6h-1.5z"/></svg>':''}
         <span class="msg-star ${m.is_starred?'on':''}" onclick="toggleStar(${m.id},event)">${m.is_starred?'★':'☆'}</span>
       </div>
@@ -538,9 +622,13 @@ async function markRead(id, read) {
 }
 
 async function moveMessage(msgId, folderId) {
-  const r=await api('PUT','/messages/'+msgId+'/move',{folder_id:folderId});
-  if(r?.ok){toast('Moved','success');S.messages=S.messages.filter(m=>m.id!==msgId);renderMessageList();
-    if(S.currentMessage?.id===msgId)resetDetail();loadFolders();}
+  const folder = S.folders.find(f=>f.id===folderId);
+  inlineConfirm(`Move this message to "${folder?.name||'selected folder'}"?`, async () => {
+    const r=await api('PUT','/messages/'+msgId+'/move',{folder_id:folderId});
+    if(r?.ok){toast('Moved','success');S.messages=S.messages.filter(m=>m.id!==msgId);renderMessageList();
+      if(S.currentMessage?.id===msgId)resetDetail();loadFolders();}
+    else toast('Move failed','error');
+  });
 }
 
 async function deleteMessage(id) {
@@ -771,13 +859,39 @@ async function sendMessage() {
 }
 
 // ── Compose drag + all-edge resize ─────────────────────────────────────────
+function saveComposeGeometry(dlg) {
+  const r = dlg.getBoundingClientRect();
+  document.cookie = `compose_geo=${JSON.stringify({l:Math.round(r.left),t:Math.round(r.top),w:Math.round(r.width),h:Math.round(r.height)})};path=/;max-age=31536000`;
+}
+
+function loadComposeGeometry(dlg) {
+  try {
+    const m = document.cookie.match(/compose_geo=([^;]+)/);
+    if (!m) return false;
+    const g = JSON.parse(decodeURIComponent(m[1]));
+    if (!g.w||!g.h) return false;
+    const maxL = window.innerWidth  - Math.max(360, g.w);
+    const maxT = window.innerHeight - Math.max(280, g.h);
+    dlg.style.left   = Math.max(0, Math.min(g.l, maxL)) + 'px';
+    dlg.style.top    = Math.max(0, Math.min(g.t, maxT)) + 'px';
+    dlg.style.width  = Math.max(360, g.w) + 'px';
+    dlg.style.height = Math.max(280, g.h) + 'px';
+    dlg.style.right  = 'auto'; dlg.style.bottom = 'auto';
+    const editor = document.getElementById('compose-editor');
+    if (editor) editor.style.height = (Math.max(280,g.h) - 242) + 'px';
+    return true;
+  } catch(e) { return false; }
+}
+
 function initComposeDragResize() {
   const dlg=document.getElementById('compose-dialog');
   if(!dlg) return;
 
-  // Default position — bottom-right
-  dlg.style.right='24px'; dlg.style.bottom='20px';
-  dlg.style.left='auto';  dlg.style.top='auto';
+  // Restore saved position/size, or fall back to default bottom-right
+  if (!loadComposeGeometry(dlg)) {
+    dlg.style.right='24px'; dlg.style.bottom='20px';
+    dlg.style.left='auto';  dlg.style.top='auto';
+  }
 
   // Drag by header
   const header=document.getElementById('compose-drag-handle');
@@ -793,7 +907,7 @@ function initComposeDragResize() {
         dlg.style.left=Math.max(0,Math.min(window.innerWidth-dlg.offsetWidth, startL+(ev.clientX-ox)))+'px';
         dlg.style.top= Math.max(0,Math.min(window.innerHeight-30,         startT+(ev.clientY-oy)))+'px';
       };
-      const mu=()=>{ document.removeEventListener('mousemove',mm); document.removeEventListener('mouseup',mu); };
+      const mu=()=>{ document.removeEventListener('mousemove',mm); document.removeEventListener('mouseup',mu); saveComposeGeometry(dlg); };
       document.addEventListener('mousemove',mm);
       document.addEventListener('mouseup',mu);
       e.preventDefault();
@@ -820,7 +934,7 @@ function initComposeDragResize() {
         const editor=document.getElementById('compose-editor');
         if(editor) editor.style.height=(h-242)+'px';
       };
-      const mu=()=>{ document.removeEventListener('mousemove',mm); document.removeEventListener('mouseup',mu); };
+      const mu=()=>{ document.removeEventListener('mousemove',mm); document.removeEventListener('mouseup',mu); saveComposeGeometry(dlg); };
       document.addEventListener('mousemove',mm);
       document.addEventListener('mouseup',mu);
       e.preventDefault();
@@ -898,12 +1012,34 @@ function showCtxMenu(e, html) {
   });
 }
 
-// ── Init tag fields on DOMContentLoaded ───────────────────────────────────
-document.addEventListener('DOMContentLoaded', ()=>{
-  // Tag fields are re-init each time openCompose() is called.
-  // Initial init here covers the first open.
+// ── Init tag fields and filter dropdown ───────────────────────────────────
+// app.js loads at the bottom of <body> so the DOM is already ready here —
+// we must NOT wrap in DOMContentLoaded (that event has already fired).
+function _bootApp() {
   initTagField('compose-to');
   initTagField('compose-cc-tags');
   initTagField('compose-bcc-tags');
+
+  // Filter dropdown
+  const dropBtn  = document.getElementById('filter-dropdown-btn');
+  const dropMenu = document.getElementById('filter-dropdown-menu');
+  if (dropBtn && dropMenu) {
+    dropBtn.addEventListener('click', e => {
+      e.stopPropagation();
+      const isOpen = dropMenu.classList.contains('open');
+      dropMenu.classList.toggle('open', !isOpen);
+      if (!isOpen) {
+        document.addEventListener('click', () => dropMenu.classList.remove('open'), {once:true});
+      }
+    });
+    ['default','unread','date-desc','date-asc','size-desc'].forEach(mode => {
+      const el = document.getElementById('fopt-'+mode);
+      if (el) el.addEventListener('click', e => { e.stopPropagation(); setFilter(mode); });
+    });
+  }
+
   init();
-});
+}
+
+// Run immediately — DOM is ready since this script is at end of <body>
+_bootApp();

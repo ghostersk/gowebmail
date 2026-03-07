@@ -50,7 +50,24 @@
   <div class="message-list-panel">
     <div class="panel-header">
       <span class="panel-title" id="panel-title">Unified Inbox</span>
-      <span class="panel-count" id="panel-count"></span>
+      <div style="display:flex;align-items:center;gap:6px">
+        <span class="panel-count" id="panel-count"></span>
+        <div class="filter-dropdown" id="filter-dropdown">
+          <button class="filter-dropdown-btn" id="filter-dropdown-btn" title="Filter &amp; sort" onclick="var m=document.getElementById('filter-dropdown-menu');m.style.display=m.style.display==='block'?'none':'block';event.stopPropagation()">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M10 18h4v-2h-4v2zM3 6v2h18V6H3zm3 7h12v-2H6v2z"/></svg>
+            <span id="filter-label">Filter</span>
+          </button>
+          <div class="filter-dropdown-menu" id="filter-dropdown-menu" style="display:none">
+            <div class="filter-opt" id="fopt-default"   onclick="goMailSetFilter('default');event.stopPropagation()">✓ Default order</div>
+            <div class="filter-sep-line"></div>
+            <div class="filter-opt" id="fopt-unread"    onclick="goMailSetFilter('unread');event.stopPropagation()">○ Unread only</div>
+            <div class="filter-sep-line"></div>
+            <div class="filter-opt" id="fopt-date-desc" onclick="goMailSetFilter('date-desc');event.stopPropagation()">○ Newest first</div>
+            <div class="filter-opt" id="fopt-date-asc"  onclick="goMailSetFilter('date-asc');event.stopPropagation()">○ Oldest first</div>
+            <div class="filter-opt" id="fopt-size-desc" onclick="goMailSetFilter('size-desc');event.stopPropagation()">○ Largest first</div>
+          </div>
+        </div>
+      </div>
     </div>
     <div class="search-bar">
       <div class="search-wrap">
@@ -147,7 +164,7 @@
 
 <!-- ── Inline confirm (replaces browser confirm()) ───────────────────────── -->
 <div class="inline-confirm" id="inline-confirm">
-  <p id="inline-confirm-msg" style="margin:0 0 12px;font-size:13px"></p>
+  <p id="inline-confirm-msg" style="margin:0 0 14px;font-size:13px;line-height:1.5"></p>
   <div style="display:flex;gap:8px;justify-content:flex-end">
     <button class="btn-secondary" style="font-size:12px" id="inline-confirm-cancel">Cancel</button>
     <button class="btn-danger"    style="font-size:12px" id="inline-confirm-ok">Confirm</button>
@@ -283,5 +300,5 @@
 {{end}}
 
 {{define "scripts"}}
-<script src="/static/js/app.js"></script>
+<script src="/static/js/app.js?v=7"></script>
 {{end}}

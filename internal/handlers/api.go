@@ -390,6 +390,39 @@ func (h *APIHandler) SetFolderVisibility(w http.ResponseWriter, r *http.Request)
 	h.writeJSON(w, map[string]bool{"ok": true})
 }
 
+func (h *APIHandler) CountFolderMessages(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.GetUserID(r)
+	folderID := pathInt64(r, "id")
+	count, err := h.db.CountFolderMessages(folderID, userID)
+	if err != nil {
+		h.writeError(w, http.StatusInternalServerError, "count failed")
+		return
+	}
+	h.writeJSON(w, map[string]int{"count": count})
+}
+
+func (h *APIHandler) DeleteFolder(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.GetUserID(r)
+	folderID := pathInt64(r, "id")
+	if err := h.db.DeleteFolder(folderID, userID); err != nil {
+		h.writeError(w, http.StatusInternalServerError, "delete failed")
+		return
+	}
+	h.writeJSON(w, map[string]bool{"ok": true})
+}
+
+func (h *APIHandler) MoveFolderContents(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.GetUserID(r)
+	fromID := pathInt64(r, "id")
+	toID := pathInt64(r, "toId")
+	moved, err := h.db.MoveFolderContents(fromID, toID, userID)
+	if err != nil {
+		h.writeError(w, http.StatusInternalServerError, "move failed")
+		return
+	}
+	h.writeJSON(w, map[string]interface{}{"ok": true, "moved": moved})
+}
+
 func (h *APIHandler) SetAccountSyncSettings(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.GetUserID(r)
 	accountID := pathInt64(r, "id")

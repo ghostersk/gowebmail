@@ -108,3 +108,24 @@ function insertLink() {
   document.getElementById('compose-editor').focus();
   document.execCommand('createLink', false, url);
 }
+
+// ── Filter dropdown (stubs — real logic in app.js, but onclick needs global scope) ──
+function goMailToggleFilter(e) {
+  e.stopPropagation();
+  const menu = document.getElementById('filter-dropdown-menu');
+  if (!menu) return;
+  const isOpen = menu.classList.contains('open');
+  menu.classList.toggle('open', !isOpen);
+  if (!isOpen) {
+    document.addEventListener('click', function closeFilter() {
+      menu.classList.remove('open');
+      document.removeEventListener('click', closeFilter);
+    });
+  }
+}
+
+function goMailSetFilter(mode) {
+  var menu = document.getElementById('filter-dropdown-menu');
+  if (menu) menu.style.display = 'none';
+  if (typeof setFilter === 'function') setFilter(mode);
+}

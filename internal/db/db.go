@@ -1081,6 +1081,40 @@ func (d *DB) SetFolderVisibility(folderID, userID int64, isHidden, syncEnabled b
 	return err
 }
 
+// CountFolderMessages returns how many messages are in a folder (owned by user).
+func (d *DB) CountFolderMessages(folderID, userID int64) (int, error) {
+	var count int
+	err := d.sql.QueryRow(`
+		SELECT COUNT(*) FROM messages m
+		JOIN folders f ON f.id=m.folder_id
+		JOIN email_accounts a ON a.id=f.account_id
+		WHERE m.folder_id=? AND a.user_id=?`, folderID, userID).Scan(&count)
+	return count, err
+}
+
+// DeleteFolder removes a folder and all its messages (cascade).
+func (d *DB) DeleteFolder(folderID, userID int64) error {
+	_, err := d.sql.Exec(`
+		DELETE FROM folders WHERE id=?
+		AND account_id IN (SELECT id FROM email_accounts WHERE user_id=?)`,
+		folderID, userID)
+	return err
+}
+
+// MoveFolderContents moves all messages from one folder to another (both must belong to user).
+func (d *DB) MoveFolderContents(fromID, toID, userID int64) (int64, error) {
+	res, err := d.sql.Exec(`
+		UPDATE messages SET folder_id=?
+		WHERE folder_id=?
+		AND folder_id IN (SELECT f.id FROM folders f JOIN email_accounts a ON a.id=f.account_id WHERE a.user_id=?)`,
+		toID, fromID, userID)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
 func (d *DB) GetFolderByID(folderID int64) (*models.Folder, error) {
 	f := &models.Folder{}
 	var isHidden, syncEnabled int
