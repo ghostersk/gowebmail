@@ -3,7 +3,7 @@
 A self-hosted, encrypted web email client written entirely in Go. Supports Gmail and Outlook via OAuth2, plus any standard IMAP/SMTP provider.
 
 # Notes:
-- work still in progress
+- work still in progress ( gmail and hotmail email not tested yet, just prepared the app for it)
 - AI is involved in making this work, as I do not have the skill and time to do it on my own
 - looking for any advice and suggestions to improve it!
 
@@ -23,54 +23,26 @@ A self-hosted, encrypted web email client written entirely in Go. Supports Gmail
 <img width="1153" height="907" alt="image" src="https://github.com/user-attachments/assets/ebc92335-f6b7-46ed-b9a2-84512f70e1b2" />
 <img width="551" height="669" alt="image" src="https://github.com/user-attachments/assets/412585c0-434a-4177-ab04-7db69da9d08a" />
 
-
-
-## Architecture
-
-```
-cmd/server/main.go          Entry point, HTTP server setup
-config/config.go            Environment-based config
-internal/
-  auth/oauth.go             OAuth2 flows (Google + Microsoft)
-  crypto/crypto.go          AES-256-GCM encryption + bcrypt
-  db/db.go                  SQLite database with field-level encryption
-  email/imap.go             IMAP fetch + SMTP send via XOAUTH2
-  handlers/                 HTTP handlers (auth, app, api)
-  middleware/middleware.go   Logger, auth guard, security headers
-  models/models.go          Data models
-web/static/
-  login.html                Sign-in page
-  register.html             Registration page
-  app.html                  Single-page app (email client UI)
-```
-
 ## Quick Start
 
-### Option 1: Docker Compose (recommended)
+### Option 1: Build executable
 
 ```bash
 # 1. Clone / copy the project
-git clone https://github.com/yourname/gomail && cd gomail
-
-# 2. Generate secrets
-export ENCRYPTION_KEY=$(openssl rand -hex 32)
-export SESSION_SECRET=$(openssl rand -hex 32)
-echo "ENCRYPTION_KEY=$ENCRYPTION_KEY"   # SAVE THIS — losing it means losing your email cache
-
-# 3. Add your OAuth2 credentials to docker-compose.yml (see below)
-# 4. Run
-ENCRYPTION_KEY=$ENCRYPTION_KEY SESSION_SECRET=$SESSION_SECRET docker compose up
+git clone https://github.com/ghostersk/gowebmail && cd gowebmail
+go build -o gowebmail ./cmd/server
+./gowebmail
 ```
 
-Visit http://localhost:8080, register an account, then connect your email.
+Visit http://localhost:8080, default login admin/admin, register an account, then connect your email.
 
 ### Option 2: Run directly
 
 ```bash
-go build -o gomail ./cmd/server
-export ENCRYPTION_KEY=$(openssl rand -hex 32)
-export SESSION_SECRET=$(openssl rand -hex 32)
-./gomail
+git clone https://github.com/ghostersk/gowebmail && cd gowebmail
+go run ./cmd/server/main.go
+# check ./data/gomail.conf what gets generated on first run if not exists, update as needed.
+# then restart the app
 ```
 
 ## Setting up OAuth2
@@ -95,23 +67,6 @@ export SESSION_SECRET=$(openssl rand -hex 32)
    - `offline_access`, `openid`, `profile`, `email`
 4. Create a Client secret
 5. Set env vars: `MICROSOFT_CLIENT_ID`, `MICROSOFT_CLIENT_SECRET`, `MICROSOFT_TENANT_ID`
-
-## Environment Variables
-
-| Variable | Required | Description |
-|---|---|---|
-| `ENCRYPTION_KEY` | **Yes** | 64-char hex string (32 bytes). Auto-generated on first run but must be persisted. |
-| `SESSION_SECRET` | **Yes** | Random string for session signing. |
-| `LISTEN_ADDR` | No | Default `:8080` |
-| `DB_PATH` | No | Default `./data/gomail.db` |
-| `BASE_URL` | No | Default `http://localhost:8080` |
-| `GOOGLE_CLIENT_ID` | For Gmail | Google OAuth2 client ID |
-| `GOOGLE_CLIENT_SECRET` | For Gmail | Google OAuth2 client secret |
-| `GOOGLE_REDIRECT_URL` | No | Default `{BASE_URL}/auth/gmail/callback` |
-| `MICROSOFT_CLIENT_ID` | For Outlook | Azure AD app client ID |
-| `MICROSOFT_CLIENT_SECRET` | For Outlook | Azure AD app client secret |
-| `MICROSOFT_TENANT_ID` | No | Default `common` (multi-tenant) |
-| `SECURE_COOKIE` | No | Set `true` in production (HTTPS only) |
 
 ## Security Notes
 
@@ -151,5 +106,4 @@ CGO_ENABLED=1 GOOS=linux go build -ldflags="-s -w" -o gomail ./cmd/server
 CGO is required by `go-sqlite3`. Cross-compilation requires a C cross-compiler.
 
 ## License
-
-MIT
+GNU 3
