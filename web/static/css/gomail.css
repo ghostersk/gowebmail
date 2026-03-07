@@ -421,7 +421,17 @@ body.admin-page{overflow:auto;background:var(--bg)}
 }
 .inline-confirm.open{opacity:1;pointer-events:all;transform:translate(-50%,-50%)}
 
-/* ── Folder no-sync indicator ────────────────────────────────── */
+/* ── Context menu submenu ────────────────────────────────────── */
+.ctx-has-sub{position:relative;justify-content:space-between}
+.ctx-sub-arrow{margin-left:auto;font-size:12px;color:var(--muted);pointer-events:none}
+.ctx-submenu{
+  display:none;position:absolute;left:100%;top:-4px;
+  background:var(--surface2);border:1px solid var(--border2);
+  border-radius:8px;padding:4px;min-width:160px;
+  box-shadow:0 8px 28px rgba(0,0,0,.55);z-index:210;
+}
+.ctx-has-sub:hover>.ctx-submenu{display:block}
+.ctx-sub-item{white-space:nowrap}
 .folder-nosync{opacity:.65}
 
 /* ── Compose attach list ─────────────────────────────────────── */

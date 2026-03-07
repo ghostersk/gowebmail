@@ -404,6 +404,24 @@ func (h *APIHandler) CountFolderMessages(w http.ResponseWriter, r *http.Request)
 func (h *APIHandler) DeleteFolder(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.GetUserID(r)
 	folderID := pathInt64(r, "id")
+
+	// Look up folder before deleting so we have its path and account
+	folder, err := h.db.GetFolderByID(folderID)
+	if err != nil || folder == nil {
+		h.writeError(w, http.StatusNotFound, "folder not found")
+		return
+	}
+
+	// Delete on IMAP server first
+	account, err := h.db.GetAccount(folder.AccountID)
+	if err == nil && account != nil {
+		if imapClient, cerr := email.Connect(context.Background(), account); cerr == nil {
+			_ = imapClient.DeleteMailbox(folder.FullPath)
+			imapClient.Close()
+		}
+	}
+
+	// Delete from local DB
 	if err := h.db.DeleteFolder(folderID, userID); err != nil {
 		h.writeError(w, http.StatusInternalServerError, "delete failed")
 		return

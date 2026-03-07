@@ -195,7 +195,43 @@ async function openEditAccount(id) {
   connEl.style.display='none';
   errEl.style.display=r.last_error?'block':'none';
   if (r.last_error) errEl.textContent='Last sync error: '+r.last_error;
+
+  // Load hidden folders for this account
+  const hiddenEl = document.getElementById('edit-hidden-folders');
+  const hidden = S.folders.filter(f=>f.account_id===id && f.is_hidden);
+  if (!hidden.length) {
+    hiddenEl.innerHTML='<span style="color:var(--muted);font-size:12px">No hidden folders.</span>';
+  } else {
+    hiddenEl.innerHTML = hidden.map(f=>`
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border)">
+        <span style="font-size:13px">${esc(f.name)}</span>
+        <button class="btn-secondary" style="font-size:11px;padding:3px 10px" onclick="unhideFolder(${f.id})">Unhide</button>
+      </div>`).join('');
+  }
+
   openModal('edit-account-modal');
+}
+
+async function unhideFolder(folderId) {
+  const f = S.folders.find(f=>f.id===folderId);
+  if (!f) return;
+  const r = await api('PUT','/folders/'+folderId+'/visibility',{is_hidden:false, sync_enabled:true});
+  if (r?.ok) {
+    toast('Folder restored to sidebar','success');
+    await loadFolders();
+    // Refresh hidden list in modal
+    const accId = parseInt(document.getElementById('edit-account-id').value);
+    if (accId) {
+      const hiddenEl = document.getElementById('edit-hidden-folders');
+      const hidden = S.folders.filter(f=>f.account_id===accId && f.is_hidden);
+      if (!hidden.length) hiddenEl.innerHTML='<span style="color:var(--muted);font-size:12px">No hidden folders.</span>';
+      else hiddenEl.innerHTML = hidden.map(f=>`
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border)">
+          <span style="font-size:13px">${esc(f.name)}</span>
+          <button class="btn-secondary" style="font-size:11px;padding:3px 10px" onclick="unhideFolder(${f.id})">Unhide</button>
+        </div>`).join('');
+    }
+  } else toast('Failed to unhide folder','error');
 }
 
 function toggleSyncDaysField() {
@@ -313,13 +349,20 @@ function showFolderMenu(e, folderId) {
   const f = S.folders.find(f=>f.id===folderId);
   if (!f) return;
   const syncLabel = f.sync_enabled ? '⊘ Disable sync' : '↻ Enable sync';
-  const otherFolders = S.folders.filter(x=>x.id!==folderId&&x.account_id===f.account_id&&!x.is_hidden).slice(0,12);
-  const moveSub = otherFolders.map(x=>`<div class="ctx-item" style="padding-left:22px" onclick="moveFolderContents(${folderId},${x.id});closeMenu()">${esc(x.name)}</div>`).join('');
+  const otherFolders = S.folders.filter(x=>x.id!==folderId&&x.account_id===f.account_id&&!x.is_hidden).slice(0,16);
+  const moveItems = otherFolders.map(x=>
+    `<div class="ctx-item ctx-sub-item" onclick="moveFolderContents(${folderId},${x.id});closeMenu()">${esc(x.name)}</div>`
+  ).join('');
+  const moveEntry = otherFolders.length ? `
+    <div class="ctx-item ctx-has-sub">📂 Move messages to
+      <span class="ctx-sub-arrow">›</span>
+      <div class="ctx-submenu">${moveItems}</div>
+    </div>` : '';
   showCtxMenu(e, `
     <div class="ctx-item" onclick="syncFolderNow(${folderId});closeMenu()">↻ Sync this folder</div>
     <div class="ctx-item" onclick="toggleFolderSync(${folderId});closeMenu()">${syncLabel}</div>
     <div class="ctx-sep"></div>
-    ${moveSub?`<div style="font-size:10px;color:var(--muted);padding:4px 12px;text-transform:uppercase;letter-spacing:.7px">Move messages to</div>${moveSub}<div class="ctx-sep"></div>`:''}
+    ${moveEntry}
     <div class="ctx-item" onclick="confirmHideFolder(${folderId});closeMenu()">👁 Hide from sidebar</div>
     <div class="ctx-item danger" onclick="confirmDeleteFolder(${folderId});closeMenu()">🗑 Delete folder</div>`);
 }
@@ -513,20 +556,36 @@ function renderMessageDetail(msg, showRemoteContent) {
   const detail=document.getElementById('message-detail');
   const allowed=showRemoteContent||S.remoteWhitelist.has(msg.from_email);
 
+  // CSS injected into every iframe — forces white background so dark-themed emails
+  // don't inherit our app's dark theme and become unreadable
+  const cssReset = `<style>html,body{background:#ffffff!important;color:#1a1a1a!important;` +
+    `font-family:Arial,sans-serif;font-size:14px;line-height:1.5;margin:8px}a{color:#1a5fb4}</style>`;
+
   let bodyHtml='';
   if (msg.body_html) {
     if (allowed) {
+      const srcdoc = cssReset + msg.body_html;
       bodyHtml=`<iframe id="msg-frame" sandbox="allow-same-origin allow-popups"
         style="width:100%;border:none;min-height:300px;display:block"
-        srcdoc="${msg.body_html.replace(/"/g,'&quot;')}"></iframe>`;
+        srcdoc="${srcdoc.replace(/"/g,'&quot;')}"></iframe>`;
     } else {
+      // Strip only remote resources (img src, background-image urls, external link/script)
+      // Keep full HTML structure so text remains readable
+      const stripped = msg.body_html
+        .replace(/<img(\s[^>]*?)src\s*=\s*(['"])[^'"]*\2/gi, '<img$1src=""data-blocked="1"')
+        .replace(/url\s*\(\s*(['"]?)https?:\/\/[^)'"]+\1\s*\)/gi, 'url()')
+        .replace(/<link[^>]*>/gi, '')
+        .replace(/<script[\s\S]*?<\/script>/gi, '');
+      const srcdoc = cssReset + stripped;
       bodyHtml=`<div class="remote-content-banner">
-        <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>
         Remote images blocked.
-        <button class="rcb-btn" onclick="renderMessageDetail(S.currentMessage,true)">Load content</button>
+        <button class="rcb-btn" onclick="renderMessageDetail(S.currentMessage,true)">Load images</button>
         <button class="rcb-btn" onclick="whitelistSender('${esc(msg.from_email)}')">Always allow from ${esc(msg.from_email)}</button>
       </div>
-      <div class="detail-body-text">${esc(msg.body_text||'(empty)')}</div>`;
+      <iframe id="msg-frame" sandbox="allow-same-origin allow-popups"
+        style="width:100%;border:none;min-height:300px;display:block"
+        srcdoc="${srcdoc.replace(/"/g,'&quot;')}"></iframe>`;
     }
   } else {
     bodyHtml=`<div class="detail-body-text">${esc(msg.body_text||'(empty)')}</div>`;

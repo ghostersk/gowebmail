@@ -245,6 +245,8 @@
     </div>
     <div id="edit-conn-result" class="test-result" style="display:none"></div>
     <div id="edit-last-error" style="display:none" class="alert error"></div>
+    <div class="settings-group-title" style="margin:16px 0 8px">Hidden Folders</div>
+    <div id="edit-hidden-folders" style="font-size:12px;color:var(--muted)">Loading…</div>
     <div class="modal-actions">
       <button class="modal-cancel" onclick="closeModal('edit-account-modal')">Cancel</button>
       <button class="btn-secondary" id="edit-test-btn" onclick="testEditConnection()">Test Connection</button>
@@ -300,5 +302,5 @@
 {{end}}
 
 {{define "scripts"}}
-<script src="/static/js/app.js?v=7"></script>
+<script src="/static/js/app.js?v=9"></script>
 {{end}}

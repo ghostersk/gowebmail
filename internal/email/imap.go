@@ -134,6 +134,10 @@ func TestConnection(account *gomailModels.EmailAccount) error {
 
 func (c *Client) Close() { c.imap.Logout() }
 
+func (c *Client) DeleteMailbox(name string) error {
+	return c.imap.Delete(name)
+}
+
 func (c *Client) ListMailboxes() ([]*imap.MailboxInfo, error) {
 	ch := make(chan *imap.MailboxInfo, 64)
 	done := make(chan error, 1)
