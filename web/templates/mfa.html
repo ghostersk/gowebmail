@@ -1,0 +1,27 @@
+{{template "base" .}}
+{{define "title"}}GoMail — Two-Factor Auth{{end}}
+{{define "body_class"}}auth-page{{end}}
+{{define "body"}}
+<div class="auth-card">
+  <div class="logo">
+    <div class="logo-icon"><svg viewBox="0 0 24 24"><path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"/></svg></div>
+    <span class="logo-text">GoMail</span>
+  </div>
+  <h1>Two-Factor Auth</h1>
+  <p class="subtitle">Enter the 6-digit code from your authenticator app</p>
+  <div id="err" class="alert error" style="display:none"></div>
+  <form method="POST" action="/auth/mfa/verify">
+    <div class="field"><label>Verification Code</label>
+      <input type="text" name="code" placeholder="000000" maxlength="6" inputmode="numeric" autocomplete="one-time-code" autofocus required
+             style="font-size:22px;letter-spacing:.3em;text-align:center">
+    </div>
+    <button class="btn-primary" type="submit" style="width:100%;padding:13px;font-size:15px;margin-top:8px">Verify</button>
+  </form>
+</div>
+{{end}}
+{{define "scripts"}}
+<script>
+const k=new URLSearchParams(location.search).get('error');
+if(k){const b=document.getElementById('err');b.textContent='Invalid code. Please try again.';b.style.display='block';}
+</script>
+{{end}}

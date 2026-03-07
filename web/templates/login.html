@@ -1,0 +1,27 @@
+{{template "base" .}}
+{{define "title"}}GoMail — Sign In{{end}}
+{{define "body_class"}}auth-page{{end}}
+{{define "body"}}
+<div class="auth-card">
+  <div class="logo">
+    <div class="logo-icon"><svg viewBox="0 0 24 24"><path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"/></svg></div>
+    <span class="logo-text">GoMail</span>
+  </div>
+  <h1>Welcome back</h1>
+  <p class="subtitle">Sign in to your GoMail account</p>
+  <div id="err" class="alert error" style="display:none"></div>
+  <form method="POST" action="/auth/login">
+    <div class="field"><label>Username or Email</label><input type="text" name="username" placeholder="admin" required autocomplete="username"></div>
+    <div class="field"><label>Password</label><input type="password" name="password" placeholder="••••••••" required autocomplete="current-password"></div>
+    <button class="btn-primary" type="submit" style="width:100%;padding:13px;font-size:15px;margin-top:8px">Sign In</button>
+  </form>
+  <p style="font-size:12px;color:var(--muted);margin-top:16px;text-align:center">Default credentials: <strong>admin</strong> / <strong>admin</strong></p>
+</div>
+{{end}}
+{{define "scripts"}}
+<script>
+const msgs={invalid_credentials:'Invalid username or password.',missing_fields:'Please fill in all fields.'};
+const k=new URLSearchParams(location.search).get('error');
+if(k){const b=document.getElementById('err');b.textContent=msgs[k]||'An error occurred.';b.style.display='block';}
+</script>
+{{end}}

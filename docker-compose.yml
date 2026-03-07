@@ -1,0 +1,35 @@
+version: '3.9'
+
+services:
+  gomail:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - gomail-data:/data
+    environment:
+      # REQUIRED: Generate with: openssl rand -hex 32
+      ENCRYPTION_KEY: ""
+      SESSION_SECRET: ""
+      BASE_URL: "http://localhost:8080"
+
+      # ---- Gmail OAuth2 ----
+      # Create at: https://console.cloud.google.com/
+      # Enable: Gmail API
+      # OAuth2 scopes: https://mail.google.com/
+      # Redirect URI: http://localhost:8080/auth/gmail/callback
+      GOOGLE_CLIENT_ID: ""
+      GOOGLE_CLIENT_SECRET: ""
+
+      # ---- Microsoft/Outlook OAuth2 ----
+      # Create at: https://portal.azure.com/ → App registrations
+      # Add permission: IMAP.AccessAsUser.All, SMTP.Send
+      # Redirect URI: http://localhost:8080/auth/outlook/callback
+      MICROSOFT_CLIENT_ID: ""
+      MICROSOFT_CLIENT_SECRET: ""
+      MICROSOFT_TENANT_ID: "common"
+
+    restart: unless-stopped
+
+volumes:
+  gomail-data:
