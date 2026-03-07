@@ -139,8 +139,29 @@ async function addIMAPAccount() {
   btn.disabled=true;btn.textContent='Connecting...';
   const r=await api('POST','/accounts',body);
   btn.disabled=false;btn.textContent='Connect';
-  if (r?.ok){toast('Account added!','success');closeModal('add-account-modal');loadAccounts();loadFolders();loadMessages();}
-  else toast(r?.error||'Failed to add account','error');
+  if (r?.ok){
+    toast('Account added — syncing…','success');
+    closeModal('add-account-modal');
+    await loadAccounts();
+    // Background sync takes a moment — reload folders/messages after a short wait
+    setTimeout(async ()=>{ await loadFolders(); await loadMessages(); toast('Sync complete','success'); }, 3000);
+  } else toast(r?.error||'Failed to add account','error');
+}
+
+async function detectMailSettings() {
+  const email=document.getElementById('imap-email').value.trim();
+  if (!email||!email.includes('@')){toast('Enter your email address first','error');return;}
+  const btn=document.getElementById('detect-btn');
+  btn.innerHTML='<span class="spinner-inline"></span>Detecting…';btn.disabled=true;
+  const r=await api('POST','/accounts/detect',{email});
+  btn.textContent='Auto-detect';btn.disabled=false;
+  if (!r){toast('Detection failed','error');return;}
+  document.getElementById('imap-host').value=r.imap_host||'';
+  document.getElementById('imap-port').value=r.imap_port||993;
+  document.getElementById('smtp-host').value=r.smtp_host||'';
+  document.getElementById('smtp-port').value=r.smtp_port||587;
+  if(r.detected) toast(`Detected ${r.imap_host} / ${r.smtp_host}`,'success');
+  else toast('No servers found — filled with defaults based on domain','info');
 }
 
 async function syncNow(id, e) {

@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gorilla/mux"
 	"github.com/yourusername/gomail/config"
@@ -238,6 +240,83 @@ func (h *APIHandler) TestConnection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.writeJSON(w, map[string]bool{"ok": true})
+}
+
+// DetectMailSettings tries common IMAP/SMTP combinations for a domain and returns
+// the first working combination, or sensible defaults if nothing connects.
+func (h *APIHandler) DetectMailSettings(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Email string `json:"email"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Email == "" {
+		h.writeError(w, http.StatusBadRequest, "email required")
+		return
+	}
+	at := strings.Index(req.Email, "@")
+	if at < 0 {
+		h.writeError(w, http.StatusBadRequest, "invalid email")
+		return
+	}
+	domain := req.Email[at+1:]
+
+	type candidate struct {
+		host string
+		port int
+	}
+	imapCandidates := []candidate{
+		{"imap." + domain, 993},
+		{"mail." + domain, 993},
+		{"imap." + domain, 143},
+		{"mail." + domain, 143},
+	}
+	smtpCandidates := []candidate{
+		{"smtp." + domain, 587},
+		{"mail." + domain, 587},
+		{"smtp." + domain, 465},
+		{"mail." + domain, 465},
+		{"smtp." + domain, 25},
+	}
+
+	type result struct {
+		IMAPHost string `json:"imap_host"`
+		IMAPPort int    `json:"imap_port"`
+		SMTPHost string `json:"smtp_host"`
+		SMTPPort int    `json:"smtp_port"`
+		Detected bool   `json:"detected"`
+	}
+
+	res := result{
+		IMAPHost: "imap." + domain,
+		IMAPPort: 993,
+		SMTPHost: "smtp." + domain,
+		SMTPPort: 587,
+	}
+
+	// Try IMAP candidates (TCP dial only, no auth needed to detect)
+	for _, c := range imapCandidates {
+		conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", c.host, c.port), 4*time.Second)
+		if err == nil {
+			conn.Close()
+			res.IMAPHost = c.host
+			res.IMAPPort = c.port
+			res.Detected = true
+			break
+		}
+	}
+
+	// Try SMTP candidates
+	for _, c := range smtpCandidates {
+		conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", c.host, c.port), 4*time.Second)
+		if err == nil {
+			conn.Close()
+			res.SMTPHost = c.host
+			res.SMTPPort = c.port
+			res.Detected = true
+			break
+		}
+	}
+
+	h.writeJSON(w, res)
 }
 
 func (h *APIHandler) DeleteAccount(w http.ResponseWriter, r *http.Request) {

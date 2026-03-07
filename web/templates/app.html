@@ -170,9 +170,18 @@
       </button>
     </div>
     <div class="modal-divider"><span>or add IMAP account</span></div>
-    <div class="modal-field"><label>Email Address</label><input type="email" id="imap-email" placeholder="you@example.com"></div>
+    <div class="modal-field"><label>Email Address</label>
+      <div style="display:flex;gap:8px;flex:1">
+        <input type="email" id="imap-email" placeholder="you@example.com" style="flex:1">
+        <button class="btn-secondary" id="detect-btn" onclick="detectMailSettings()" style="white-space:nowrap;font-size:12px">Auto-detect</button>
+      </div>
+    </div>
     <div class="modal-field"><label>Display Name</label><input type="text" id="imap-name" placeholder="Your Name"></div>
     <div class="modal-field"><label>Password / App Password</label><input type="password" id="imap-password"></div>
+    <div style="font-size:11px;color:var(--muted);padding:0 0 8px;line-height:1.6">
+      Common ports — IMAP: <strong>993</strong> TLS/SSL, <strong>143</strong> STARTTLS/Plain &nbsp;·&nbsp;
+      SMTP: <strong>587</strong> STARTTLS, <strong>465</strong> TLS/SSL, <strong>25</strong> Plain
+    </div>
     <div class="modal-row">
       <div class="modal-field"><label>IMAP Host</label><input type="text" id="imap-host" placeholder="imap.example.com"></div>
       <div class="modal-field"><label>IMAP Port</label><input type="number" id="imap-port" value="993"></div>

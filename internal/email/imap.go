@@ -639,7 +639,12 @@ func SendMessageFull(ctx context.Context, account *gomailModels.EmailAccount, re
 func buildMIMEMessage(buf *bytes.Buffer, account *gomailModels.EmailAccount, req *gomailModels.ComposeRequest) string {
 	from := netmail.Address{Name: account.DisplayName, Address: account.EmailAddress}
 	boundary := fmt.Sprintf("gomail_%x", time.Now().UnixNano())
-	msgID := fmt.Sprintf("<%d.%s@gomail>", time.Now().UnixNano(), strings.ReplaceAll(account.EmailAddress, "@", "."))
+	// Use the sender's actual domain for Message-ID so it passes spam filters
+	domain := account.EmailAddress
+	if at := strings.Index(domain, "@"); at >= 0 {
+		domain = domain[at+1:]
+	}
+	msgID := fmt.Sprintf("<%d.%s@%s>", time.Now().UnixNano(), strings.ReplaceAll(account.EmailAddress, "@", "."), domain)
 
 	buf.WriteString("Message-ID: " + msgID + "\r\n")
 	buf.WriteString("From: " + from.String() + "\r\n")

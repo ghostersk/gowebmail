@@ -446,6 +446,7 @@ func (d *DB) ListAuditLogs(page, pageSize int, eventFilter string) (*models.Audi
 	}, rows.Err()
 }
 
+
 // ---- Email Accounts ----
 
 func (d *DB) CreateAccount(a *models.EmailAccount) error {
@@ -716,8 +717,7 @@ func (d *DB) GetFolderByPath(accountID int64, fullPath string) (*models.Folder, 
 		       COALESCE(is_hidden,0), COALESCE(sync_enabled,1)
 		 FROM folders WHERE account_id=? AND full_path=?`, accountID, fullPath,
 	).Scan(&f.ID, &f.AccountID, &f.Name, &f.FullPath, &f.FolderType, &f.UnreadCount, &f.TotalCount, &isHidden, &syncEnabled)
-	f.IsHidden = isHidden == 1
-	f.SyncEnabled = syncEnabled == 1
+	f.IsHidden = isHidden == 1; f.SyncEnabled = syncEnabled == 1
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -1072,12 +1072,8 @@ func (d *DB) IsRemoteContentAllowed(userID int64, sender string) (bool, error) {
 // SetFolderVisibility sets is_hidden and sync_enabled for a folder owned by the user.
 func (d *DB) SetFolderVisibility(folderID, userID int64, isHidden, syncEnabled bool) error {
 	ih, se := 0, 0
-	if isHidden {
-		ih = 1
-	}
-	if syncEnabled {
-		se = 1
-	}
+	if isHidden { ih = 1 }
+	if syncEnabled { se = 1 }
 	_, err := d.sql.Exec(`
 		UPDATE folders SET is_hidden=?, sync_enabled=?
 		WHERE id=? AND account_id IN (SELECT id FROM email_accounts WHERE user_id=?)`,
@@ -1089,11 +1085,11 @@ func (d *DB) GetFolderByID(folderID int64) (*models.Folder, error) {
 	f := &models.Folder{}
 	var isHidden, syncEnabled int
 	err := d.sql.QueryRow(
-		`SELECT id, account_id, name, full_path, folder_type, unread_count, total_count
+		`SELECT id, account_id, name, full_path, folder_type, unread_count, total_count,
+		       COALESCE(is_hidden,0), COALESCE(sync_enabled,1)
 		 FROM folders WHERE id=?`, folderID,
 	).Scan(&f.ID, &f.AccountID, &f.Name, &f.FullPath, &f.FolderType, &f.UnreadCount, &f.TotalCount, &isHidden, &syncEnabled)
-	f.IsHidden = isHidden == 1
-	f.SyncEnabled = syncEnabled == 1
+	f.IsHidden = isHidden == 1; f.SyncEnabled = syncEnabled == 1
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}

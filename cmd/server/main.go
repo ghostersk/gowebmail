@@ -104,6 +104,7 @@ func main() {
 	api.HandleFunc("/accounts", h.API.ListAccounts).Methods("GET")
 	api.HandleFunc("/accounts", h.API.AddAccount).Methods("POST")
 	api.HandleFunc("/accounts/test", h.API.TestConnection).Methods("POST")
+	api.HandleFunc("/accounts/detect", h.API.DetectMailSettings).Methods("POST")
 	api.HandleFunc("/accounts/{id:[0-9]+}", h.API.GetAccount).Methods("GET")
 	api.HandleFunc("/accounts/{id:[0-9]+}", h.API.UpdateAccount).Methods("PUT")
 	api.HandleFunc("/accounts/{id:[0-9]+}", h.API.DeleteAccount).Methods("DELETE")
