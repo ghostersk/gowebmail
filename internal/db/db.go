@@ -165,8 +165,13 @@ func (d *DB) Migrate() error {
 	alterStmts := []string{
 		`ALTER TABLE email_accounts ADD COLUMN sync_days INTEGER NOT NULL DEFAULT 30`,
 		`ALTER TABLE email_accounts ADD COLUMN sync_mode TEXT NOT NULL DEFAULT 'days'`,
+		`ALTER TABLE email_accounts ADD COLUMN sync_all_folders INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE users ADD COLUMN compose_popup INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE messages ADD COLUMN folder_path TEXT NOT NULL DEFAULT ''`,
+		// Folder visibility: is_hidden hides from sidebar; sync_enabled controls auto-sync.
+		// Default: primary folder types sync by default, others don't.
+		`ALTER TABLE folders ADD COLUMN is_hidden INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE folders ADD COLUMN sync_enabled INTEGER NOT NULL DEFAULT 1`,
 	}
 	for _, stmt := range alterStmts {
 		d.sql.Exec(stmt) // ignore "duplicate column" errors intentionally
@@ -441,7 +446,6 @@ func (d *DB) ListAuditLogs(page, pageSize int, eventFilter string) (*models.Audi
 	}, rows.Err()
 }
 
-
 // ---- Email Accounts ----
 
 func (d *DB) CreateAccount(a *models.EmailAccount) error {
@@ -685,25 +689,35 @@ func (d *DB) UpdateFolderCounts(folderID int64) {
 // ---- Folders ----
 
 func (d *DB) UpsertFolder(f *models.Folder) error {
+	// On insert: set sync_enabled based on folder type (primary types sync by default)
+	defaultSync := 0
+	switch f.FolderType {
+	case "inbox", "sent", "drafts", "trash", "spam":
+		defaultSync = 1
+	}
 	_, err := d.sql.Exec(`
-		INSERT INTO folders (account_id, name, full_path, folder_type, unread_count, total_count)
-		VALUES (?,?,?,?,?,?)
+		INSERT INTO folders (account_id, name, full_path, folder_type, unread_count, total_count, sync_enabled)
+		VALUES (?,?,?,?,?,?,?)
 		ON CONFLICT(account_id, full_path) DO UPDATE SET
 			name=excluded.name,
 			folder_type=excluded.folder_type,
 			unread_count=excluded.unread_count,
 			total_count=excluded.total_count`,
-		f.AccountID, f.Name, f.FullPath, f.FolderType, f.UnreadCount, f.TotalCount,
+		f.AccountID, f.Name, f.FullPath, f.FolderType, f.UnreadCount, f.TotalCount, defaultSync,
 	)
 	return err
 }
 
 func (d *DB) GetFolderByPath(accountID int64, fullPath string) (*models.Folder, error) {
 	f := &models.Folder{}
+	var isHidden, syncEnabled int
 	err := d.sql.QueryRow(
-		`SELECT id, account_id, name, full_path, folder_type, unread_count, total_count
+		`SELECT id, account_id, name, full_path, folder_type, unread_count, total_count,
+		       COALESCE(is_hidden,0), COALESCE(sync_enabled,1)
 		 FROM folders WHERE account_id=? AND full_path=?`, accountID, fullPath,
-	).Scan(&f.ID, &f.AccountID, &f.Name, &f.FullPath, &f.FolderType, &f.UnreadCount, &f.TotalCount)
+	).Scan(&f.ID, &f.AccountID, &f.Name, &f.FullPath, &f.FolderType, &f.UnreadCount, &f.TotalCount, &isHidden, &syncEnabled)
+	f.IsHidden = isHidden == 1
+	f.SyncEnabled = syncEnabled == 1
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -712,7 +726,8 @@ func (d *DB) GetFolderByPath(accountID int64, fullPath string) (*models.Folder, 
 
 func (d *DB) ListFoldersByAccount(accountID int64) ([]*models.Folder, error) {
 	rows, err := d.sql.Query(
-		`SELECT id, account_id, name, full_path, folder_type, unread_count, total_count
+		`SELECT id, account_id, name, full_path, folder_type, unread_count, total_count,
+		       COALESCE(is_hidden,0), COALESCE(sync_enabled,1)
 		 FROM folders WHERE account_id=? ORDER BY folder_type, name`, accountID,
 	)
 	if err != nil {
@@ -722,9 +737,12 @@ func (d *DB) ListFoldersByAccount(accountID int64) ([]*models.Folder, error) {
 	var folders []*models.Folder
 	for rows.Next() {
 		f := &models.Folder{}
-		if err := rows.Scan(&f.ID, &f.AccountID, &f.Name, &f.FullPath, &f.FolderType, &f.UnreadCount, &f.TotalCount); err != nil {
+		var isHidden, syncEnabled int
+		if err := rows.Scan(&f.ID, &f.AccountID, &f.Name, &f.FullPath, &f.FolderType, &f.UnreadCount, &f.TotalCount, &isHidden, &syncEnabled); err != nil {
 			return nil, err
 		}
+		f.IsHidden = isHidden == 1
+		f.SyncEnabled = syncEnabled == 1
 		folders = append(folders, f)
 	}
 	return folders, rows.Err()
@@ -988,7 +1006,8 @@ func (d *DB) DeleteMessage(messageID, userID int64) error {
 
 func (d *DB) GetFoldersByUser(userID int64) ([]*models.Folder, error) {
 	rows, err := d.sql.Query(`
-		SELECT f.id, f.account_id, f.name, f.full_path, f.folder_type, f.unread_count, f.total_count
+		SELECT f.id, f.account_id, f.name, f.full_path, f.folder_type, f.unread_count, f.total_count,
+		       COALESCE(f.is_hidden,0), COALESCE(f.sync_enabled,1)
 		FROM folders f
 		JOIN email_accounts a ON a.id=f.account_id
 		WHERE a.user_id=?
@@ -1001,9 +1020,12 @@ func (d *DB) GetFoldersByUser(userID int64) ([]*models.Folder, error) {
 	var folders []*models.Folder
 	for rows.Next() {
 		f := &models.Folder{}
-		if err := rows.Scan(&f.ID, &f.AccountID, &f.Name, &f.FullPath, &f.FolderType, &f.UnreadCount, &f.TotalCount); err != nil {
+		var isHidden, syncEnabled int
+		if err := rows.Scan(&f.ID, &f.AccountID, &f.Name, &f.FullPath, &f.FolderType, &f.UnreadCount, &f.TotalCount, &isHidden, &syncEnabled); err != nil {
 			return nil, err
 		}
+		f.IsHidden = isHidden == 1
+		f.SyncEnabled = syncEnabled == 1
 		folders = append(folders, f)
 	}
 	return folders, rows.Err()
@@ -1047,12 +1069,31 @@ func (d *DB) IsRemoteContentAllowed(userID int64, sender string) (bool, error) {
 	return count > 0, err
 }
 
+// SetFolderVisibility sets is_hidden and sync_enabled for a folder owned by the user.
+func (d *DB) SetFolderVisibility(folderID, userID int64, isHidden, syncEnabled bool) error {
+	ih, se := 0, 0
+	if isHidden {
+		ih = 1
+	}
+	if syncEnabled {
+		se = 1
+	}
+	_, err := d.sql.Exec(`
+		UPDATE folders SET is_hidden=?, sync_enabled=?
+		WHERE id=? AND account_id IN (SELECT id FROM email_accounts WHERE user_id=?)`,
+		ih, se, folderID, userID)
+	return err
+}
+
 func (d *DB) GetFolderByID(folderID int64) (*models.Folder, error) {
 	f := &models.Folder{}
+	var isHidden, syncEnabled int
 	err := d.sql.QueryRow(
 		`SELECT id, account_id, name, full_path, folder_type, unread_count, total_count
 		 FROM folders WHERE id=?`, folderID,
-	).Scan(&f.ID, &f.AccountID, &f.Name, &f.FullPath, &f.FolderType, &f.UnreadCount, &f.TotalCount)
+	).Scan(&f.ID, &f.AccountID, &f.Name, &f.FullPath, &f.FolderType, &f.UnreadCount, &f.TotalCount, &isHidden, &syncEnabled)
+	f.IsHidden = isHidden == 1
+	f.SyncEnabled = syncEnabled == 1
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}

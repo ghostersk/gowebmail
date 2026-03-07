@@ -163,6 +163,11 @@ func (s *Scheduler) doSync(account *models.EmailAccount) (int, error) {
 			continue
 		}
 
+		// Skip folders that the user has disabled sync on
+		if !dbFolder.SyncEnabled {
+			continue
+		}
+
 		days := account.SyncDays
 		if days <= 0 || account.SyncMode == "all" {
 			days = 36500 // ~100 years = full mailbox

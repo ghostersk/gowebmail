@@ -125,6 +125,8 @@ type Folder struct {
 	FolderType string `json:"folder_type"` // inbox, sent, drafts, trash, spam, custom
 	UnreadCount int  `json:"unread_count"`
 	TotalCount  int  `json:"total_count"`
+	IsHidden    bool `json:"is_hidden"`
+	SyncEnabled bool `json:"sync_enabled"`
 }
 
 // ---- Messages ----

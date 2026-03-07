@@ -293,6 +293,24 @@ func (h *APIHandler) SyncFolder(w http.ResponseWriter, r *http.Request) {
 	h.writeJSON(w, map[string]interface{}{"ok": true, "synced": synced})
 }
 
+func (h *APIHandler) SetFolderVisibility(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.GetUserID(r)
+	folderID := pathInt64(r, "id")
+	var req struct {
+		IsHidden    bool `json:"is_hidden"`
+		SyncEnabled bool `json:"sync_enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.writeError(w, http.StatusBadRequest, "invalid request")
+		return
+	}
+	if err := h.db.SetFolderVisibility(folderID, userID, req.IsHidden, req.SyncEnabled); err != nil {
+		h.writeError(w, http.StatusInternalServerError, "update failed")
+		return
+	}
+	h.writeJSON(w, map[string]bool{"ok": true})
+}
+
 func (h *APIHandler) SetAccountSyncSettings(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.GetUserID(r)
 	accountID := pathInt64(r, "id")

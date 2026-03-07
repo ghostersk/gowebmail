@@ -133,6 +133,7 @@ func main() {
 	api.HandleFunc("/folders", h.API.ListFolders).Methods("GET")
 	api.HandleFunc("/folders/{account_id:[0-9]+}", h.API.ListAccountFolders).Methods("GET")
 	api.HandleFunc("/folders/{id:[0-9]+}/sync", h.API.SyncFolder).Methods("POST")
+	api.HandleFunc("/folders/{id:[0-9]+}/visibility", h.API.SetFolderVisibility).Methods("PUT")
 
 	api.HandleFunc("/sync-interval", h.API.GetSyncInterval).Methods("GET")
 	api.HandleFunc("/sync-interval", h.API.SetSyncInterval).Methods("PUT")

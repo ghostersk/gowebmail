@@ -1,4 +1,6 @@
 data/envs
 data/*.db
+data/*.db-shm
+data/*db-wal
 data/gomail.conf
 data/*.txt

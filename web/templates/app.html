@@ -14,15 +14,6 @@
       <button class="compose-btn" onclick="openCompose()">+ Compose</button>
     </div>
 
-    <div class="accounts-section">
-      <div class="section-label">Accounts</div>
-      <div id="accounts-list"></div>
-      <div class="add-account-btn" onclick="openModal('add-account-modal')">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
-        Connect account
-      </div>
-    </div>
-
     <div class="nav-section">
       <div class="nav-item active" id="nav-unified" onclick="selectFolder('unified','Unified Inbox')">
         <svg viewBox="0 0 24 24" fill="currentColor"><path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"/></svg>
@@ -42,6 +33,9 @@
         <a href="/admin" id="admin-link" style="display:none;font-size:11px;color:var(--accent);text-decoration:none">Admin</a>
       </div>
       <div class="footer-actions">
+        <button class="icon-btn" id="accounts-btn" onclick="toggleAccountsMenu(event)" title="Manage accounts">
+          <svg viewBox="0 0 24 24"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
+        </button>
         <button class="icon-btn" onclick="openSettings()" title="Settings">
           <svg viewBox="0 0 24 24"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
         </button>
@@ -79,14 +73,34 @@
   </main>
 </div>
 
-<!-- Compose window -->
-<div class="compose-overlay" id="compose-overlay">
-  <div class="compose-window" id="compose-window">
-    <div id="compose-resize-handle"></div>
-    <div class="compose-header">
-      <span class="compose-title" id="compose-title">New Message</span>
-      <button class="compose-close" onclick="closeCompose()">&#215;</button>
+<!-- ── Accounts submenu popup ──────────────────────────────────────────────── -->
+<div class="accounts-popup" id="accounts-popup">
+  <div class="accounts-popup-inner">
+    <div class="accounts-popup-header">
+      <span>Accounts</span>
+      <button class="icon-btn" onclick="closeAccountsMenu()" style="margin:-4px -4px -4px 0">
+        <svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+      </button>
     </div>
+    <div id="accounts-popup-list"></div>
+    <button class="accounts-add-btn" onclick="closeAccountsMenu();openAddAccountModal()">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+      Connect new account
+    </button>
+  </div>
+</div>
+<div class="accounts-popup-backdrop" id="accounts-popup-backdrop" onclick="closeAccountsMenu()"></div>
+
+<!-- ── Draggable Compose dialog ───────────────────────────────────────────── -->
+<div class="compose-dialog" id="compose-dialog">
+  <div class="compose-dialog-header" id="compose-drag-handle">
+    <span class="compose-title" id="compose-title">New Message</span>
+    <div style="display:flex;align-items:center;gap:2px">
+      <button class="compose-close" onclick="minimizeCompose()" title="Minimise">&#8211;</button>
+      <button class="compose-close" onclick="closeCompose()" title="Close">&#215;</button>
+    </div>
+  </div>
+  <div class="compose-body-wrap" id="compose-body-wrap">
     <div class="compose-field"><label>From</label><select id="compose-from"></select></div>
     <div class="compose-field compose-tag-field"><label>To</label><div id="compose-to" class="tag-container"></div></div>
     <div class="compose-field compose-tag-field" id="cc-row" style="display:none"><label>CC</label><div id="compose-cc-tags" class="tag-container"></div></div>
@@ -108,17 +122,39 @@
     <div class="compose-footer">
       <button class="send-btn" id="send-btn" onclick="sendMessage()">Send</button>
       <div style="display:flex;gap:6px;margin-left:4px">
-        <button class="btn-secondary" style="font-size:12px" onclick="document.getElementById('cc-row').style.display='flex'">+CC</button>
-        <button class="btn-secondary" style="font-size:12px" onclick="document.getElementById('bcc-row').style.display='flex'">+BCC</button>
+        <button class="btn-secondary" style="font-size:12px" onclick="showCCRow()">+CC</button>
+        <button class="btn-secondary" style="font-size:12px" onclick="showBCCRow()">+BCC</button>
         <button class="btn-secondary" style="font-size:12px" onclick="triggerAttach()">&#128206; Attach</button>
         <button class="btn-secondary" style="font-size:12px" onclick="saveDraft()">&#9998; Draft</button>
       </div>
       <input type="file" id="compose-attach-input" multiple style="display:none" onchange="handleAttachFiles(this)">
     </div>
   </div>
+  <div class="compose-resize" data-dir="e"></div>
+  <div class="compose-resize" data-dir="s"></div>
+  <div class="compose-resize" data-dir="se"></div>
+  <div class="compose-resize" data-dir="w"></div>
+  <div class="compose-resize" data-dir="sw"></div>
+  <div class="compose-resize" data-dir="n"></div>
+  <div class="compose-resize" data-dir="ne"></div>
+  <div class="compose-resize" data-dir="nw"></div>
+</div>
+<!-- Minimised pill (shown when user clicks – on header) -->
+<div class="compose-minimised" id="compose-minimised" onclick="restoreCompose()">
+  <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"/></svg>
+  <span id="compose-minimised-label">New Message</span>
 </div>
 
-<!-- Add Account Modal -->
+<!-- ── Inline confirm (replaces browser confirm()) ───────────────────────── -->
+<div class="inline-confirm" id="inline-confirm">
+  <p id="inline-confirm-msg" style="margin:0 0 12px;font-size:13px"></p>
+  <div style="display:flex;gap:8px;justify-content:flex-end">
+    <button class="btn-secondary" style="font-size:12px" id="inline-confirm-cancel">Cancel</button>
+    <button class="btn-danger"    style="font-size:12px" id="inline-confirm-ok">Confirm</button>
+  </div>
+</div>
+
+<!-- ── Add Account Modal ──────────────────────────────────────────────────── -->
 <div class="modal-overlay" id="add-account-modal">
   <div class="modal">
     <h2>Connect an account</h2>
@@ -154,7 +190,7 @@
   </div>
 </div>
 
-<!-- Edit Account Modal -->
+<!-- ── Edit Account Modal ─────────────────────────────────────────────────── -->
 <div class="modal-overlay" id="edit-account-modal">
   <div class="modal">
     <h2>Account Settings</h2>
@@ -191,7 +227,7 @@
   </div>
 </div>
 
-<!-- Settings Modal -->
+<!-- ── Settings Modal ─────────────────────────────────────────────────────── -->
 <div class="modal-overlay" id="settings-modal">
   <div class="modal" style="width:520px">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:22px">
@@ -214,15 +250,6 @@
         </select>
         <button class="btn-primary" onclick="saveSyncInterval()">Save</button>
       </div>
-    </div>
-
-    <div class="settings-group">
-      <div class="settings-group-title">Compose Window</div>
-      <div style="font-size:13px;color:var(--muted);margin-bottom:12px">Open new message as an in-page panel (default) or a separate popup window.</div>
-      <label style="display:flex;align-items:center;gap:10px;font-size:13px;cursor:pointer">
-        <input type="checkbox" id="compose-popup-toggle" onchange="saveComposePopupPref()">
-        Open compose in new popup window
-      </label>
     </div>
 
     <div class="settings-group">

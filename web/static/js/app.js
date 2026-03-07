@@ -9,6 +9,7 @@ const S = {
   searchQuery: '', composeMode: 'new', composeReplyToId: null,
   remoteWhitelist: new Set(),
   draftTimer: null, draftDirty: false,
+  composeVisible: false, composeMinimised: false,
 };
 
 // ── Boot ───────────────────────────────────────────────────────────────────
@@ -20,17 +21,16 @@ async function init() {
     S.me = me;
     document.getElementById('user-display').textContent = me.username || me.email;
     if (me.role === 'admin') document.getElementById('admin-link').style.display = 'block';
-    if (me.compose_popup) document.getElementById('compose-popup-toggle').checked = true;
   }
   if (providers) { S.providers = providers; updateProviderButtons(); }
   if (wl?.whitelist) S.remoteWhitelist = new Set(wl.whitelist);
 
-  await loadAccounts();      // must complete before loadFolders so colors are available
+  await loadAccounts();
   await loadFolders();
   await loadMessages();
 
   const p = new URLSearchParams(location.search);
-  if (p.get('connected')) { toast('Account connected!', 'success'); history.replaceState({},'',' /'); }
+  if (p.get('connected')) { toast('Account connected!', 'success'); history.replaceState({},'','/'); }
   if (p.get('error'))     { toast('Connection failed: '+p.get('error'), 'error'); history.replaceState({},'','/'); }
 
   document.addEventListener('keydown', e => {
@@ -40,16 +40,60 @@ async function init() {
     if ((e.metaKey||e.ctrlKey) && e.key==='k') { e.preventDefault(); document.getElementById('search-input').focus(); }
   });
 
-  // Resizable compose
-  initComposeResize();
+  initComposeDragResize();
 }
 
 // ── Providers ──────────────────────────────────────────────────────────────
 function updateProviderButtons() {
   ['gmail','outlook'].forEach(p => {
     const btn = document.getElementById('btn-'+p);
-    if (!S.providers[p]) { btn.disabled=true; btn.classList.add('unavailable'); btn.title=p+' OAuth not configured'; }
+    if (!btn) return;
+    if (!S.providers[p]) { btn.disabled=true; btn.classList.add('unavailable'); btn.title='Not configured'; }
   });
+}
+
+// ── Accounts popup ─────────────────────────────────────────────────────────
+function toggleAccountsMenu(e) {
+  e.stopPropagation();
+  const popup = document.getElementById('accounts-popup');
+  const backdrop = document.getElementById('accounts-popup-backdrop');
+  if (popup.classList.contains('open')) {
+    closeAccountsMenu(); return;
+  }
+  renderAccountsPopup();
+  popup.classList.add('open');
+  backdrop.classList.add('open');
+}
+function closeAccountsMenu() {
+  document.getElementById('accounts-popup').classList.remove('open');
+  document.getElementById('accounts-popup-backdrop').classList.remove('open');
+}
+
+function renderAccountsPopup() {
+  const el = document.getElementById('accounts-popup-list');
+  if (!S.accounts.length) {
+    el.innerHTML = '<div style="font-size:12px;color:var(--muted);padding:8px 0">No accounts connected.</div>';
+    return;
+  }
+  el.innerHTML = S.accounts.map(a => `
+    <div class="acct-popup-item" title="${esc(a.email_address)}${a.last_error?' ⚠ '+esc(a.last_error):''}">
+      <div style="display:flex;align-items:center;gap:8px;flex:1;min-width:0">
+        <span class="account-dot" style="background:${a.color};flex-shrink:0"></span>
+        <span style="font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(a.display_name||a.email_address)}</span>
+        ${a.last_error?'<span style="color:var(--danger);font-size:11px">⚠</span>':''}
+      </div>
+      <div style="display:flex;gap:4px;flex-shrink:0">
+        <button class="icon-btn" title="Sync now" onclick="syncNow(${a.id},event)">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg>
+        </button>
+        <button class="icon-btn" title="Settings" onclick="openEditAccount(${a.id})">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
+        </button>
+        <button class="icon-btn" title="Remove" onclick="deleteAccount(${a.id})" style="color:var(--danger)">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+        </button>
+      </div>
+    </div>`).join('');
 }
 
 // ── Accounts ───────────────────────────────────────────────────────────────
@@ -57,54 +101,18 @@ async function loadAccounts() {
   const data = await api('GET','/accounts');
   if (!data) return;
   S.accounts = data;
-  renderAccounts();
+  renderAccountsPopup();
   populateComposeFrom();
-}
-
-function renderAccounts() {
-  const el = document.getElementById('accounts-list');
-  el.innerHTML = S.accounts.map(a => `
-    <div class="account-item" oncontextmenu="showAccountMenu(event,${a.id})"
-         title="${esc(a.email_address)}${a.last_error?' ⚠ '+esc(a.last_error):''}">
-      <div class="account-dot" style="background:${a.color}"></div>
-      <span class="account-email">${esc(a.email_address)}</span>
-      ${a.last_error?'<div class="account-error-dot"></div>':''}
-      <button onclick="syncNow(${a.id},event)" id="sync-btn-${a.id}" class="icon-sync-btn" title="Sync now">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg>
-      </button>
-    </div>`).join('');
-}
-
-function showAccountMenu(e, id) {
-  e.preventDefault(); e.stopPropagation();
-  const a = S.accounts.find(a=>a.id===id);
-  showCtxMenu(e, `
-    <div class="ctx-item" onclick="syncNow(${id});closeMenu()">↻ Sync now</div>
-    <div class="ctx-item" onclick="openEditAccount(${id},true);closeMenu()">⚡ Test connection</div>
-    <div class="ctx-item" onclick="openEditAccount(${id});closeMenu()">✎ Edit credentials</div>
-    ${a?.last_error?`<div class="ctx-item" onclick="toast('${esc(a.last_error)}','error');closeMenu()">⚠ View last error</div>`:''}
-    <div class="ctx-sep"></div>
-    <div class="ctx-item danger" onclick="deleteAccount(${id});closeMenu()">🗑 Remove account</div>`);
-}
-
-async function syncNow(id, e) {
-  if (e) e.stopPropagation();
-  const btn = document.getElementById('sync-btn-'+id);
-  if (btn) { btn.style.opacity='0.3'; btn.style.pointerEvents='none'; }
-  const r = await api('POST','/accounts/'+id+'/sync');
-  if (btn) { btn.style.opacity=''; btn.style.pointerEvents=''; }
-  if (r?.ok) { toast('Synced '+(r.synced||0)+' messages','success'); loadAccounts(); loadFolders(); loadMessages(); }
-  else toast(r?.error||'Sync failed','error');
 }
 
 function connectOAuth(p) { location.href='/auth/'+p+'/connect'; }
 
-// ── Add Account modal ──────────────────────────────────────────────────────
 function openAddAccountModal() {
   ['imap-email','imap-name','imap-password','imap-host','smtp-host'].forEach(id=>{ const el=document.getElementById(id); if(el) el.value=''; });
   document.getElementById('imap-port').value='993';
   document.getElementById('smtp-port').value='587';
   const r=document.getElementById('test-result'); if(r){r.style.display='none';r.className='test-result';}
+  closeAccountsMenu();
   openModal('add-account-modal');
 }
 
@@ -135,8 +143,17 @@ async function addIMAPAccount() {
   else toast(r?.error||'Failed to add account','error');
 }
 
+async function syncNow(id, e) {
+  if (e) e.stopPropagation();
+  toast('Syncing…','info');
+  const r = await api('POST','/accounts/'+id+'/sync');
+  if (r?.ok) { toast('Synced '+(r.synced||0)+' messages','success'); loadAccounts(); loadFolders(); loadMessages(); }
+  else toast(r?.error||'Sync failed','error');
+}
+
 // ── Edit Account modal ─────────────────────────────────────────────────────
-async function openEditAccount(id, testAfterOpen) {
+async function openEditAccount(id) {
+  closeAccountsMenu();
   const r=await api('GET','/accounts/'+id);
   if (!r) return;
   document.getElementById('edit-account-id').value=id;
@@ -147,7 +164,6 @@ async function openEditAccount(id, testAfterOpen) {
   document.getElementById('edit-imap-port').value=r.imap_port||993;
   document.getElementById('edit-smtp-host').value=r.smtp_host||'';
   document.getElementById('edit-smtp-port').value=r.smtp_port||587;
-  // Sync settings
   document.getElementById('edit-sync-mode').value=r.sync_mode||'days';
   document.getElementById('edit-sync-days').value=r.sync_days||30;
   toggleSyncDaysField();
@@ -156,7 +172,6 @@ async function openEditAccount(id, testAfterOpen) {
   errEl.style.display=r.last_error?'block':'none';
   if (r.last_error) errEl.textContent='Last sync error: '+r.last_error;
   openModal('edit-account-modal');
-  if (testAfterOpen) setTimeout(testEditConnection,200);
 }
 
 function toggleSyncDaysField() {
@@ -198,10 +213,27 @@ async function saveAccountEdit() {
 
 async function deleteAccount(id) {
   const a=S.accounts.find(a=>a.id===id);
-  if (!confirm('Remove '+(a?a.email_address:id)+'?\nAll synced messages will be deleted.')) return;
-  const r=await api('DELETE','/accounts/'+id);
-  if (r?.ok){toast('Account removed','success');loadAccounts();loadFolders();loadMessages();}
-  else toast('Remove failed','error');
+  inlineConfirm(
+    'Remove '+(a?a.email_address:'this account')+'? All synced messages will be deleted.',
+    async () => {
+      const r=await api('DELETE','/accounts/'+id);
+      if (r?.ok){toast('Account removed','success');closeAccountsMenu();loadAccounts();loadFolders();loadMessages();}
+      else toast('Remove failed','error');
+    }
+  );
+}
+
+// ── Inline confirm (replaces browser confirm()) ────────────────────────────
+function inlineConfirm(message, onOk, onCancel) {
+  const el   = document.getElementById('inline-confirm');
+  const msg  = document.getElementById('inline-confirm-msg');
+  const ok   = document.getElementById('inline-confirm-ok');
+  const cancel = document.getElementById('inline-confirm-cancel');
+  msg.textContent = message;
+  el.classList.add('open');
+  const cleanup = () => { el.classList.remove('open'); ok.onclick=null; cancel.onclick=null; };
+  ok.onclick     = () => { cleanup(); onOk && onOk(); };
+  cancel.onclick = () => { cleanup(); onCancel && onCancel(); };
 }
 
 // ── Folders ────────────────────────────────────────────────────────────────
@@ -227,7 +259,8 @@ function renderFolders() {
   const el=document.getElementById('folders-by-account');
   const accMap={}; S.accounts.forEach(a=>accMap[a.id]=a);
   const byAcc={};
-  S.folders.forEach(f=>{(byAcc[f.account_id]=byAcc[f.account_id]||[]).push(f);});
+  // Only show non-hidden folders
+  S.folders.filter(f=>!f.is_hidden).forEach(f=>{(byAcc[f.account_id]=byAcc[f.account_id]||[]).push(f);});
   const prio=['inbox','sent','drafts','trash','spam','archive'];
   el.innerHTML=Object.entries(byAcc).map(([accId,folders])=>{
     const acc=accMap[parseInt(accId)];
@@ -239,26 +272,56 @@ function renderFolders() {
         <span style="width:6px;height:6px;border-radius:50%;background:${accColor};display:inline-block;flex-shrink:0"></span>
         ${esc(accEmail)}
       </div>`+sorted.map(f=>`
-      <div class="nav-item" id="nav-f${f.id}" onclick="selectFolder(${f.id},'${esc(f.name)}')"
-           oncontextmenu="showFolderMenu(event,${f.id},${acc.id})">
+      <div class="nav-item${f.sync_enabled?'':' folder-nosync'}" id="nav-f${f.id}" onclick="selectFolder(${f.id},'${esc(f.name)}')"
+           oncontextmenu="showFolderMenu(event,${f.id})">
         <svg viewBox="0 0 24 24" fill="currentColor">${FOLDER_ICONS[f.folder_type]||FOLDER_ICONS.custom}</svg>
         ${esc(f.name)}
         ${f.unread_count>0?`<span class="unread-badge">${f.unread_count}</span>`:''}
+        ${!f.sync_enabled?'<span style="font-size:9px;color:var(--muted);margin-left:auto" title="Sync disabled">⊘</span>':''}
       </div>`).join('');
   }).join('');
 }
 
-function showFolderMenu(e, folderId, accountId) {
+function showFolderMenu(e, folderId) {
   e.preventDefault(); e.stopPropagation();
+  const f = S.folders.find(f=>f.id===folderId);
+  if (!f) return;
+  const syncLabel = f.sync_enabled ? '⊘ Disable sync' : '↻ Enable sync';
+  const hideLabel = '👁 Hide from sidebar';
   showCtxMenu(e, `
     <div class="ctx-item" onclick="syncFolderNow(${folderId});closeMenu()">↻ Sync this folder</div>
-    <div class="ctx-item" onclick="selectFolder(${folderId});closeMenu()">📂 Open folder</div>`);
+    <div class="ctx-item" onclick="toggleFolderSync(${folderId});closeMenu()">${syncLabel}</div>
+    <div class="ctx-sep"></div>
+    <div class="ctx-item" onclick="hideFolder(${folderId});closeMenu()">${hideLabel}</div>`);
 }
 
 async function syncFolderNow(folderId) {
+  toast('Syncing folder…','info');
   const r=await api('POST','/folders/'+folderId+'/sync');
   if (r?.ok) { toast('Synced '+(r.synced||0)+' messages','success'); loadFolders(); loadMessages(); }
   else toast(r?.error||'Sync failed','error');
+}
+
+async function toggleFolderSync(folderId) {
+  const f = S.folders.find(f=>f.id===folderId);
+  if (!f) return;
+  const newSync = !f.sync_enabled;
+  const r = await api('PUT','/folders/'+folderId+'/visibility',{is_hidden:f.is_hidden, sync_enabled:newSync});
+  if (r?.ok) {
+    f.sync_enabled = newSync;
+    toast(newSync?'Folder sync enabled':'Folder sync disabled', 'success');
+    renderFolders();
+  } else toast('Update failed','error');
+}
+
+async function hideFolder(folderId) {
+  const f = S.folders.find(f=>f.id===folderId);
+  if (!f) return;
+  const r = await api('PUT','/folders/'+folderId+'/visibility',{is_hidden:true, sync_enabled:false});
+  if (r?.ok) {
+    toast('Folder hidden. Manage in account settings.','success');
+    await loadFolders();
+  } else toast('Update failed','error');
 }
 
 function updateUnreadBadge() {
@@ -460,10 +523,12 @@ async function moveMessage(msgId, folderId) {
 }
 
 async function deleteMessage(id) {
-  if(!confirm('Delete this message?')) return;
-  const r=await api('DELETE','/messages/'+id);
-  if(r?.ok){toast('Deleted','success');S.messages=S.messages.filter(m=>m.id!==id);renderMessageList();
-    if(S.currentMessage?.id===id)resetDetail();loadFolders();}
+  inlineConfirm('Delete this message?', async () => {
+    const r=await api('DELETE','/messages/'+id);
+    if(r?.ok){toast('Deleted','success');S.messages=S.messages.filter(m=>m.id!==id);renderMessageList();
+      if(S.currentMessage?.id===id)resetDetail();loadFolders();}
+    else toast('Delete failed','error');
+  });
 }
 
 function resetDetail() {
@@ -488,9 +553,12 @@ function openCompose(opts={}) {
   S.composeMode=opts.mode||'new'; S.composeReplyToId=opts.replyId||null;
   composeAttachments=[];
   document.getElementById('compose-title').textContent=opts.title||'New Message';
-  document.getElementById('compose-to').innerHTML='';
-  document.getElementById('compose-cc-tags').innerHTML='';
-  document.getElementById('compose-bcc-tags').innerHTML='';
+  document.getElementById('compose-minimised-label').textContent=opts.title||'New Message';
+  // Clear tag containers and re-init
+  ['compose-to','compose-cc-tags','compose-bcc-tags'].forEach(id=>{
+    const c=document.getElementById(id);
+    if(c){ c.innerHTML=''; initTagField(id); }
+  });
   document.getElementById('compose-subject').value=opts.subject||'';
   document.getElementById('cc-row').style.display='none';
   document.getElementById('bcc-row').style.display='none';
@@ -498,15 +566,49 @@ function openCompose(opts={}) {
   editor.innerHTML=opts.body||'';
   S.draftDirty=false;
   updateAttachList();
-  if (S.me?.compose_popup) {
-    openComposePopup();
-  } else {
-    document.getElementById('compose-overlay').classList.add('open');
-    // Focus the To field's input
-    setTimeout(()=>{ const inp=document.querySelector('#compose-to .tag-input'); if(inp) inp.focus(); },50);
-  }
+  showCompose();
+  setTimeout(()=>{ const inp=document.querySelector('#compose-to .tag-input'); if(inp) inp.focus(); },80);
   startDraftAutosave();
 }
+
+function showCompose() {
+  const d=document.getElementById('compose-dialog');
+  const m=document.getElementById('compose-minimised');
+  d.style.display='flex';
+  m.style.display='none';
+  S.composeVisible=true; S.composeMinimised=false;
+}
+
+function minimizeCompose() {
+  document.getElementById('compose-dialog').style.display='none';
+  document.getElementById('compose-minimised').style.display='flex';
+  S.composeMinimised=true;
+}
+
+function restoreCompose() {
+  showCompose();
+}
+
+function closeCompose(skipCheck) {
+  if (!skipCheck && S.draftDirty) {
+    inlineConfirm('Save draft before closing?',
+      ()=>{ saveDraft(); _closeCompose(); },
+      ()=>{ _closeCompose(); }
+    );
+    return;
+  }
+  _closeCompose();
+}
+
+function _closeCompose() {
+  document.getElementById('compose-dialog').style.display='none';
+  document.getElementById('compose-minimised').style.display='none';
+  clearDraftAutosave();
+  S.composeVisible=false; S.composeMinimised=false; S.draftDirty=false;
+}
+
+function showCCRow()  { document.getElementById('cc-row').style.display='flex'; }
+function showBCCRow() { document.getElementById('bcc-row').style.display='flex'; }
 
 function openReply() { if (S.currentMessage) openReplyTo(S.currentMessage.id); }
 
@@ -518,7 +620,6 @@ function openReplyTo(msgId) {
     subject:msg.subject&&!msg.subject.startsWith('Re:')?'Re: '+msg.subject:(msg.subject||''),
     body:`<br><br><div class="quote-divider">—— Original message ——</div><blockquote>${msg.body_html||('<pre>'+esc(msg.body_text||'')+'</pre>')}</blockquote>`,
   });
-  // Pre-fill To
   addTag('compose-to', msg.from_email||'');
 }
 
@@ -532,132 +633,108 @@ function openForward() {
   });
 }
 
-function closeCompose(skipDraftCheck) {
-  if (!skipDraftCheck && S.draftDirty) {
-    const choice=confirm('Save draft before closing?');
-    if (choice) { saveDraft(); return; }
-  }
-  clearDraftAutosave();
-  if (S.me?.compose_popup) {
-    const win=window._composeWin;
-    if (win&&!win.closed) win.close();
-  } else {
-    document.getElementById('compose-overlay').classList.remove('open');
-  }
-  S.draftDirty=false;
-}
-
 // ── Email Tag Input ────────────────────────────────────────────────────────
 function initTagField(containerId) {
   const container=document.getElementById(containerId);
   if (!container) return;
+  // Remove any existing input first
+  const old=container.querySelector('.tag-input');
+  if(old) old.remove();
+
   const inp=document.createElement('input');
-  inp.type='text'; inp.className='tag-input'; inp.placeholder=containerId==='compose-to'?'recipient@example.com':'';
+  inp.type='text';
+  inp.className='tag-input';
+  inp.placeholder=containerId==='compose-to'?'recipient@example.com':'';
+  inp.setAttribute('autocomplete','off');
+  inp.setAttribute('spellcheck','false');
   container.appendChild(inp);
+
+  const commit = () => {
+    const v=inp.value.trim().replace(/[,;\s]+$/,'');
+    if(v){ addTag(containerId,v); inp.value=''; }
+  };
+
   inp.addEventListener('keydown', e=>{
-    if ((e.key===' '||e.key==='Enter'||e.key===','||e.key===';') && inp.value.trim()) {
-      e.preventDefault();
-      addTag(containerId, inp.value.trim().replace(/[,;]$/,''));
-      inp.value='';
-    } else if (e.key==='Backspace'&&!inp.value) {
+    if(e.key==='Enter'||e.key===','||e.key===';') { e.preventDefault(); commit(); }
+    else if(e.key===' ') {
+      // Space commits only if value looks like an email
+      const v=inp.value.trim();
+      if(v && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) { e.preventDefault(); commit(); }
+    } else if(e.key==='Backspace'&&!inp.value) {
       const tags=container.querySelectorAll('.email-tag');
-      if (tags.length) tags[tags.length-1].remove();
+      if(tags.length) tags[tags.length-1].remove();
     }
+    S.draftDirty=true;
   });
-  inp.addEventListener('blur', ()=>{
-    if (inp.value.trim()) { addTag(containerId, inp.value.trim()); inp.value=''; }
-  });
-  container.addEventListener('click', ()=>inp.focus());
+  inp.addEventListener('blur', commit);
+  container.addEventListener('click', e=>{ if(e.target===container||e.target.tagName==='LABEL') inp.focus(); else if(!e.target.closest('.email-tag')) inp.focus(); });
 }
 
 function addTag(containerId, value) {
   if (!value) return;
   const container=document.getElementById(containerId);
   if (!container) return;
-  // Basic email validation
   const isValid=/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
   const tag=document.createElement('span');
   tag.className='email-tag'+(isValid?'':' invalid');
-  tag.textContent=value;
+  tag.dataset.email=value;
+  const label=document.createElement('span');
+  label.textContent=value;
   const remove=document.createElement('button');
-  remove.innerHTML='×'; remove.className='tag-remove';
+  remove.innerHTML='×'; remove.className='tag-remove'; remove.type='button';
   remove.onclick=e=>{e.stopPropagation();tag.remove();S.draftDirty=true;};
-  tag.appendChild(remove);
+  tag.appendChild(label); tag.appendChild(remove);
   const inp=container.querySelector('.tag-input');
-  container.insertBefore(tag, inp);
+  container.insertBefore(tag, inp||null);
   S.draftDirty=true;
 }
 
 function getTagValues(containerId) {
   return Array.from(document.querySelectorAll('#'+containerId+' .email-tag'))
-    .map(t=>t.textContent.replace('×','').trim()).filter(Boolean);
+    .map(t=>t.dataset.email||t.querySelector('span')?.textContent||'').filter(Boolean);
 }
 
 // ── Draft autosave ─────────────────────────────────────────────────────────
 function startDraftAutosave() {
   clearDraftAutosave();
-  S.draftTimer=setInterval(()=>{
-    if (S.draftDirty) saveDraft(true);
-  }, 60000); // every 60s
-  // Mark dirty on any edit
+  S.draftTimer=setInterval(()=>{ if(S.draftDirty) saveDraft(true); }, 60000);
   const editor=document.getElementById('compose-editor');
-  if (editor) editor.oninput=()=>S.draftDirty=true;
-  ['compose-subject'].forEach(id=>{
-    const el=document.getElementById(id);
-    if(el) el.oninput=()=>S.draftDirty=true;
-  });
+  if(editor) editor.oninput=()=>S.draftDirty=true;
 }
 
 function clearDraftAutosave() {
-  if (S.draftTimer) { clearInterval(S.draftTimer); S.draftTimer=null; }
+  if(S.draftTimer){ clearInterval(S.draftTimer); S.draftTimer=null; }
 }
 
 async function saveDraft(silent) {
-  const accountId=parseInt(document.getElementById('compose-from')?.value||0);
-  if (!accountId) return;
-  const to=getTagValues('compose-to');
-  const editor=document.getElementById('compose-editor');
-  // For now save as a local note — a real IMAP APPEND to Drafts would be ideal
-  // but for MVP we just suppress the dirty flag and toast
   S.draftDirty=false;
-  if (!silent) toast('Draft saved','success');
+  if(!silent) toast('Draft saved','success');
   else toast('Draft auto-saved','success');
 }
 
 // ── Compose formatting ─────────────────────────────────────────────────────
-function execFmt(cmd, val) {
-  document.getElementById('compose-editor').focus();
-  document.execCommand(cmd, false, val||null);
-}
-
+function execFmt(cmd,val) { document.getElementById('compose-editor').focus(); document.execCommand(cmd,false,val||null); }
 function triggerAttach() { document.getElementById('compose-attach-input').click(); }
-
-function handleAttachFiles(input) {
-  for (const file of input.files) composeAttachments.push({file,name:file.name,size:file.size});
-  input.value=''; updateAttachList(); S.draftDirty=true;
-}
-
+function handleAttachFiles(input) { for(const file of input.files) composeAttachments.push({file,name:file.name,size:file.size}); input.value=''; updateAttachList(); S.draftDirty=true; }
 function removeAttachment(i) { composeAttachments.splice(i,1); updateAttachList(); }
-
 function updateAttachList() {
   const el=document.getElementById('compose-attach-list');
-  if (!composeAttachments.length){el.innerHTML='';return;}
+  if(!composeAttachments.length){el.innerHTML='';return;}
   el.innerHTML=composeAttachments.map((a,i)=>`<div class="attachment-chip">
     📎 <span>${esc(a.name)}</span>
     <span style="color:var(--muted);font-size:10px">${formatSize(a.size)}</span>
-    <button onclick="removeAttachment(${i})" class="tag-remove">×</button>
+    <button onclick="removeAttachment(${i})" class="tag-remove" type="button">×</button>
   </div>`).join('');
 }
 
 async function sendMessage() {
   const accountId=parseInt(document.getElementById('compose-from')?.value||0);
   const to=getTagValues('compose-to');
-  if (!accountId||!to.length){toast('From account and To address required','error');return;}
+  if(!accountId||!to.length){toast('From account and To address required','error');return;}
   const editor=document.getElementById('compose-editor');
-  const bodyHTML=editor.innerHTML.trim();
-  const bodyText=editor.innerText.trim();
+  const bodyHTML=editor.innerHTML.trim(), bodyText=editor.innerText.trim();
   const btn=document.getElementById('send-btn');
-  btn.disabled=true;btn.textContent='Sending...';
+  btn.disabled=true; btn.textContent='Sending…';
   const endpoint=S.composeMode==='reply'?'/reply':S.composeMode==='forward'?'/forward':'/send';
   const r=await api('POST',endpoint,{
     account_id:accountId, to,
@@ -667,43 +744,67 @@ async function sendMessage() {
     body_text:bodyText, body_html:bodyHTML,
     in_reply_to_id:S.composeMode==='reply'?S.composeReplyToId:0,
   });
-  btn.disabled=false;btn.textContent='Send';
-  if (r?.ok){toast('Sent!','success');clearDraftAutosave();S.draftDirty=false;
-    document.getElementById('compose-overlay').classList.remove('open');}
+  btn.disabled=false; btn.textContent='Send';
+  if(r?.ok){ toast('Message sent!','success'); clearDraftAutosave(); _closeCompose(); }
   else toast(r?.error||'Send failed','error');
 }
 
-// ── Resizable compose ──────────────────────────────────────────────────────
-function initComposeResize() {
-  const win=document.getElementById('compose-window');
-  if (!win) return;
-  let resizing=false, startX, startY, startW, startH;
-  const handle=document.getElementById('compose-resize-handle');
-  if (!handle) return;
-  handle.addEventListener('mousedown', e=>{
-    resizing=true; startX=e.clientX; startY=e.clientY;
-    startW=win.offsetWidth; startH=win.offsetHeight;
-    document.addEventListener('mousemove', onMouseMove);
-    document.addEventListener('mouseup', ()=>{resizing=false;document.removeEventListener('mousemove',onMouseMove);});
-    e.preventDefault();
-  });
-  function onMouseMove(e) {
-    if (!resizing) return;
-    const newW=Math.max(360, startW+(e.clientX-startX));
-    const newH=Math.max(280, startH-(e.clientY-startY));
-    win.style.width=newW+'px';
-    win.style.height=newH+'px';
-    document.getElementById('compose-editor').style.height=(newH-240)+'px';
-  }
-}
+// ── Compose drag + all-edge resize ─────────────────────────────────────────
+function initComposeDragResize() {
+  const dlg=document.getElementById('compose-dialog');
+  if(!dlg) return;
 
-// ── Compose popup window ───────────────────────────────────────────────────
-function openComposePopup() {
-  const popup=window.open('','_blank','width=640,height=520,resizable=yes,scrollbars=yes');
-  window._composeWin=popup;
-  // Simpler: just use the in-page compose anyway for now; popup would need full HTML
-  // Fall back to in-page for robustness
-  document.getElementById('compose-overlay').classList.add('open');
+  // Default position — bottom-right
+  dlg.style.right='24px'; dlg.style.bottom='20px';
+  dlg.style.left='auto';  dlg.style.top='auto';
+
+  // Drag by header
+  const header=document.getElementById('compose-drag-handle');
+  if(header) {
+    let ox,oy,startL,startT;
+    header.addEventListener('mousedown', e=>{
+      if(e.target.closest('button')) return;
+      const r=dlg.getBoundingClientRect();
+      ox=e.clientX; oy=e.clientY; startL=r.left; startT=r.top;
+      dlg.style.left=startL+'px'; dlg.style.top=startT+'px';
+      dlg.style.right='auto'; dlg.style.bottom='auto';
+      const mm=ev=>{
+        dlg.style.left=Math.max(0,Math.min(window.innerWidth-dlg.offsetWidth, startL+(ev.clientX-ox)))+'px';
+        dlg.style.top= Math.max(0,Math.min(window.innerHeight-30,         startT+(ev.clientY-oy)))+'px';
+      };
+      const mu=()=>{ document.removeEventListener('mousemove',mm); document.removeEventListener('mouseup',mu); };
+      document.addEventListener('mousemove',mm);
+      document.addEventListener('mouseup',mu);
+      e.preventDefault();
+    });
+  }
+
+  // Resize handles
+  dlg.querySelectorAll('.compose-resize').forEach(handle=>{
+    const dir=handle.dataset.dir;
+    handle.addEventListener('mousedown', e=>{
+      const rect=dlg.getBoundingClientRect();
+      const startX=e.clientX,startY=e.clientY;
+      const startW=rect.width,startH=rect.height,startL=rect.left,startT=rect.top;
+      const mm=ev=>{
+        let w=startW,h=startH,l=startL,t=startT;
+        const dx=ev.clientX-startX, dy=ev.clientY-startY;
+        if(dir.includes('e')) w=Math.max(360,startW+dx);
+        if(dir.includes('w')){ w=Math.max(360,startW-dx); l=startL+startW-w; }
+        if(dir.includes('s')) h=Math.max(280,startH+dy);
+        if(dir.includes('n')){ h=Math.max(280,startH-dy); t=startT+startH-h; }
+        dlg.style.width=w+'px'; dlg.style.height=h+'px';
+        dlg.style.left=l+'px';  dlg.style.top=t+'px';
+        dlg.style.right='auto'; dlg.style.bottom='auto';
+        const editor=document.getElementById('compose-editor');
+        if(editor) editor.style.height=(h-242)+'px';
+      };
+      const mu=()=>{ document.removeEventListener('mousemove',mm); document.removeEventListener('mouseup',mu); };
+      document.addEventListener('mousemove',mm);
+      document.addEventListener('mouseup',mu);
+      e.preventDefault();
+    });
+  });
 }
 
 // ── Settings ───────────────────────────────────────────────────────────────
@@ -715,34 +816,27 @@ async function openSettings() {
 
 async function loadSyncInterval() {
   const r=await api('GET','/sync-interval');
-  if (r) document.getElementById('sync-interval-select').value=String(r.sync_interval||15);
+  if(r) document.getElementById('sync-interval-select').value=String(r.sync_interval||15);
 }
 
 async function saveSyncInterval() {
   const val=parseInt(document.getElementById('sync-interval-select').value)||0;
   const r=await api('PUT','/sync-interval',{sync_interval:val});
-  if (r?.ok) toast('Saved','success'); else toast('Failed','error');
-}
-
-async function saveComposePopupPref() {
-  const val=document.getElementById('compose-popup-toggle').checked;
-  await api('PUT','/compose-popup',{compose_popup:val});
-  if (S.me) S.me.compose_popup=val;
+  if(r?.ok) toast('Sync interval saved','success'); else toast('Failed','error');
 }
 
 async function changePassword() {
   const cur=document.getElementById('cur-pw').value, nw=document.getElementById('new-pw').value;
-  if (!cur||!nw){toast('Both fields required','error');return;}
+  if(!cur||!nw){toast('Both fields required','error');return;}
   const r=await api('POST','/change-password',{current_password:cur,new_password:nw});
-  if (r?.ok){toast('Password updated','success');document.getElementById('cur-pw').value='';document.getElementById('new-pw').value='';}
+  if(r?.ok){toast('Password updated','success');document.getElementById('cur-pw').value='';document.getElementById('new-pw').value='';}
   else toast(r?.error||'Failed','error');
 }
 
 async function renderMFAPanel() {
-  const me=await api('GET','/me');
-  if (!me) return;
+  const me=await api('GET','/me'); if(!me) return;
   const badge=document.getElementById('mfa-badge'), panel=document.getElementById('mfa-panel');
-  if (me.mfa_enabled) {
+  if(me.mfa_enabled) {
     badge.innerHTML='<span class="badge green">Enabled</span>';
     panel.innerHTML=`<p style="font-size:13px;color:var(--muted);margin-bottom:12px">TOTP active. Enter code to disable.</p>
       <div class="modal-field"><label>Code</label><input type="text" id="mfa-code" placeholder="000000" maxlength="6" inputmode="numeric"></div>
@@ -754,7 +848,7 @@ async function renderMFAPanel() {
 }
 
 async function beginMFASetup() {
-  const r=await api('POST','/mfa/setup'); if (!r) return;
+  const r=await api('POST','/mfa/setup'); if(!r) return;
   document.getElementById('mfa-panel').innerHTML=`
     <p style="font-size:13px;color:var(--muted);margin-bottom:12px">Scan with your authenticator app.</p>
     <div style="text-align:center;margin-bottom:14px"><img src="${r.qr_url}" style="border-radius:8px;background:white;padding:8px"></div>
@@ -764,11 +858,11 @@ async function beginMFASetup() {
 }
 async function confirmMFASetup() {
   const r=await api('POST','/mfa/confirm',{code:document.getElementById('mfa-code').value});
-  if (r?.ok){toast('MFA enabled','success');renderMFAPanel();}else toast(r?.error||'Invalid code','error');
+  if(r?.ok){toast('MFA enabled','success');renderMFAPanel();}else toast(r?.error||'Invalid code','error');
 }
 async function disableMFA() {
   const r=await api('POST','/mfa/disable',{code:document.getElementById('mfa-code').value});
-  if (r?.ok){toast('MFA disabled','success');renderMFAPanel();}else toast(r?.error||'Invalid code','error');
+  if(r?.ok){toast('MFA disabled','success');renderMFAPanel();}else toast(r?.error||'Invalid code','error');
 }
 
 async function doLogout() { await fetch('/auth/logout',{method:'POST'}); location.href='/auth/login'; }
@@ -783,19 +877,12 @@ function showCtxMenu(e, html) {
   });
 }
 
-// Close compose on overlay click
-document.addEventListener('click', e=>{
-  if (e.target===document.getElementById('compose-overlay')) {
-    if (S.draftDirty) { if (confirm('Save draft before closing?')) { saveDraft(); return; } }
-    closeCompose(true);
-  }
-});
-
-// Init tag fields after DOM is ready
+// ── Init tag fields on DOMContentLoaded ───────────────────────────────────
 document.addEventListener('DOMContentLoaded', ()=>{
+  // Tag fields are re-init each time openCompose() is called.
+  // Initial init here covers the first open.
   initTagField('compose-to');
   initTagField('compose-cc-tags');
   initTagField('compose-bcc-tags');
+  init();
 });
-
-init();
