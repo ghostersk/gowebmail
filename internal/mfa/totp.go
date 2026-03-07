@@ -10,6 +10,7 @@ import (
 	"encoding/base32"
 	"encoding/binary"
 	"fmt"
+	"log"
 	"math"
 	"net/url"
 	"strings"
@@ -17,9 +18,9 @@ import (
 )
 
 const (
-	totpDigits   = 6
-	totpPeriod   = 30 // seconds
-	totpWindow   = 1  // accept ±1 period to allow for clock skew
+	totpDigits = 6
+	totpPeriod = 30 // seconds
+	totpWindow = 2  // accept ±2 periods (±60s) to handle clock skew and slow input
 )
 
 // GenerateSecret creates a new random 20-byte (160-bit) TOTP secret,
@@ -58,15 +59,19 @@ func QRCodeURL(issuer, accountName, secret string) string {
 
 // Validate checks whether code is a valid TOTP code for secret at the current time.
 // It accepts codes from [now-window*period, now+window*period] to handle clock skew.
+// Handles both padded and unpadded base32 secrets.
 func Validate(secret, code string) bool {
 	code = strings.TrimSpace(code)
 	if len(code) != totpDigits {
 		return false
 	}
-	keyBytes, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(
-		strings.ToUpper(secret),
-	)
+	// Normalise: uppercase, strip spaces and padding, then re-decode.
+	// Accept both padded (JBSWY3DP====) and unpadded (JBSWY3DP) base32.
+	cleaned := strings.ToUpper(strings.ReplaceAll(secret, " ", ""))
+	cleaned = strings.TrimRight(cleaned, "=")
+	keyBytes, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(cleaned)
 	if err != nil {
+		log.Printf("mfa: base32 decode error (secret len=%d): %v", len(secret), err)
 		return false
 	}
 	now := time.Now().Unix()

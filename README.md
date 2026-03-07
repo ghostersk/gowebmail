@@ -44,7 +44,22 @@ go run ./cmd/server/main.go
 # check ./data/gomail.conf what gets generated on first run if not exists, update as needed.
 # then restart the app
 ```
+### Reset Admin password, MFA
 
+```bash
+# List all admins with MFA status
+./gowebmail --list-admin
+
+# USERNAME                  EMAIL                                 MFA
+# --------                  -----                                 ---
+# admin                     admin@example.com                     ON
+
+# Reset an admin's password (min 8 chars)
+./gowebmail --pw admin "NewSecurePass123"
+
+# Disable MFA so a locked-out admin can log in again
+./gowebmail --mfa-off admin
+```
 ## Setting up OAuth2
 
 ### Gmail

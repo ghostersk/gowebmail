@@ -308,6 +308,63 @@ func (d *DB) UpdateUserPassword(userID int64, newPassword string) error {
 	return err
 }
 
+// AdminListAdmins returns (username, email, mfa_enabled) for all admin-role users.
+func (d *DB) AdminListAdmins() ([]struct {
+	Username   string
+	Email      string
+	MFAEnabled bool
+}, error) {
+	rows, err := d.sql.Query(`SELECT username, email, mfa_enabled FROM users WHERE role='admin' ORDER BY username`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []struct {
+		Username   string
+		Email      string
+		MFAEnabled bool
+	}
+	for rows.Next() {
+		var r struct {
+			Username   string
+			Email      string
+			MFAEnabled bool
+		}
+		rows.Scan(&r.Username, &r.Email, &r.MFAEnabled)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// AdminResetPassword sets a new password for an admin user by username (admin-only check).
+func (d *DB) AdminResetPassword(username, newPassword string) error {
+	// Verify user exists and is admin
+	var id int64
+	var role string
+	err := d.sql.QueryRow(`SELECT id, role FROM users WHERE username=?`, username).Scan(&id, &role)
+	if err != nil || id == 0 {
+		return fmt.Errorf("user %q not found", username)
+	}
+	if role != "admin" {
+		return fmt.Errorf("user %q is not an admin (use the web UI for regular users)", username)
+	}
+	return d.UpdateUserPassword(id, newPassword)
+}
+
+// AdminDisableMFA disables MFA for an admin user by username (admin-only check).
+func (d *DB) AdminDisableMFA(username string) error {
+	var id int64
+	var role string
+	err := d.sql.QueryRow(`SELECT id, role FROM users WHERE username=?`, username).Scan(&id, &role)
+	if err != nil || id == 0 {
+		return fmt.Errorf("user %q not found", username)
+	}
+	if role != "admin" {
+		return fmt.Errorf("user %q is not an admin (use the web UI for regular users)", username)
+	}
+	return d.DisableMFA(id)
+}
+
 func (d *DB) SetUserActive(userID int64, active bool) error {
 	v := 0
 	if active {

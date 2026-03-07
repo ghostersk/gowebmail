@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -19,6 +20,38 @@ import (
 )
 
 func main() {
+	// ── CLI admin commands (run without starting the HTTP server) ──────────
+	// Usage:
+	//   ./gomail --list-admin              list all admin usernames
+	//   ./gomail --pw <username> <pass>    reset an admin's password
+	//   ./gomail --mfa-off <username>      disable MFA for an admin
+	args := os.Args[1:]
+	if len(args) > 0 {
+		switch args[0] {
+		case "--list-admin":
+			runListAdmins()
+			return
+		case "--pw":
+			if len(args) < 3 {
+				fmt.Fprintln(os.Stderr, "Usage: gomail --pw <username> \"<password>\"")
+				os.Exit(1)
+			}
+			runResetPassword(args[1], args[2])
+			return
+		case "--mfa-off":
+			if len(args) < 2 {
+				fmt.Fprintln(os.Stderr, "Usage: gomail --mfa-off <username>")
+				os.Exit(1)
+			}
+			runDisableMFA(args[1])
+			return
+		case "--help", "-h":
+			printHelp()
+			return
+		}
+	}
+
+	// ── Normal server startup ──────────────────────────────────────────────
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("config load: %v", err)
@@ -185,3 +218,90 @@ func main() {
 	defer cancel()
 	srv.Shutdown(ctx)
 }
+
+// ── CLI helpers ────────────────────────────────────────────────────────────
+
+func openDB() (*db.DB, func()) {
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
+		os.Exit(1)
+	}
+	database, err := db.New(cfg.DBPath, cfg.EncryptionKey)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error opening database: %v\n", err)
+		os.Exit(1)
+	}
+	return database, func() { database.Close() }
+}
+
+func runListAdmins() {
+	database, close := openDB()
+	defer close()
+
+	admins, err := database.AdminListAdmins()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	if len(admins) == 0 {
+		fmt.Println("No admin accounts found.")
+		return
+	}
+	fmt.Printf("%-24s  %-36s  %s\n", "USERNAME", "EMAIL", "MFA")
+	fmt.Printf("%-24s  %-36s  %s\n", "--------", "-----", "---")
+	for _, a := range admins {
+		mfaStatus := "off"
+		if a.MFAEnabled {
+			mfaStatus = "ON"
+		}
+		fmt.Printf("%-24s  %-36s  %s\n", a.Username, a.Email, mfaStatus)
+	}
+}
+
+func runResetPassword(username, password string) {
+	if len(password) < 8 {
+		fmt.Fprintln(os.Stderr, "Error: password must be at least 8 characters")
+		os.Exit(1)
+	}
+	database, close := openDB()
+	defer close()
+
+	if err := database.AdminResetPassword(username, password); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("Password updated for admin '%s'.\n", username)
+}
+
+func runDisableMFA(username string) {
+	database, close := openDB()
+	defer close()
+
+	if err := database.AdminDisableMFA(username); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("MFA disabled for admin '%s'. They can now log in with password only.\n", username)
+}
+
+func printHelp() {
+	fmt.Print(`GoMail — Admin CLI
+
+Usage:
+  gomail                          Start the mail server
+  gomail --list-admin             List all admin accounts (username, email, MFA status)
+  gomail --pw <username> <pass>   Reset password for an admin account
+  gomail --mfa-off <username>     Disable MFA for an admin account
+
+Examples:
+  ./gomail --list-admin
+  ./gomail --pw admin "NewSecurePass123"
+  ./gomail --mfa-off admin
+
+Note: These commands only work on admin accounts.
+      Regular user management is done through the web UI.
+      Requires the same environment variables as the server (DB_PATH, ENCRYPTION_KEY, etc).
+`)
+}
+
