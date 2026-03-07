@@ -592,18 +592,23 @@ func (h *APIHandler) MoveMessage(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		uid, srcPath, account, err := h.db.GetMessageIMAPInfo(messageID, userID)
 		if err != nil || uid == 0 || account == nil {
+			log.Printf("IMAP move: GetMessageIMAPInfo msg=%d err=%v uid=%d", messageID, err, uid)
 			return
 		}
 		destFolder, err := h.db.GetFolderByID(req.FolderID)
 		if err != nil || destFolder == nil {
+			log.Printf("IMAP move: GetFolderByID folder=%d err=%v", req.FolderID, err)
 			return
 		}
 		c, err := email.Connect(context.Background(), account)
 		if err != nil {
+			log.Printf("IMAP move: Connect account=%d err=%v", account.ID, err)
 			return
 		}
 		defer c.Close()
-		_ = c.MoveByUID(srcPath, destFolder.FullPath, uid)
+		if err := c.MoveByUID(srcPath, destFolder.FullPath, uid); err != nil {
+			log.Printf("IMAP move: MoveByUID uid=%d src=%s dst=%s err=%v", uid, srcPath, destFolder.FullPath, err)
+		}
 	}()
 
 	if err := h.db.MoveMessage(messageID, userID, req.FolderID); err != nil {
@@ -621,14 +626,15 @@ func (h *APIHandler) DeleteMessage(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		uid, folderPath, account, err := h.db.GetMessageIMAPInfo(messageID, userID)
 		if err != nil || uid == 0 || account == nil {
+			log.Printf("IMAP delete: GetMessageIMAPInfo msg=%d err=%v uid=%d", messageID, err, uid)
 			return
 		}
 		c, err := email.Connect(context.Background(), account)
 		if err != nil {
+			log.Printf("IMAP delete: Connect account=%d err=%v", account.ID, err)
 			return
 		}
 		defer c.Close()
-		// Find trash folder name
 		mailboxes, _ := c.ListMailboxes()
 		var trashName string
 		for _, mb := range mailboxes {
@@ -637,7 +643,9 @@ func (h *APIHandler) DeleteMessage(w http.ResponseWriter, r *http.Request) {
 				break
 			}
 		}
-		_ = c.DeleteByUID(folderPath, uid, trashName)
+		if err := c.DeleteByUID(folderPath, uid, trashName); err != nil {
+			log.Printf("IMAP delete: DeleteByUID uid=%d folder=%s trash=%s err=%v", uid, folderPath, trashName, err)
+		}
 	}()
 
 	if err := h.db.DeleteMessage(messageID, userID); err != nil {
@@ -815,15 +823,44 @@ func (h *APIHandler) GetMessageHeaders(w http.ResponseWriter, r *http.Request) {
 		"Subject":    msg.Subject,
 		"Date":       msg.Date.Format("Mon, 02 Jan 2006 15:04:05 -0700"),
 	}
-	// Build a pseudo-raw header block for display
-	var raw strings.Builder
-	order := []string{"Date", "From", "To", "Cc", "Bcc", "Reply-To", "Subject", "Message-ID"}
-	for _, k := range order {
-		if v := headers[k]; v != "" {
-			fmt.Fprintf(&raw, "%s: %s\r\n", k, v)
+
+	// Try to fetch real raw headers from IMAP server
+	rawHeaders := ""
+	uid, folderPath, account, iErr := h.db.GetMessageIMAPInfo(messageID, userID)
+	if iErr == nil && uid != 0 && account != nil {
+		if c, cErr := email.Connect(context.Background(), account); cErr == nil {
+			defer c.Close()
+			if raw, rErr := c.FetchRawByUID(folderPath, uid); rErr == nil {
+				// Extract only the header section (before first blank line)
+				rawStr := string(raw)
+				if idx := strings.Index(rawStr, "\r\n\r\n"); idx != -1 {
+					rawHeaders = rawStr[:idx+2]
+				} else if idx := strings.Index(rawStr, "\n\n"); idx != -1 {
+					rawHeaders = rawStr[:idx+1]
+				} else {
+					rawHeaders = rawStr
+				}
+			} else {
+				log.Printf("FetchRawByUID for headers msg=%d: %v", messageID, rErr)
+			}
+		} else {
+			log.Printf("Connect for headers msg=%d: %v", messageID, cErr)
 		}
 	}
-	h.writeJSON(w, map[string]interface{}{"headers": headers, "raw": raw.String()})
+
+	// Fallback: reconstruct from stored fields
+	if rawHeaders == "" {
+		var b strings.Builder
+		order := []string{"Date", "From", "To", "Cc", "Bcc", "Reply-To", "Subject", "Message-ID"}
+		for _, k := range order {
+			if v := headers[k]; v != "" {
+				fmt.Fprintf(&b, "%s: %s\r\n", k, v)
+			}
+		}
+		rawHeaders = b.String()
+	}
+
+	h.writeJSON(w, map[string]interface{}{"headers": headers, "raw": rawHeaders})
 }
 
 func (h *APIHandler) StarredMessages(w http.ResponseWriter, r *http.Request) {

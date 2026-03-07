@@ -172,6 +172,8 @@ func (d *DB) Migrate() error {
 		// Default: primary folder types sync by default, others don't.
 		`ALTER TABLE folders ADD COLUMN is_hidden INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE folders ADD COLUMN sync_enabled INTEGER NOT NULL DEFAULT 1`,
+		// Plaintext search index column — stores decrypted subject+from+preview for LIKE search.
+		`ALTER TABLE messages ADD COLUMN search_text TEXT NOT NULL DEFAULT ''`,
 	}
 	for _, stmt := range alterStmts {
 		d.sql.Exec(stmt) // ignore "duplicate column" errors intentionally
@@ -763,19 +765,28 @@ func (d *DB) UpsertMessage(m *models.Message) error {
 	bodyTextEnc, _ := d.enc.Encrypt(m.BodyText)
 	bodyHTMLEnc, _ := d.enc.Encrypt(m.BodyHTML)
 
+	// Build plaintext search index: subject + from name + from email + first 200 chars of body
+	preview := m.BodyText
+	if len(preview) > 200 {
+		preview = preview[:200]
+	}
+	searchText := strings.ToLower(m.Subject + " " + m.FromName + " " + m.FromEmail + " " + preview)
+
 	res, err := d.sql.Exec(`
 		INSERT INTO messages
 			(account_id, folder_id, remote_uid, thread_id, message_id,
 			 subject, from_name, from_email, to_list, cc_list, bcc_list, reply_to,
-			 body_text, body_html, date, is_read, is_starred, is_draft, has_attachment)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+			 body_text, body_html, date, is_read, is_starred, is_draft, has_attachment, search_text)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(account_id, folder_id, remote_uid) DO UPDATE SET
 			is_read=excluded.is_read,
-			is_starred=excluded.is_starred`,
+			is_starred=excluded.is_starred,
+			has_attachment=excluded.has_attachment,
+			search_text=excluded.search_text`,
 		m.AccountID, m.FolderID, m.RemoteUID, m.ThreadID, m.MessageID,
 		subjectEnc, fromNameEnc, fromEmailEnc, toEnc, ccEnc, bccEnc, replyToEnc,
 		bodyTextEnc, bodyHTMLEnc, m.Date,
-		m.IsRead, m.IsStarred, m.IsDraft, m.HasAttachment,
+		m.IsRead, m.IsStarred, m.IsDraft, m.HasAttachment, searchText,
 	)
 	if err != nil {
 		return err
@@ -902,15 +913,15 @@ func (d *DB) ListMessages(userID int64, folderIDs []int64, accountID int64, page
 
 func (d *DB) SearchMessages(userID int64, q string, page, pageSize int) (*models.PagedMessages, error) {
 	offset := (page - 1) * pageSize
-	like := "%" + q + "%"
-	args := []interface{}{userID, like, like, like, like, pageSize, offset}
+	like := "%" + strings.ToLower(q) + "%"
+	args := []interface{}{userID, like, pageSize, offset}
 
 	var total int
 	d.sql.QueryRow(`
 		SELECT COUNT(*) FROM messages m
 		JOIN email_accounts a ON a.id=m.account_id
-		WHERE a.user_id=? AND (m.subject LIKE ? OR m.from_email LIKE ? OR m.from_name LIKE ? OR m.body_text LIKE ?)`,
-		userID, like, like, like, like,
+		WHERE a.user_id=? AND m.search_text LIKE ?`,
+		userID, like,
 	).Scan(&total)
 
 	rows, err := d.sql.Query(`
@@ -920,7 +931,7 @@ func (d *DB) SearchMessages(userID int64, q string, page, pageSize int) (*models
 		FROM messages m
 		JOIN email_accounts a ON a.id=m.account_id
 		JOIN folders f ON f.id=m.folder_id
-		WHERE a.user_id=? AND (m.subject LIKE ? OR m.from_email LIKE ? OR m.from_name LIKE ? OR m.body_text LIKE ?)
+		WHERE a.user_id=? AND m.search_text LIKE ?
 		ORDER BY m.date DESC LIMIT ? OFFSET ?`, args...,
 	)
 	if err != nil {

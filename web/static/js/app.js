@@ -188,8 +188,15 @@ async function openEditAccount(id) {
   document.getElementById('edit-imap-port').value=r.imap_port||993;
   document.getElementById('edit-smtp-host').value=r.smtp_host||'';
   document.getElementById('edit-smtp-port').value=r.smtp_port||587;
-  document.getElementById('edit-sync-mode').value=r.sync_mode||'days';
   document.getElementById('edit-sync-days').value=r.sync_days||30;
+  // Restore sync mode select: map stored days/mode back to a preset option
+  const sel = document.getElementById('edit-sync-mode');
+  if (r.sync_mode==='all' || !r.sync_days) {
+    sel.value='all';
+  } else {
+    const presetMap={30:'preset-30',90:'preset-90',180:'preset-180',365:'preset-365',730:'preset-730',1825:'preset-1825'};
+    sel.value = presetMap[r.sync_days] || 'days';
+  }
   toggleSyncDaysField();
   const errEl=document.getElementById('edit-last-error'), connEl=document.getElementById('edit-conn-result');
   connEl.style.display='none';
@@ -237,7 +244,7 @@ async function unhideFolder(folderId) {
 function toggleSyncDaysField() {
   const mode=document.getElementById('edit-sync-mode')?.value;
   const row=document.getElementById('edit-sync-days-row');
-  if (row) row.style.display=(mode==='all')?'none':'flex';
+  if (row) row.style.display=(mode==='days')?'flex':'none';
 }
 
 async function testEditConnection() {
@@ -260,11 +267,18 @@ async function saveAccountEdit() {
     smtp_host:document.getElementById('edit-smtp-host').value.trim(),smtp_port:parseInt(document.getElementById('edit-smtp-port').value)||587};
   const pw=document.getElementById('edit-password').value;
   if (pw) body.password=pw;
+  const modeVal = document.getElementById('edit-sync-mode').value;
+  let syncMode='all', syncDays=0;
+  if (modeVal==='days') {
+    syncMode='days'; syncDays=parseInt(document.getElementById('edit-sync-days').value)||30;
+  } else if (modeVal.startsWith('preset-')) {
+    syncMode='days'; syncDays=parseInt(modeVal.replace('preset-',''));
+  } // else 'all': syncMode='all', syncDays=0
   const [r1, r2] = await Promise.all([
     api('PUT','/accounts/'+id, body),
     api('PUT','/accounts/'+id+'/sync-settings',{
-      sync_mode: document.getElementById('edit-sync-mode').value,
-      sync_days: parseInt(document.getElementById('edit-sync-days').value)||30,
+      sync_mode: syncMode,
+      sync_days: syncDays,
     }),
   ]);
   if (r1?.ok){toast('Account updated','success');closeModal('edit-account-modal');loadAccounts();}

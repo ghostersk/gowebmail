@@ -236,8 +236,8 @@ func (c *Client) ListMailboxes() ([]*imap.MailboxInfo, error) {
 	return result, <-done
 }
 
-// FetchMessages fetches messages received within the last `days` days.
-// Falls back to the most recent 200 if the server does not support SEARCH.
+// FetchMessages fetches messages from a mailbox.
+// If days <= 0, fetches ALL messages. Otherwise fetches messages since `days` days ago.
 func (c *Client) FetchMessages(mailboxName string, days int) ([]*gomailModels.Message, error) {
 	mbox, err := c.imap.Select(mailboxName, true)
 	if err != nil {
@@ -247,15 +247,22 @@ func (c *Client) FetchMessages(mailboxName string, days int) ([]*gomailModels.Me
 		return nil, nil
 	}
 
-	since := time.Now().AddDate(0, 0, -days)
-	criteria := imap.NewSearchCriteria()
-	criteria.Since = since
+	var uids []uint32
+	if days <= 0 {
+		// Fetch ALL messages — empty criteria matches everything
+		uids, err = c.imap.UidSearch(imap.NewSearchCriteria())
+	} else {
+		since := time.Now().AddDate(0, 0, -days)
+		criteria := imap.NewSearchCriteria()
+		criteria.Since = since
+		uids, err = c.imap.UidSearch(criteria)
+	}
 
-	uids, err := c.imap.Search(criteria)
 	if err != nil || len(uids) == 0 {
+		// Fallback: fetch last 500 by sequence number
 		from := uint32(1)
-		if mbox.Messages > 200 {
-			from = mbox.Messages - 199
+		if mbox.Messages > 500 {
+			from = mbox.Messages - 499
 		}
 		seqSet := new(imap.SeqSet)
 		seqSet.AddRange(from, mbox.Messages)
@@ -266,7 +273,7 @@ func (c *Client) FetchMessages(mailboxName string, days int) ([]*gomailModels.Me
 	for _, uid := range uids {
 		seqSet.AddNum(uid)
 	}
-	return c.fetchBySeqSet(seqSet)
+	return c.fetchByUIDSet(seqSet)
 }
 
 func (c *Client) fetchBySeqSet(seqSet *imap.SeqSet) ([]*gomailModels.Message, error) {
@@ -292,6 +299,33 @@ func (c *Client) fetchBySeqSet(seqSet *imap.SeqSet) ([]*gomailModels.Message, er
 	}
 	if err := <-done; err != nil {
 		return results, fmt.Errorf("fetch: %w", err)
+	}
+	return results, nil
+}
+
+// fetchByUIDSet fetches messages by UID set (used when UIDs are returned from UidSearch).
+func (c *Client) fetchByUIDSet(seqSet *imap.SeqSet) ([]*gomailModels.Message, error) {
+	items := []imap.FetchItem{
+		imap.FetchUid, imap.FetchEnvelope,
+		imap.FetchFlags, imap.FetchBodyStructure,
+		imap.FetchRFC822,
+	}
+
+	ch := make(chan *imap.Message, 64)
+	done := make(chan error, 1)
+	go func() { done <- c.imap.UidFetch(seqSet, items, ch) }()
+
+	var results []*gomailModels.Message
+	for msg := range ch {
+		m, err := parseIMAPMessage(msg, c.account)
+		if err != nil {
+			log.Printf("parse message uid=%d: %v", msg.Uid, err)
+			continue
+		}
+		results = append(results, m)
+	}
+	if err := <-done; err != nil {
+		return results, fmt.Errorf("uid fetch: %w", err)
 	}
 	return results, nil
 }

@@ -95,7 +95,7 @@ func (s *Scheduler) SyncFolderNow(accountID, folderID int64) (int, error) {
 	defer c.Close()
 	days := account.SyncDays
 	if days <= 0 || account.SyncMode == "all" {
-		days = 36500 // ~100 years = full mailbox
+		days = 0 // 0 = fetch ALL via IMAP ALL criteria
 	}
 	messages, err := c.FetchMessages(folder.FullPath, days)
 	if err != nil {
@@ -170,7 +170,7 @@ func (s *Scheduler) doSync(account *models.EmailAccount) (int, error) {
 
 		days := account.SyncDays
 		if days <= 0 || account.SyncMode == "all" {
-			days = 36500 // ~100 years = full mailbox
+			days = 0 // 0 = fetch ALL via IMAP ALL criteria
 		}
 		messages, err := c.FetchMessages(mb.Name, days)
 		if err != nil {
