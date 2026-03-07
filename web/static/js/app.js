@@ -25,7 +25,8 @@ async function init() {
   if (providers) { S.providers = providers; updateProviderButtons(); }
   if (wl?.whitelist) S.remoteWhitelist = new Set(wl.whitelist);
 
-  await Promise.all([loadAccounts(), loadFolders()]);
+  await loadAccounts();      // must complete before loadFolders so colors are available
+  await loadFolders();
   await loadMessages();
 
   const p = new URLSearchParams(location.search);
@@ -229,11 +230,14 @@ function renderFolders() {
   S.folders.forEach(f=>{(byAcc[f.account_id]=byAcc[f.account_id]||[]).push(f);});
   const prio=['inbox','sent','drafts','trash','spam','archive'];
   el.innerHTML=Object.entries(byAcc).map(([accId,folders])=>{
-    const acc=accMap[parseInt(accId)]; if(!acc) return '';
+    const acc=accMap[parseInt(accId)];
+    const accColor = acc?.color || '#888';
+    const accEmail = acc?.email_address || 'Account '+accId;
+    if(!folders?.length) return '';
     const sorted=[...prio.map(t=>folders.find(f=>f.folder_type===t)).filter(Boolean),...folders.filter(f=>f.folder_type==='custom')];
     return `<div class="nav-folder-header">
-        <span style="width:6px;height:6px;border-radius:50%;background:${acc.color};display:inline-block;flex-shrink:0"></span>
-        ${esc(acc.email_address)}
+        <span style="width:6px;height:6px;border-radius:50%;background:${accColor};display:inline-block;flex-shrink:0"></span>
+        ${esc(accEmail)}
       </div>`+sorted.map(f=>`
       <div class="nav-item" id="nav-f${f.id}" onclick="selectFolder(${f.id},'${esc(f.name)}')"
            oncontextmenu="showFolderMenu(event,${f.id},${acc.id})">

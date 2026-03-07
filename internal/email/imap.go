@@ -471,17 +471,61 @@ func InferFolderType(name string, attributes []string) string {
 
 // ---- SMTP Send ----
 
+// plainAuthNoTLSCheck implements smtp.Auth for AUTH PLAIN without
+// Go stdlib's built-in TLS-required restriction.
+type plainAuthNoTLSCheck struct{ username, password string }
+
+func (a *plainAuthNoTLSCheck) Start(_ *smtp.ServerInfo) (string, []byte, error) {
+	// AUTH PLAIN payload: \0username\0password
+	b := []byte("\x00" + a.username + "\x00" + a.password)
+	return "PLAIN", b, nil
+}
+func (a *plainAuthNoTLSCheck) Next(_ []byte, more bool) ([]byte, error) {
+	if more {
+		return nil, fmt.Errorf("unexpected server challenge")
+	}
+	return nil, nil
+}
+
+// loginAuth implements AUTH LOGIN (older servers that don't support PLAIN).
+type loginAuth struct{ username, password string }
+
+func (a *loginAuth) Start(_ *smtp.ServerInfo) (string, []byte, error) {
+	return "LOGIN", nil, nil
+}
+func (a *loginAuth) Next(fromServer []byte, more bool) ([]byte, error) {
+	if !more {
+		return nil, nil
+	}
+	prompt := strings.ToLower(strings.TrimSpace(string(fromServer)))
+	switch {
+	case strings.Contains(prompt, "username") || strings.Contains(prompt, "user"):
+		return []byte(a.username), nil
+	case strings.Contains(prompt, "password") || strings.Contains(prompt, "pass"):
+		return []byte(a.password), nil
+	}
+	return nil, fmt.Errorf("unexpected login prompt: %s", fromServer)
+}
+
 func authSMTP(c *smtp.Client, account *gomailModels.EmailAccount, host string) error {
 	switch account.Provider {
 	case gomailModels.ProviderGmail, gomailModels.ProviderOutlook:
 		return c.Auth(&xoauth2SMTP{user: account.EmailAddress, token: account.AccessToken})
 	default:
-		ok, _ := c.Extension("AUTH")
+		ok, authAdvert := c.Extension("AUTH")
 		if !ok {
+			// No AUTH advertised — some servers (e.g. local relays) don't require it
 			return nil
 		}
-		// PlainAuth requires the correct hostname for TLS verification
-		return c.Auth(smtp.PlainAuth("", account.EmailAddress, account.AccessToken, host))
+		authLine := strings.ToUpper(authAdvert)
+		if strings.Contains(authLine, "PLAIN") {
+			return c.Auth(&plainAuthNoTLSCheck{username: account.EmailAddress, password: account.AccessToken})
+		}
+		if strings.Contains(authLine, "LOGIN") {
+			return c.Auth(&loginAuth{username: account.EmailAddress, password: account.AccessToken})
+		}
+		// Fall back to PLAIN anyway (most servers accept it even if not advertised post-TLS)
+		return c.Auth(&plainAuthNoTLSCheck{username: account.EmailAddress, password: account.AccessToken})
 	}
 }
 
@@ -502,6 +546,7 @@ func SendMessageFull(ctx context.Context, account *gomailModels.EmailAccount, re
 	rawMsg := buf.Bytes()
 
 	addr := fmt.Sprintf("%s:%d", host, port)
+	log.Printf("[SMTP] dialing %s for account %s", addr, account.EmailAddress)
 
 	var c *smtp.Client
 	var err error
@@ -517,7 +562,12 @@ func SendMessageFull(ctx context.Context, account *gomailModels.EmailAccount, re
 		// Plain SMTP then upgrade with STARTTLS (port 587 / 25)
 		c, err = smtp.Dial(addr)
 		if err == nil {
-			if err2 := c.Hello("localhost"); err2 != nil {
+			// EHLO with sender's domain (not "localhost") to avoid rejection by strict MTAs
+			senderDomain := "localhost"
+			if parts := strings.Split(account.EmailAddress, "@"); len(parts) == 2 {
+				senderDomain = parts[1]
+			}
+			if err2 := c.Hello(senderDomain); err2 != nil {
 				c.Close()
 				return fmt.Errorf("SMTP EHLO: %w", err2)
 			}
@@ -535,11 +585,12 @@ func SendMessageFull(ctx context.Context, account *gomailModels.EmailAccount, re
 	defer c.Close()
 
 	if err := authSMTP(c, account, host); err != nil {
-		return fmt.Errorf("SMTP auth: %w", err)
+		return fmt.Errorf("SMTP auth failed for %s: %w", account.EmailAddress, err)
 	}
+	log.Printf("[SMTP] auth OK")
 
 	if err := c.Mail(account.EmailAddress); err != nil {
-		return fmt.Errorf("MAIL FROM: %w", err)
+		return fmt.Errorf("SMTP MAIL FROM <%s>: %w", account.EmailAddress, err)
 	}
 
 	allRcpt := append(append([]string{}, req.To...), req.CC...)
@@ -550,7 +601,7 @@ func SendMessageFull(ctx context.Context, account *gomailModels.EmailAccount, re
 			continue
 		}
 		if err := c.Rcpt(rcpt); err != nil {
-			return fmt.Errorf("RCPT %s: %w", rcpt, err)
+			return fmt.Errorf("SMTP RCPT TO <%s>: %w", rcpt, err)
 		}
 	}
 
@@ -563,11 +614,11 @@ func SendMessageFull(ctx context.Context, account *gomailModels.EmailAccount, re
 		return fmt.Errorf("SMTP write: %w", err)
 	}
 	if err := wc.Close(); err != nil {
-		return fmt.Errorf("SMTP DATA close: %w", err)
+		// DATA close is where the server accepts or rejects the message
+		return fmt.Errorf("SMTP server rejected message: %w", err)
 	}
-	if err := c.Quit(); err != nil {
-		log.Printf("SMTP QUIT: %v (ignored)", err)
-	}
+	log.Printf("[SMTP] message accepted by server")
+	_ = c.Quit()
 
 	// Append to Sent folder via IMAP (best-effort, don't fail the send)
 	go func() {
