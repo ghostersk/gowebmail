@@ -18,6 +18,12 @@ A self-hosted, encrypted web email client written entirely in Go. Supports Gmail
 - **Folder navigation** — per-account folder/label browsing
 - **Full-text search** — across all accounts locally
 - **Dark-themed web UI** — clean, keyboard-shortcut-friendly interface
+<img width="1213" height="848" alt="image" src="https://github.com/user-attachments/assets/955eda04-e358-4779-80e7-0a9b299ac110" />
+<img width="1261" height="921" alt="image" src="https://github.com/user-attachments/assets/40ee58e8-6c4b-45c3-974d-98cc8ccc45a5" />
+<img width="1153" height="907" alt="image" src="https://github.com/user-attachments/assets/ebc92335-f6b7-46ed-b9a2-84512f70e1b2" />
+<img width="551" height="669" alt="image" src="https://github.com/user-attachments/assets/412585c0-434a-4177-ab04-7db69da9d08a" />
+
+
 
 ## Architecture
 
