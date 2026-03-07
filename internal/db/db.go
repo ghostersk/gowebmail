@@ -276,13 +276,15 @@ func (d *DB) ListUsers() ([]*models.User, error) {
 		u := &models.User{}
 		var mfaSecretEnc, mfaPendingEnc string
 		var lastLogin sql.NullTime
+		var composePopup int
 		if err := rows.Scan(
 			&u.ID, &u.Email, &u.Username, &u.PasswordHash, &u.Role, &u.IsActive,
 			&u.MFAEnabled, &mfaSecretEnc, &mfaPendingEnc, &lastLogin,
-			&u.CreatedAt, &u.UpdatedAt,
+			&u.CreatedAt, &u.UpdatedAt, &u.SyncInterval, &composePopup,
 		); err != nil {
 			return nil, err
 		}
+		u.ComposePopup = composePopup == 1
 		u.MFASecret, _ = d.enc.Decrypt(mfaSecretEnc)
 		u.MFAPending, _ = d.enc.Decrypt(mfaPendingEnc)
 		if lastLogin.Valid {
@@ -1128,4 +1130,84 @@ func (d *DB) GetFolderByID(folderID int64) (*models.Folder, error) {
 		return nil, nil
 	}
 	return f, err
+}
+
+// GetMessageIMAPInfo returns the remote_uid, folder full_path, account info needed for IMAP ops.
+func (d *DB) GetMessageIMAPInfo(messageID, userID int64) (remoteUID uint32, folderPath string, account *models.EmailAccount, err error) {
+	var uidStr string
+	var accountID int64
+	var folderID int64
+	err = d.sql.QueryRow(`
+		SELECT m.remote_uid, m.account_id, m.folder_id
+		FROM messages m
+		JOIN email_accounts a ON a.id = m.account_id
+		WHERE m.id=? AND a.user_id=?`, messageID, userID,
+	).Scan(&uidStr, &accountID, &folderID)
+	if err != nil {
+		return 0, "", nil, err
+	}
+	// Parse uid
+	var uid uint64
+	fmt.Sscanf(uidStr, "%d", &uid)
+	remoteUID = uint32(uid)
+
+	folder, err := d.GetFolderByID(folderID)
+	if err != nil || folder == nil {
+		return remoteUID, "", nil, fmt.Errorf("folder not found")
+	}
+	account, err = d.GetAccount(accountID)
+	return remoteUID, folder.FullPath, account, err
+}
+
+// ListStarredMessages returns all starred messages for a user, newest first.
+func (d *DB) ListStarredMessages(userID int64, page, pageSize int) (*models.PagedMessages, error) {
+	offset := (page - 1) * pageSize
+	var total int
+	d.sql.QueryRow(`SELECT COUNT(*) FROM messages m JOIN email_accounts a ON a.id=m.account_id WHERE a.user_id=? AND m.is_starred=1`, userID).Scan(&total)
+
+	rows, err := d.sql.Query(`
+		SELECT m.id, m.account_id, a.email_address, a.color, m.folder_id, f.name,
+		       m.subject, m.from_name, m.from_email, m.body_text,
+		       m.date, m.is_read, m.is_starred, m.has_attachment
+		FROM messages m
+		JOIN email_accounts a ON a.id = m.account_id
+		JOIN folders f ON f.id = m.folder_id
+		WHERE a.user_id=? AND m.is_starred=1
+		ORDER BY m.date DESC
+		LIMIT ? OFFSET ?`, userID, pageSize, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var summaries []models.MessageSummary
+	for rows.Next() {
+		s := models.MessageSummary{}
+		var subjectEnc, fromNameEnc, fromEmailEnc, bodyTextEnc string
+		if err := rows.Scan(
+			&s.ID, &s.AccountID, &s.AccountEmail, &s.AccountColor, &s.FolderID, &s.FolderName,
+			&subjectEnc, &fromNameEnc, &fromEmailEnc, &bodyTextEnc,
+			&s.Date, &s.IsRead, &s.IsStarred, &s.HasAttachment,
+		); err != nil {
+			return nil, err
+		}
+		s.Subject, _ = d.enc.Decrypt(subjectEnc)
+		s.FromName, _ = d.enc.Decrypt(fromNameEnc)
+		s.FromEmail, _ = d.enc.Decrypt(fromEmailEnc)
+		bodyText, _ := d.enc.Decrypt(bodyTextEnc)
+		if len(bodyText) > 120 {
+			bodyText = bodyText[:120] + "…"
+		}
+		s.Preview = bodyText
+		summaries = append(summaries, s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return &models.PagedMessages{
+		Messages: summaries,
+		Total:    total,
+		Page:     page,
+		PageSize: pageSize,
+		HasMore:  offset+len(summaries) < total,
+	}, nil
 }

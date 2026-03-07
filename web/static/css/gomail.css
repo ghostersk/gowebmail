@@ -432,6 +432,12 @@ body.admin-page{overflow:auto;background:var(--bg)}
 }
 .ctx-has-sub:hover>.ctx-submenu{display:block}
 .ctx-sub-item{white-space:nowrap}
+
+/* ── Multi-select & drag-drop ────────────────────────────────── */
+.message-item.selected{background:rgba(74,144,226,.18)!important;outline:1px solid var(--accent)}
+.message-item.selected:hover{background:rgba(74,144,226,.26)!important}
+.nav-folder.drag-over,.nav-item.drag-over{background:rgba(74,144,226,.22)!important;border-radius:6px}
+#bulk-action-bar{display:none}
 .folder-nosync{opacity:.65}
 
 /* ── Compose attach list ─────────────────────────────────────── */

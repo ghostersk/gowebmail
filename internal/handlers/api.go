@@ -541,6 +541,18 @@ func (h *APIHandler) MarkRead(w http.ResponseWriter, r *http.Request) {
 	var req struct{ Read bool `json:"read"` }
 	json.NewDecoder(r.Body).Decode(&req)
 	h.db.MarkMessageRead(messageID, userID, req.Read)
+	go func() {
+		uid, folderPath, account, err := h.db.GetMessageIMAPInfo(messageID, userID)
+		if err != nil || uid == 0 || account == nil {
+			return
+		}
+		c, err := email.Connect(context.Background(), account)
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		_ = c.SetFlagByUID(folderPath, uid, `\Seen`, req.Read)
+	}()
 	h.writeJSON(w, map[string]bool{"ok": true})
 }
 
@@ -552,6 +564,18 @@ func (h *APIHandler) ToggleStar(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, http.StatusInternalServerError, "failed to toggle star")
 		return
 	}
+	go func() {
+		uid, folderPath, account, err := h.db.GetMessageIMAPInfo(messageID, userID)
+		if err != nil || uid == 0 || account == nil {
+			return
+		}
+		c, err := email.Connect(context.Background(), account)
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		_ = c.SetFlagByUID(folderPath, uid, `\Flagged`, starred)
+	}()
 	h.writeJSON(w, map[string]bool{"ok": true, "starred": starred})
 }
 
@@ -563,6 +587,25 @@ func (h *APIHandler) MoveMessage(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, http.StatusBadRequest, "folder_id required")
 		return
 	}
+
+	// IMAP move (best-effort, non-blocking)
+	go func() {
+		uid, srcPath, account, err := h.db.GetMessageIMAPInfo(messageID, userID)
+		if err != nil || uid == 0 || account == nil {
+			return
+		}
+		destFolder, err := h.db.GetFolderByID(req.FolderID)
+		if err != nil || destFolder == nil {
+			return
+		}
+		c, err := email.Connect(context.Background(), account)
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		_ = c.MoveByUID(srcPath, destFolder.FullPath, uid)
+	}()
+
 	if err := h.db.MoveMessage(messageID, userID, req.FolderID); err != nil {
 		h.writeError(w, http.StatusInternalServerError, "move failed")
 		return
@@ -573,6 +616,30 @@ func (h *APIHandler) MoveMessage(w http.ResponseWriter, r *http.Request) {
 func (h *APIHandler) DeleteMessage(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.GetUserID(r)
 	messageID := pathInt64(r, "id")
+
+	// IMAP delete (best-effort, non-blocking)
+	go func() {
+		uid, folderPath, account, err := h.db.GetMessageIMAPInfo(messageID, userID)
+		if err != nil || uid == 0 || account == nil {
+			return
+		}
+		c, err := email.Connect(context.Background(), account)
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		// Find trash folder name
+		mailboxes, _ := c.ListMailboxes()
+		var trashName string
+		for _, mb := range mailboxes {
+			if email.InferFolderType(mb.Name, mb.Attributes) == "trash" {
+				trashName = mb.Name
+				break
+			}
+		}
+		_ = c.DeleteByUID(folderPath, uid, trashName)
+	}()
+
 	if err := h.db.DeleteMessage(messageID, userID); err != nil {
 		h.writeError(w, http.StatusInternalServerError, "delete failed")
 		return
@@ -738,7 +805,6 @@ func (h *APIHandler) GetMessageHeaders(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, http.StatusNotFound, "message not found")
 		return
 	}
-	// Return a simplified set of headers we store
 	headers := map[string]string{
 		"Message-ID": msg.MessageID,
 		"From":       fmt.Sprintf("%s <%s>", msg.FromName, msg.FromEmail),
@@ -749,7 +815,111 @@ func (h *APIHandler) GetMessageHeaders(w http.ResponseWriter, r *http.Request) {
 		"Subject":    msg.Subject,
 		"Date":       msg.Date.Format("Mon, 02 Jan 2006 15:04:05 -0700"),
 	}
-	h.writeJSON(w, map[string]interface{}{"headers": headers})
+	// Build a pseudo-raw header block for display
+	var raw strings.Builder
+	order := []string{"Date", "From", "To", "Cc", "Bcc", "Reply-To", "Subject", "Message-ID"}
+	for _, k := range order {
+		if v := headers[k]; v != "" {
+			fmt.Fprintf(&raw, "%s: %s\r\n", k, v)
+		}
+	}
+	h.writeJSON(w, map[string]interface{}{"headers": headers, "raw": raw.String()})
+}
+
+func (h *APIHandler) StarredMessages(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.GetUserID(r)
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	if page < 1 {
+		page = 1
+	}
+	pageSize, _ := strconv.Atoi(r.URL.Query().Get("page_size"))
+	if pageSize < 1 || pageSize > 200 {
+		pageSize = 50
+	}
+	result, err := h.db.ListStarredMessages(userID, page, pageSize)
+	if err != nil {
+		h.writeError(w, http.StatusInternalServerError, "failed to list starred")
+		return
+	}
+	h.writeJSON(w, result)
+}
+
+func (h *APIHandler) DownloadEML(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.GetUserID(r)
+	messageID := pathInt64(r, "id")
+	msg, err := h.db.GetMessage(messageID, userID)
+	if err != nil || msg == nil {
+		h.writeError(w, http.StatusNotFound, "message not found")
+		return
+	}
+
+	// Try to fetch raw from IMAP first
+	uid, folderPath, account, iErr := h.db.GetMessageIMAPInfo(messageID, userID)
+	if iErr == nil && uid != 0 && account != nil {
+		if c, cErr := email.Connect(context.Background(), account); cErr == nil {
+			defer c.Close()
+			if raw, rErr := c.FetchRawByUID(folderPath, uid); rErr == nil {
+				safe := sanitizeFilename(msg.Subject) + ".eml"
+				w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, safe))
+				w.Header().Set("Content-Type", "message/rfc822")
+				w.Write(raw)
+				return
+			}
+		}
+	}
+
+	// Fallback: reconstruct from stored fields
+	var buf strings.Builder
+	buf.WriteString("Date: " + msg.Date.Format("Mon, 02 Jan 2006 15:04:05 -0700") + "\r\n")
+	buf.WriteString(fmt.Sprintf("From: %s <%s>\r\n", msg.FromName, msg.FromEmail))
+	if msg.ToList != "" {
+		buf.WriteString("To: " + msg.ToList + "\r\n")
+	}
+	if msg.CCList != "" {
+		buf.WriteString("Cc: " + msg.CCList + "\r\n")
+	}
+	buf.WriteString("Subject: " + msg.Subject + "\r\n")
+	if msg.MessageID != "" {
+		buf.WriteString("Message-ID: " + msg.MessageID + "\r\n")
+	}
+	buf.WriteString("MIME-Version: 1.0\r\n")
+	if msg.BodyHTML != "" {
+		boundary := "GoMailBoundary"
+		buf.WriteString("Content-Type: multipart/alternative; boundary=\"" + boundary + "\"\r\n\r\n")
+		buf.WriteString("--" + boundary + "\r\n")
+		buf.WriteString("Content-Type: text/plain; charset=utf-8\r\n\r\n")
+		buf.WriteString(msg.BodyText + "\r\n")
+		buf.WriteString("--" + boundary + "\r\n")
+		buf.WriteString("Content-Type: text/html; charset=utf-8\r\n\r\n")
+		buf.WriteString(msg.BodyHTML + "\r\n")
+		buf.WriteString("--" + boundary + "--\r\n")
+	} else {
+		buf.WriteString("Content-Type: text/plain; charset=utf-8\r\n\r\n")
+		buf.WriteString(msg.BodyText)
+	}
+	safe := sanitizeFilename(msg.Subject) + ".eml"
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, safe))
+	w.Header().Set("Content-Type", "message/rfc822")
+	w.Write([]byte(buf.String()))
+}
+
+func sanitizeFilename(s string) string {
+	var out strings.Builder
+	for _, r := range s {
+		if r == '/' || r == '\\' || r == ':' || r == '*' || r == '?' || r == '"' || r == '<' || r == '>' || r == '|' {
+			out.WriteRune('_')
+		} else {
+			out.WriteRune(r)
+		}
+	}
+	result := strings.TrimSpace(out.String())
+	if result == "" {
+		return "message"
+	}
+	if len(result) > 80 {
+		result = result[:80]
+	}
+	return result
 }
 
 // ---- Remote content whitelist ----

@@ -334,7 +334,7 @@ function renderFolders() {
           <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg>
         </button>
       </div>`+sorted.map(f=>`
-      <div class="nav-item${f.sync_enabled?'':' folder-nosync'}" id="nav-f${f.id}" onclick="selectFolder(${f.id},'${esc(f.name)}')"
+      <div class="nav-item${f.sync_enabled?'':' folder-nosync'}" id="nav-f${f.id}" data-fid="${f.id}" onclick="selectFolder(${f.id},'${esc(f.name)}')"
            oncontextmenu="showFolderMenu(event,${f.id})">
         <svg viewBox="0 0 24 24" fill="currentColor">${FOLDER_ICONS[f.folder_type]||FOLDER_ICONS.custom}</svg>
         ${esc(f.name)}
@@ -464,6 +464,7 @@ async function loadMessages(append) {
   let result;
   if (S.searchQuery) result=await api('GET',`/search?q=${encodeURIComponent(S.searchQuery)}&page=${S.currentPage}&page_size=50`);
   else if (S.currentFolder==='unified') result=await api('GET',`/messages/unified?page=${S.currentPage}&page_size=50`);
+  else if (S.currentFolder==='starred') result=await api('GET',`/messages/starred?page=${S.currentPage}&page_size=50`);
   else result=await api('GET',`/messages?folder_id=${S.currentFolder}&page=${S.currentPage}&page_size=50`);
   if (!result){list.innerHTML='<div class="empty-state"><p>Failed to load</p></div>';return;}
   S.totalMessages=result.total||(result.messages||[]).length;
@@ -502,6 +503,9 @@ function setFilter(mode) {
 function toggleFilterUnread() { setFilter(S.filterUnread ? 'default' : 'unread'); }
 function setSortOrder(order) { setFilter(order); }
 
+// ── Multi-select state ────────────────────────────────────────
+if (!window.SEL) window.SEL = { ids: new Set(), lastIdx: -1 };
+
 function renderMessageList() {
   const list=document.getElementById('message-list');
   let msgs = [...S.messages];
@@ -512,15 +516,23 @@ function renderMessageList() {
   // Sort
   if (S.sortOrder === 'date-asc') msgs.sort((a,b) => new Date(a.date)-new Date(b.date));
   else if (S.sortOrder === 'size-desc') msgs.sort((a,b) => (b.size||0)-(a.size||0));
-  else msgs.sort((a,b) => new Date(b.date)-new Date(a.date)); // date-desc default
+  else msgs.sort((a,b) => new Date(b.date)-new Date(a.date));
 
   if (!msgs.length){
     list.innerHTML=`<div class="empty-state"><svg viewBox="0 0 24 24"><path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"/></svg><p>${S.filterUnread?'No unread messages':'No messages'}</p></div>`;
     return;
   }
-  list.innerHTML=msgs.map(m=>`
-    <div class="message-item ${m.id===S.selectedMessageId?'active':''} ${!m.is_read?'unread':''}"
-         onclick="openMessage(${m.id})" oncontextmenu="showMessageMenu(event,${m.id})">
+
+  // Update bulk action bar
+  updateBulkBar();
+
+  list.innerHTML=msgs.map((m,i)=>`
+    <div class="message-item ${m.id===S.selectedMessageId&&!SEL.ids.size?'active':''} ${!m.is_read?'unread':''} ${SEL.ids.has(m.id)?'selected':''}"
+         data-id="${m.id}" data-idx="${i}"
+         draggable="true"
+         onclick="handleMsgClick(event,${m.id},${i})"
+         oncontextmenu="showMessageMenu(event,${m.id})"
+         ondragstart="handleMsgDragStart(event,${m.id})">
       <div class="msg-top">
         <span class="msg-from">${esc(m.from_name||m.from_email)}</span>
         <span class="msg-date">${formatDate(m.date)}</span>
@@ -536,6 +548,86 @@ function renderMessageList() {
       </div>
     </div>`).join('')+(S.messages.length<S.totalMessages
     ?`<div class="load-more"><button class="load-more-btn" onclick="loadMoreMessages()">Load more</button></div>`:'');
+
+  // Enable drag-drop onto folder nav items
+  document.querySelectorAll('.nav-item[data-fid]').forEach(el=>{
+    el.ondragover=e=>{e.preventDefault();el.classList.add('drag-over');};
+    el.ondragleave=()=>el.classList.remove('drag-over');
+    el.ondrop=e=>{
+      e.preventDefault(); el.classList.remove('drag-over');
+      const fid=parseInt(el.dataset.fid);
+      if (!fid) return;
+      const ids = SEL.ids.size ? [...SEL.ids] : [parseInt(e.dataTransfer.getData('text/plain'))];
+      ids.forEach(id=>moveMessage(id, fid, true));
+      SEL.ids.clear(); updateBulkBar(); renderMessageList();
+    };
+  });
+}
+
+function handleMsgClick(e, id, idx) {
+  if (e.ctrlKey || e.metaKey) {
+    // Toggle selection
+    SEL.ids.has(id) ? SEL.ids.delete(id) : SEL.ids.add(id);
+    SEL.lastIdx = idx;
+    renderMessageList(); return;
+  }
+  if (e.shiftKey && SEL.lastIdx >= 0) {
+    // Range select
+    const msgs = getFilteredSortedMsgs();
+    const lo=Math.min(SEL.lastIdx,idx), hi=Math.max(SEL.lastIdx,idx);
+    for (let i=lo;i<=hi;i++) SEL.ids.add(msgs[i].id);
+    renderMessageList(); return;
+  }
+  SEL.ids.clear(); SEL.lastIdx=idx;
+  openMessage(id);
+}
+
+function getFilteredSortedMsgs() {
+  let msgs=[...S.messages];
+  if (S.filterUnread) msgs=msgs.filter(m=>!m.is_read);
+  if (S.sortOrder==='date-asc') msgs.sort((a,b)=>new Date(a.date)-new Date(b.date));
+  else if (S.sortOrder==='size-desc') msgs.sort((a,b)=>(b.size||0)-(a.size||0));
+  else msgs.sort((a,b)=>new Date(b.date)-new Date(a.date));
+  return msgs;
+}
+
+function handleMsgDragStart(e, id) {
+  if (!SEL.ids.has(id)) { SEL.ids.clear(); SEL.ids.add(id); }
+  e.dataTransfer.setData('text/plain', id);
+  e.dataTransfer.effectAllowed='move';
+}
+
+function updateBulkBar() {
+  let bar = document.getElementById('bulk-action-bar');
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.id='bulk-action-bar';
+    bar.style.cssText='display:none;position:sticky;top:0;z-index:10;background:var(--accent);color:#fff;padding:6px 12px;font-size:12px;display:flex;align-items:center;gap:8px';
+    bar.innerHTML=`<span id="bulk-count"></span>
+      <button onclick="bulkMarkRead(true)" style="font-size:11px;padding:2px 8px;background:rgba(255,255,255,.2);border:none;border-radius:4px;color:#fff;cursor:pointer">Mark read</button>
+      <button onclick="bulkMarkRead(false)" style="font-size:11px;padding:2px 8px;background:rgba(255,255,255,.2);border:none;border-radius:4px;color:#fff;cursor:pointer">Mark unread</button>
+      <button onclick="bulkDelete()" style="font-size:11px;padding:2px 8px;background:rgba(255,255,255,.2);border:none;border-radius:4px;color:#fff;cursor:pointer">Delete</button>
+      <button onclick="SEL.ids.clear();renderMessageList()" style="margin-left:auto;font-size:11px;padding:2px 8px;background:rgba(255,255,255,.2);border:none;border-radius:4px;color:#fff;cursor:pointer">✕ Clear</button>`;
+    document.getElementById('message-list').before(bar);
+  }
+  if (SEL.ids.size) {
+    bar.style.display='flex';
+    document.getElementById('bulk-count').textContent=SEL.ids.size+' selected';
+  } else {
+    bar.style.display='none';
+  }
+}
+
+async function bulkMarkRead(read) {
+  await Promise.all([...SEL.ids].map(id=>api('PUT','/messages/'+id+'/read',{read})));
+  SEL.ids.forEach(id=>{const m=S.messages.find(m=>m.id===id);if(m)m.is_read=read;});
+  SEL.ids.clear(); renderMessageList(); loadFolders();
+}
+
+async function bulkDelete() {
+  await Promise.all([...SEL.ids].map(id=>api('DELETE','/messages/'+id)));
+  SEL.ids.forEach(id=>{S.messages=S.messages.filter(m=>m.id!==id);});
+  SEL.ids.clear(); renderMessageList();
 }
 
 function loadMoreMessages(){ S.currentPage++; loadMessages(true); }
@@ -557,22 +649,21 @@ function renderMessageDetail(msg, showRemoteContent) {
   const allowed=showRemoteContent||S.remoteWhitelist.has(msg.from_email);
 
   // CSS injected into every iframe — forces white background so dark-themed emails
-  // don't inherit our app's dark theme and become unreadable
+  // don't inherit our app dark theme. allow-scripts is needed for some email onclick events.
   const cssReset = `<style>html,body{background:#ffffff!important;color:#1a1a1a!important;` +
-    `font-family:Arial,sans-serif;font-size:14px;line-height:1.5;margin:8px}a{color:#1a5fb4}</style>`;
+    `font-family:Arial,sans-serif;font-size:14px;line-height:1.5;margin:8px}a{color:#1a5fb4}` +
+    `img{max-width:100%;height:auto}</style>`;
 
   let bodyHtml='';
   if (msg.body_html) {
     if (allowed) {
       const srcdoc = cssReset + msg.body_html;
-      bodyHtml=`<iframe id="msg-frame" sandbox="allow-same-origin allow-popups"
-        style="width:100%;border:none;min-height:300px;display:block"
+      bodyHtml=`<iframe id="msg-frame" sandbox="allow-same-origin allow-popups allow-scripts"
+        style="width:100%;border:none;min-height:400px;display:block"
         srcdoc="${srcdoc.replace(/"/g,'&quot;')}"></iframe>`;
     } else {
-      // Strip only remote resources (img src, background-image urls, external link/script)
-      // Keep full HTML structure so text remains readable
       const stripped = msg.body_html
-        .replace(/<img(\s[^>]*?)src\s*=\s*(['"])[^'"]*\2/gi, '<img$1src=""data-blocked="1"')
+        .replace(/<img(\s[^>]*?)src\s*=\s*(['"])[^'"]*\2/gi, '<img$1src="" data-blocked="1"')
         .replace(/url\s*\(\s*(['"]?)https?:\/\/[^)'"]+\1\s*\)/gi, 'url()')
         .replace(/<link[^>]*>/gi, '')
         .replace(/<script[\s\S]*?<\/script>/gi, '');
@@ -583,8 +674,8 @@ function renderMessageDetail(msg, showRemoteContent) {
         <button class="rcb-btn" onclick="renderMessageDetail(S.currentMessage,true)">Load images</button>
         <button class="rcb-btn" onclick="whitelistSender('${esc(msg.from_email)}')">Always allow from ${esc(msg.from_email)}</button>
       </div>
-      <iframe id="msg-frame" sandbox="allow-same-origin allow-popups"
-        style="width:100%;border:none;min-height:300px;display:block"
+      <iframe id="msg-frame" sandbox="allow-same-origin allow-popups allow-scripts"
+        style="width:100%;border:none;min-height:400px;display:block"
         srcdoc="${srcdoc.replace(/"/g,'&quot;')}"></iframe>`;
     }
   } else {
@@ -621,14 +712,31 @@ function renderMessageDetail(msg, showRemoteContent) {
       <button class="action-btn" onclick="toggleStar(${msg.id})">${msg.is_starred?'★ Unstar':'☆ Star'}</button>
       <button class="action-btn" onclick="markRead(${msg.id},${!msg.is_read})">${msg.is_read?'Mark unread':'Mark read'}</button>
       <button class="action-btn" onclick="showMessageHeaders(${msg.id})">⋮ Headers</button>
+      <button class="action-btn" onclick="downloadEML(${msg.id})">⬇ Download</button>
       <button class="action-btn danger" onclick="deleteMessage(${msg.id})">🗑 Delete</button>
     </div>
     ${attachHtml}
     <div class="detail-body">${bodyHtml}</div>`;
 
-  if (msg.body_html && allowed) {
+  // Auto-size iframe to content height using ResizeObserver
+  if (msg.body_html) {
     const frame=document.getElementById('msg-frame');
-    if (frame) frame.onload=()=>{try{const h=frame.contentDocument.documentElement.scrollHeight;frame.style.height=(h+30)+'px';}catch(e){}};
+    if (frame) {
+      const sizeFrame = () => {
+        try {
+          const h = frame.contentDocument?.documentElement?.scrollHeight;
+          if (h && h > 50) frame.style.height = (h + 20) + 'px';
+        } catch(e) {}
+      };
+      frame.onload = () => {
+        sizeFrame();
+        // Also observe content changes (images loading)
+        try {
+          const ro = new ResizeObserver(sizeFrame);
+          ro.observe(frame.contentDocument.documentElement);
+        } catch(e) {}
+      };
+    }
   }
 }
 
@@ -642,27 +750,50 @@ async function showMessageHeaders(id) {
   if (!r?.headers) return;
   const rows=Object.entries(r.headers).filter(([,v])=>v)
     .map(([k,v])=>`<tr><td style="color:var(--muted);padding:4px 12px 4px 0;font-size:12px;white-space:nowrap;vertical-align:top">${esc(k)}</td><td style="font-size:12px;word-break:break-all">${esc(v)}</td></tr>`).join('');
+  const rawText = r.raw||'';
   const overlay=document.createElement('div');
   overlay.className='modal-overlay open';
-  overlay.innerHTML=`<div class="modal" style="width:600px;max-height:80vh;overflow-y:auto">
+  overlay.innerHTML=`<div class="modal" style="width:660px;max-height:85vh;display:flex;flex-direction:column">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
       <h2 style="margin:0">Message Headers</h2>
       <button class="icon-btn" onclick="this.closest('.modal-overlay').remove()"><svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg></button>
     </div>
-    <table style="width:100%"><tbody>${rows}</tbody></table>
+    <div style="overflow-y:auto;flex:1">
+      <table style="width:100%;margin-bottom:16px"><tbody>${rows}</tbody></table>
+      <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.7px;margin-bottom:6px">Raw Headers</div>
+      <div style="position:relative">
+        <textarea id="raw-headers-ta" readonly style="width:100%;box-sizing:border-box;height:180px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text2);font-family:monospace;font-size:11px;padding:10px;resize:vertical;outline:none">${esc(rawText)}</textarea>
+        <button onclick="navigator.clipboard.writeText(document.getElementById('raw-headers-ta').value).then(()=>toast('Copied','success'))"
+          style="position:absolute;top:6px;right:8px;font-size:11px;padding:3px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--text2);cursor:pointer">Copy</button>
+      </div>
+    </div>
   </div>`;
   overlay.addEventListener('click',e=>{if(e.target===overlay)overlay.remove();});
   document.body.appendChild(overlay);
 }
 
+function downloadEML(id) {
+  window.open('/api/messages/'+id+'/download.eml','_blank');
+}
+
 function showMessageMenu(e, id) {
   e.preventDefault(); e.stopPropagation();
-  const moveFolders=S.folders.slice(0,8).map(f=>`<div class="ctx-item" onclick="moveMessage(${id},${f.id});closeMenu()">${esc(f.name)}</div>`).join('');
+  const msg = S.messages.find(m=>m.id===id);
+  const otherFolders = S.folders.filter(f=>!f.is_hidden&&f.id!==S.currentFolder).slice(0,16);
+  const moveItems = otherFolders.map(f=>`<div class="ctx-item ctx-sub-item" onclick="moveMessage(${id},${f.id});closeMenu()">${esc(f.name)}</div>`).join('');
+  const moveSub = otherFolders.length ? `
+    <div class="ctx-item ctx-has-sub">📂 Move to
+      <span class="ctx-sub-arrow">›</span>
+      <div class="ctx-submenu">${moveItems}</div>
+    </div>` : '';
   showCtxMenu(e,`
     <div class="ctx-item" onclick="openReplyTo(${id});closeMenu()">↩ Reply</div>
-    <div class="ctx-item" onclick="toggleStar(${id});closeMenu()">★ Toggle star</div>
+    <div class="ctx-item" onclick="toggleStar(${id});closeMenu()">${msg?.is_starred?'★ Unstar':'☆ Star'}</div>
+    <div class="ctx-item" onclick="markRead(${id},${msg?.is_read?'false':'true'});closeMenu()">${msg?.is_read?'Mark unread':'Mark read'}</div>
+    <div class="ctx-sep"></div>
+    ${moveSub}
     <div class="ctx-item" onclick="showMessageHeaders(${id});closeMenu()">⋮ View headers</div>
-    ${moveFolders?`<div class="ctx-sep"></div><div style="font-size:10px;color:var(--muted);padding:4px 12px;text-transform:uppercase;letter-spacing:.8px">Move to</div>${moveFolders}`:''}
+    <div class="ctx-item" onclick="downloadEML(${id});closeMenu()">⬇ Download .eml</div>
     <div class="ctx-sep"></div>
     <div class="ctx-item danger" onclick="deleteMessage(${id});closeMenu()">🗑 Delete</div>`);
 }
@@ -680,14 +811,16 @@ async function markRead(id, read) {
   loadFolders();
 }
 
-async function moveMessage(msgId, folderId) {
+async function moveMessage(msgId, folderId, silent=false) {
   const folder = S.folders.find(f=>f.id===folderId);
-  inlineConfirm(`Move this message to "${folder?.name||'selected folder'}"?`, async () => {
+  const doMove = async () => {
     const r=await api('PUT','/messages/'+msgId+'/move',{folder_id:folderId});
-    if(r?.ok){toast('Moved','success');S.messages=S.messages.filter(m=>m.id!==msgId);renderMessageList();
+    if(r?.ok){if(!silent)toast('Moved','success');S.messages=S.messages.filter(m=>m.id!==msgId);
       if(S.currentMessage?.id===msgId)resetDetail();loadFolders();}
-    else toast('Move failed','error');
-  });
+    else if(!silent) toast('Move failed','error');
+  };
+  if (silent) { doMove(); return; }
+  inlineConfirm(`Move this message to "${folder?.name||'selected folder'}"?`, doMove);
 }
 
 async function deleteMessage(id) {

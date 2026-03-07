@@ -138,6 +138,93 @@ func (c *Client) DeleteMailbox(name string) error {
 	return c.imap.Delete(name)
 }
 
+// MoveByUID copies a message to destMailbox and marks it deleted in srcMailbox.
+func (c *Client) MoveByUID(srcMailbox, destMailbox string, uid uint32) error {
+	if _, err := c.imap.Select(srcMailbox, false); err != nil {
+		return fmt.Errorf("select %s: %w", srcMailbox, err)
+	}
+	seqSet := new(imap.SeqSet)
+	seqSet.AddNum(uid)
+	// COPY to destination
+	if err := c.imap.UidCopy(seqSet, destMailbox); err != nil {
+		return fmt.Errorf("uid copy: %w", err)
+	}
+	// Mark deleted in source
+	item := imap.FormatFlagsOp(imap.SetFlags, true)
+	flags := []interface{}{imap.DeletedFlag}
+	if err := c.imap.UidStore(seqSet, item, flags, nil); err != nil {
+		return fmt.Errorf("uid store deleted: %w", err)
+	}
+	return c.imap.Expunge(nil)
+}
+
+// DeleteByUID moves message to Trash, or hard-deletes if already in Trash.
+func (c *Client) DeleteByUID(mailboxName string, uid uint32, trashName string) error {
+	if _, err := c.imap.Select(mailboxName, false); err != nil {
+		return fmt.Errorf("select %s: %w", mailboxName, err)
+	}
+	seqSet := new(imap.SeqSet)
+	seqSet.AddNum(uid)
+	isTrash := strings.EqualFold(mailboxName, trashName) || trashName == ""
+	if !isTrash && trashName != "" {
+		// Move to trash
+		if err := c.imap.UidCopy(seqSet, trashName); err == nil {
+			item := imap.FormatFlagsOp(imap.SetFlags, true)
+			_ = c.imap.UidStore(seqSet, item, []interface{}{imap.DeletedFlag}, nil)
+			return c.imap.Expunge(nil)
+		}
+	}
+	// Hard delete (already in trash or no trash folder)
+	item := imap.FormatFlagsOp(imap.SetFlags, true)
+	if err := c.imap.UidStore(seqSet, item, []interface{}{imap.DeletedFlag}, nil); err != nil {
+		return fmt.Errorf("uid store deleted: %w", err)
+	}
+	return c.imap.Expunge(nil)
+}
+
+// SetFlagByUID sets or clears an IMAP flag (e.g. \Seen, \Flagged) for a message.
+func (c *Client) SetFlagByUID(mailboxName string, uid uint32, flag string, set bool) error {
+	if _, err := c.imap.Select(mailboxName, false); err != nil {
+		return err
+	}
+	seqSet := new(imap.SeqSet)
+	seqSet.AddNum(uid)
+	var op imap.FlagsOp
+	if set {
+		op = imap.AddFlags
+	} else {
+		op = imap.RemoveFlags
+	}
+	item := imap.FormatFlagsOp(op, true)
+	return c.imap.UidStore(seqSet, item, []interface{}{flag}, nil)
+}
+
+// FetchRawByUID returns the raw RFC 822 message bytes for the given UID.
+func (c *Client) FetchRawByUID(mailboxName string, uid uint32) ([]byte, error) {
+	if _, err := c.imap.Select(mailboxName, true); err != nil {
+		return nil, fmt.Errorf("select %s: %w", mailboxName, err)
+	}
+	seqSet := new(imap.SeqSet)
+	seqSet.AddNum(uid)
+	section := &imap.BodySectionName{}
+	items := []imap.FetchItem{section.FetchItem()}
+	ch := make(chan *imap.Message, 1)
+	done := make(chan error, 1)
+	go func() { done <- c.imap.UidFetch(seqSet, items, ch) }()
+	msg := <-ch
+	if err := <-done; err != nil {
+		return nil, err
+	}
+	if msg == nil {
+		return nil, fmt.Errorf("message not found")
+	}
+	body := msg.GetBody(section)
+	if body == nil {
+		return nil, fmt.Errorf("no body")
+	}
+	return io.ReadAll(body)
+}
+
 func (c *Client) ListMailboxes() ([]*imap.MailboxInfo, error) {
 	ch := make(chan *imap.MailboxInfo, 64)
 	done := make(chan error, 1)

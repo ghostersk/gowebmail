@@ -106,4 +106,4 @@ CGO_ENABLED=1 GOOS=linux go build -ldflags="-s -w" -o gomail ./cmd/server
 CGO is required by `go-sqlite3`. Cross-compilation requires a C cross-compiler.
 
 ## License
-GNU 3
+This project is licensed under the [GPL-3.0 license](LICENSE).

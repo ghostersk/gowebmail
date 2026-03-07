@@ -119,7 +119,9 @@ func main() {
 	api.HandleFunc("/messages/{id:[0-9]+}/star", h.API.ToggleStar).Methods("PUT")
 	api.HandleFunc("/messages/{id:[0-9]+}/move", h.API.MoveMessage).Methods("PUT")
 	api.HandleFunc("/messages/{id:[0-9]+}/headers", h.API.GetMessageHeaders).Methods("GET")
+	api.HandleFunc("/messages/{id:[0-9]+}/download.eml", h.API.DownloadEML).Methods("GET")
 	api.HandleFunc("/messages/{id:[0-9]+}", h.API.DeleteMessage).Methods("DELETE")
+	api.HandleFunc("/messages/starred", h.API.StarredMessages).Methods("GET")
 
 	// Remote content whitelist
 	api.HandleFunc("/remote-content-whitelist", h.API.GetRemoteContentWhitelist).Methods("GET")
