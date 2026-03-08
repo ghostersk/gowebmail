@@ -27,7 +27,8 @@ func New(path string, encKey []byte) (*DB, error) {
 	}
 
 	// Enable WAL mode and foreign keys for performance and integrity
-	dsn := fmt.Sprintf("%s?_journal_mode=WAL&_foreign_keys=on&_busy_timeout=5000", path)
+	// sqlite file path must start with `file:` for package mattn/go-sqlite3
+	dsn := fmt.Sprintf("file:%s?_journal_mode=WAL&_foreign_keys=on&_busy_timeout=5000", path)
 	sqlDB, err := sql.Open("sqlite3", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)

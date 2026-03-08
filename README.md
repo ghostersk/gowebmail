@@ -31,6 +31,8 @@ A self-hosted, encrypted web email client written entirely in Go. Supports Gmail
 # 1. Clone / copy the project
 git clone https://github.com/ghostersk/gowebmail && cd gowebmail
 go build -o gowebmail ./cmd/server
+# if you want smaller exe ( strip down debuginformation):
+go build -ldflags="-s -w" -o gowebmail ./cmd/server
 ./gowebmail
 ```
 
