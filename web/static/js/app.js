@@ -722,47 +722,79 @@ async function openMessage(id) {
   }
 }
 
+// ── External link navigation whitelist ───────────────────────────────────────
+// Persisted in sessionStorage so it resets on tab close (safety default).
+const _extNavOk = new Set(JSON.parse(sessionStorage.getItem('extNavOk')||'[]'));
+function _saveExtNavOk(){ sessionStorage.setItem('extNavOk', JSON.stringify([..._extNavOk])); }
+
+function confirmExternalNav(url) {
+  const origin = (() => { try { return new URL(url).origin; } catch(e){ return url; } })();
+  if (_extNavOk.has(origin)) { window.open(url,'_blank','noopener,noreferrer'); return; }
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay open';
+  overlay.innerHTML = `<div class="modal" style="max-width:480px">
+    <h2 style="margin:0 0 12px">Open external link?</h2>
+    <div style="word-break:break-all;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px;font-size:12px;font-family:monospace;margin-bottom:16px;color:var(--text2)">${esc(url)}</div>
+    <p style="margin:0 0 20px;font-size:13px;color:var(--text2)">This link was in a received email. Opening it will take you to an external website.</p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn-primary" id="enav-once">Open once</button>
+      <button class="btn-primary" id="enav-always" style="background:var(--accent2,#2a7)">Always allow ${esc(origin)}</button>
+      <button class="action-btn" id="enav-cancel">Cancel</button>
+    </div>
+  </div>`;
+  document.body.appendChild(overlay);
+  overlay.querySelector('#enav-once').onclick = () => { overlay.remove(); window.open(url,'_blank','noopener,noreferrer'); };
+  overlay.querySelector('#enav-always').onclick = () => { _extNavOk.add(origin); _saveExtNavOk(); overlay.remove(); window.open(url,'_blank','noopener,noreferrer'); };
+  overlay.querySelector('#enav-cancel').onclick = () => overlay.remove();
+  overlay.onclick = e => { if(e.target===overlay) overlay.remove(); };
+}
+
 function renderMessageDetail(msg, showRemoteContent) {
   const detail=document.getElementById('message-detail');
   const allowed=showRemoteContent||S.remoteWhitelist.has(msg.from_email);
 
-  // CSS injected into every iframe — forces white background so dark-themed emails
-  // don't inherit our app dark theme.
   const cssReset = `<style>html,body{background:#ffffff!important;color:#1a1a1a!important;` +
     `font-family:Arial,sans-serif;font-size:14px;line-height:1.5;margin:8px}a{color:#1a5fb4}` +
-    `img{max-width:100%;height:auto}</style>`;
+    `img{max-width:100%;height:auto}iframe{display:none!important}</style>`;
 
-  // Script injected into srcdoc to report content height via postMessage.
-  // Required because removing allow-same-origin means contentDocument is null from parent.
+  // Injected into srcdoc: reports height + intercepts all link clicks → postMessage to parent
   const heightScript = `<script>
     function _reportH(){parent.postMessage({type:'gomail-frame-h',h:document.documentElement.scrollHeight},'*');}
     document.addEventListener('DOMContentLoaded',_reportH);
     window.addEventListener('load',_reportH);
     new MutationObserver(_reportH).observe(document.documentElement,{subtree:true,childList:true,attributes:true});
+    document.addEventListener('click',function(e){
+      var el=e.target; while(el&&el.tagName!=='A') el=el.parentElement;
+      if(!el) return;
+      var href=el.getAttribute('href');
+      if(!href||href.startsWith('#')||href.startsWith('mailto:')) return;
+      e.preventDefault(); e.stopPropagation();
+      parent.postMessage({type:'gomail-open-url',url:href},'*');
+    },true);
   <\/script>`;
 
-  // NOTE: allow-scripts is needed for the height-reporting script above.
-  // allow-same-origin is intentionally excluded to prevent sandbox escape.
-  // Inline CID images are resolved to data: URIs during sync so no cid: scheme needed.
   const sandboxAttr = 'allow-scripts allow-popups allow-popups-to-escape-sandbox';
+
+  function stripUnresolvedCID(h){ return h.replace(/src\s*=\s*(['"])cid:[^'"]*\1/gi,'src=""').replace(/src\s*=\s*cid:\S+/gi,'src=""'); }
+  function stripEmbeddedFrames(h){ return h.replace(/<iframe[\s\S]*?<\/iframe>/gi,'').replace(/<iframe[^>]*>/gi,''); }
+  function stripRemoteImages(h){
+    return h.replace(/<img(\s[^>]*?)src\s*=\s*(['"])(https?:\/\/[^'"]+)\2/gi,'<img$1src="" data-blocked-src="$3"')
+            .replace(/url\s*\(\s*(['"]?)https?:\/\/[^)'"]+\1\s*\)/gi,'url()')
+            .replace(/<link[^>]*>/gi,'').replace(/<script[\s\S]*?<\/script>/gi,'');
+  }
 
   let bodyHtml='';
   if (msg.body_html) {
+    let html = stripUnresolvedCID(stripEmbeddedFrames(msg.body_html));
     if (allowed) {
-      const srcdoc = cssReset + heightScript + msg.body_html;
+      const srcdoc = cssReset + heightScript + html;
       bodyHtml=`<iframe id="msg-frame" sandbox="${sandboxAttr}"
         style="width:100%;border:none;min-height:200px;display:block"
         srcdoc="${srcdoc.replace(/"/g,'&quot;')}"></iframe>`;
     } else {
-      // Block external http(s) images but preserve data: URIs (inline/CID already resolved)
-      const stripped = msg.body_html
-        .replace(/<img(\s[^>]*?)src\s*=\s*(['"])(https?:\/\/[^'"]+)\2/gi, '<img$1src="" data-blocked-src="$3"')
-        .replace(/url\s*\(\s*(['"]?)https?:\/\/[^)'"]+\1\s*\)/gi, 'url()')
-        .replace(/<link[^>]*>/gi, '')
-        .replace(/<script[\s\S]*?<\/script>/gi, '');
-      const srcdoc = cssReset + stripped;
+      const stripped = stripRemoteImages(html);
       bodyHtml=`<div class="remote-content-banner">
-        <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>
         Remote images blocked.
         <button class="rcb-btn" onclick="renderMessageDetail(S.currentMessage,true)">Load images</button>
         <button class="rcb-btn" onclick="whitelistSender('${esc(msg.from_email)}')">Always allow from ${esc(msg.from_email)}</button>
@@ -777,24 +809,20 @@ function renderMessageDetail(msg, showRemoteContent) {
 
   let attachHtml='';
   if (msg.attachments?.length) {
-    attachHtml=`<div class="attachments-bar">
-      <span style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;margin-right:8px">Attachments</span>
-      ${msg.attachments.map(a=>{
-        const url=`/api/messages/${msg.id}/attachments/${a.id}`;
-        const viewable=/^(image\/|text\/|application\/pdf$|video\/|audio\/)/.test(a.content_type||'');
-        if(viewable){
-          return `<a class="attachment-chip" href="${url}" target="_blank" rel="noopener" title="Open ${esc(a.filename)}">
-            📎 <span>${esc(a.filename)}</span>
-            <span style="color:var(--muted);font-size:10px">${formatSize(a.size)}</span>
-          </a>`;
-        }
-        return `<a class="attachment-chip" href="${url}" download="${esc(a.filename)}" title="Download ${esc(a.filename)}">
-          📎 <span>${esc(a.filename)}</span>
-          <span style="color:var(--muted);font-size:10px">${formatSize(a.size)}</span>
-        </a>`;
-      }).join('')}
-    </div>`;
+    const chips = msg.attachments.map(a=>{
+      const url=`/api/messages/${msg.id}/attachments/${a.id}`;
+      const ct=a.content_type||'';
+      const viewable=/^(image\/|text\/|application\/pdf$|video\/|audio\/)/.test(ct);
+      const icon=ct.startsWith('image/')?'🖼':ct==='application/pdf'?'📄':ct.startsWith('video/')?'🎬':ct.startsWith('audio/')?'🎵':'📎';
+      if(viewable){
+        return `<a class="attachment-chip" href="${url}" target="_blank" rel="noopener" title="Open ${esc(a.filename)}">${icon} <span>${esc(a.filename)}</span><span style="color:var(--muted);font-size:10px"> ${formatSize(a.size)}</span></a>`;
+      }
+      return `<a class="attachment-chip" href="${url}" download="${esc(a.filename)}" title="Download ${esc(a.filename)}">${icon} <span>${esc(a.filename)}</span><span style="color:var(--muted);font-size:10px"> ${formatSize(a.size)}</span></a>`;
+    }).join('');
+    const dlAll=`<button class="attachment-chip" onclick="downloadAllAttachments(${msg.id})" style="cursor:pointer;border:1px solid var(--border)">⬇ <span>Download all</span></button>`;
+    attachHtml=`<div class="attachments-bar">${dlAll}${chips}</div>`;
   }
+
 
   detail.innerHTML=`
     <div class="detail-header">
@@ -833,14 +861,36 @@ function renderMessageDetail(msg, showRemoteContent) {
       window._frameMsgHandler = (e) => {
         if (e.data?.type === 'gomail-frame-h' && e.data.h > 50) {
           const h = e.data.h + 24;
-          if (Math.abs(h - lastH) > 4) { // avoid micro-flicker
+          if (Math.abs(h - lastH) > 4) {
             lastH = h;
             frame.style.height = h + 'px';
           }
+        } else if (e.data?.type === 'gomail-open-url' && e.data.url) {
+          confirmExternalNav(e.data.url);
         }
       };
       window.addEventListener('message', window._frameMsgHandler);
     }
+  }
+}
+
+// Download all attachments for a message sequentially
+async function downloadAllAttachments(msgId) {
+  const msg = S.currentMessage;
+  if (!msg?.attachments?.length) return;
+  for (const a of msg.attachments) {
+    const url = `/api/messages/${msgId}/attachments/${a.id}`;
+    try {
+      const resp = await fetch(url);
+      const blob = await resp.blob();
+      const tmp = document.createElement('a');
+      tmp.href = URL.createObjectURL(blob);
+      tmp.download = a.filename || 'attachment';
+      tmp.click();
+      URL.revokeObjectURL(tmp.href);
+      // Small delay to avoid browser throttling sequential downloads
+      await new Promise(r => setTimeout(r, 400));
+    } catch(e) { toast('Failed to download '+esc(a.filename),'error'); }
   }
 }
 
