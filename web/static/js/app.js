@@ -1379,6 +1379,28 @@ async function openSettings() {
   openModal('settings-modal');
   loadSyncInterval();
   renderMFAPanel();
+  loadIPRules();
+  // Pre-fill profile fields with current values
+  const me = await api('GET', '/me');
+  if (me) {
+    document.getElementById('profile-username').placeholder = me.username || 'New username';
+    document.getElementById('profile-email').placeholder = me.email || 'New email';
+  }
+}
+
+async function updateProfile(field) {
+  const value = document.getElementById('profile-' + field).value.trim();
+  const password = document.getElementById('profile-confirm-pw').value;
+  if (!value) { toast('Please enter a new ' + field, 'error'); return; }
+  if (!password) { toast('Current password required to confirm changes', 'error'); return; }
+  const r = await api('PUT', '/profile', { field, value, password });
+  if (r?.ok) {
+    toast(field.charAt(0).toUpperCase() + field.slice(1) + ' updated', 'success');
+    document.getElementById('profile-' + field).value = '';
+    document.getElementById('profile-confirm-pw').value = '';
+  } else {
+    toast(r?.error || 'Update failed', 'error');
+  }
 }
 
 async function loadSyncInterval() {
@@ -1430,6 +1452,39 @@ async function confirmMFASetup() {
 async function disableMFA() {
   const r=await api('POST','/mfa/disable',{code:document.getElementById('mfa-code').value});
   if(r?.ok){toast('MFA disabled','success');renderMFAPanel();}else toast(r?.error||'Invalid code','error');
+}
+
+async function loadIPRules() {
+  const r = await api('GET', '/ip-rules');
+  if (!r) return;
+  document.getElementById('ip-rule-mode').value = r.mode || 'disabled';
+  document.getElementById('ip-rule-list').value = r.ip_list || '';
+  toggleIPRuleHelp();
+}
+
+function toggleIPRuleHelp() {
+  const mode = document.getElementById('ip-rule-mode').value;
+  const helpEl = document.getElementById('ip-rule-help');
+  const listField = document.getElementById('ip-rule-list-field');
+  const helps = {
+    disabled: '',
+    brute_skip: 'IPs in the list below will never be locked out of your account, even after many failed attempts. All other IPs are subject to global brute-force protection.',
+    allow_only: '⚠ Only IPs in the list below will be able to log into your account. All other IPs will see an "Access not authorized" error. Make sure to include your current IP before saving.',
+  };
+  helpEl.textContent = helps[mode] || '';
+  helpEl.style.display = mode !== 'disabled' ? 'block' : 'none';
+  listField.style.display = mode !== 'disabled' ? 'block' : 'none';
+}
+
+async function saveIPRules() {
+  const mode = document.getElementById('ip-rule-mode').value;
+  const ip_list = document.getElementById('ip-rule-list').value.trim();
+  if (mode !== 'disabled' && !ip_list) {
+    toast('Please enter at least one IP address', 'error'); return;
+  }
+  const r = await api('PUT', '/ip-rules', { mode, ip_list });
+  if (r?.ok) toast('IP rules saved', 'success');
+  else toast(r?.error || 'Save failed', 'error');
 }
 
 async function doLogout() { await fetch('/auth/logout',{method:'POST'}); location.href='/auth/login'; }

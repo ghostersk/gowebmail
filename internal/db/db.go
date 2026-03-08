@@ -230,6 +230,21 @@ func (d *DB) Migrate() error {
 		return fmt.Errorf("create ip_blocks: %w", err)
 	}
 
+	// Per-user IP access rules.
+	// mode: "brute_skip" = skip brute force check for this user from listed IPs
+	//       "allow_only" = only allow login from listed IPs (all others get 403)
+	if _, err := d.sql.Exec(`CREATE TABLE IF NOT EXISTS user_ip_rules (
+		id         INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		mode       TEXT    NOT NULL DEFAULT 'brute_skip',
+		ip_list    TEXT    NOT NULL DEFAULT '',
+		created_at DATETIME DEFAULT (datetime('now')),
+		updated_at DATETIME DEFAULT (datetime('now')),
+		UNIQUE(user_id)
+	)`); err != nil {
+		return fmt.Errorf("create user_ip_rules: %w", err)
+	}
+
 	// Bootstrap admin account if no users exist
 	return d.bootstrapAdmin()
 }
@@ -1872,4 +1887,104 @@ func (d *DB) LookupCachedCountry(ip string) (country, countryCode string) {
 		WHERE ip=? AND country != '' ORDER BY created_at DESC LIMIT 1`, ip,
 	).Scan(&country, &countryCode)
 	return
+}
+
+// ---- Profile Updates ----
+
+// UpdateUserEmail changes a user's email address. Returns error if already taken.
+func (d *DB) UpdateUserEmail(userID int64, newEmail string) error {
+	_, err := d.sql.Exec(
+		`UPDATE users SET email=?, updated_at=datetime('now') WHERE id=?`,
+		newEmail, userID)
+	return err
+}
+
+// UpdateUserUsername changes a user's display username. Returns error if already taken.
+func (d *DB) UpdateUserUsername(userID int64, newUsername string) error {
+	_, err := d.sql.Exec(
+		`UPDATE users SET username=?, updated_at=datetime('now') WHERE id=?`,
+		newUsername, userID)
+	return err
+}
+
+// ---- Per-User IP Rules ----
+
+// UserIPRule holds per-user IP access settings.
+type UserIPRule struct {
+	UserID int64  `json:"user_id"`
+	Mode   string `json:"mode"`    // "brute_skip" | "allow_only" | "disabled"
+	IPList string `json:"ip_list"` // comma-separated IPs
+}
+
+// GetUserIPRule returns the IP rule for a user, or nil if none set.
+func (d *DB) GetUserIPRule(userID int64) (*UserIPRule, error) {
+	row := d.sql.QueryRow(`SELECT user_id, mode, ip_list FROM user_ip_rules WHERE user_id=?`, userID)
+	r := &UserIPRule{}
+	if err := row.Scan(&r.UserID, &r.Mode, &r.IPList); err == sql.ErrNoRows {
+		return nil, nil
+	} else if err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+
+// SetUserIPRule upserts the IP rule for a user.
+func (d *DB) SetUserIPRule(userID int64, mode, ipList string) error {
+	_, err := d.sql.Exec(`
+		INSERT INTO user_ip_rules (user_id, mode, ip_list, updated_at)
+		VALUES (?, ?, ?, datetime('now'))
+		ON CONFLICT(user_id) DO UPDATE SET
+			mode=excluded.mode,
+			ip_list=excluded.ip_list,
+			updated_at=datetime('now')`,
+		userID, mode, ipList)
+	return err
+}
+
+// DeleteUserIPRule removes IP rules for a user (disables the feature).
+func (d *DB) DeleteUserIPRule(userID int64) error {
+	_, err := d.sql.Exec(`DELETE FROM user_ip_rules WHERE user_id=?`, userID)
+	return err
+}
+
+// CheckUserIPAccess evaluates per-user IP rules against a connecting IP.
+// Returns:
+//   "allow"      — rule says allow (brute_skip match or allow_only match)
+//   "deny"       — allow_only mode and IP is not in list
+//   "skip_brute" — brute_skip mode and IP is in list (skip brute force check)
+//   "default"    — no rule exists, fall through to global rules
+func (d *DB) CheckUserIPAccess(userID int64, ip string) string {
+	rule, err := d.GetUserIPRule(userID)
+	if err != nil || rule == nil || rule.Mode == "disabled" || rule.IPList == "" {
+		return "default"
+	}
+	for _, listed := range splitIPs(rule.IPList) {
+		if listed == ip {
+			if rule.Mode == "allow_only" {
+				return "allow"
+			}
+			return "skip_brute"
+		}
+	}
+	// IP not in list
+	if rule.Mode == "allow_only" {
+		return "deny"
+	}
+	return "default"
+}
+
+// SplitIPList splits a comma-separated IP string into trimmed, non-empty entries.
+func SplitIPList(s string) []string {
+	return splitIPs(s)
+}
+
+func splitIPs(s string) []string {
+	var result []string
+	for _, p := range strings.Split(s, ",") {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			result = append(result, p)
+		}
+	}
+	return result
 }

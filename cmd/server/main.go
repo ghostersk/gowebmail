@@ -150,10 +150,13 @@ func main() {
 
 	// Profile / auth
 	api.HandleFunc("/me", h.Auth.Me).Methods("GET")
+	api.HandleFunc("/profile", h.Auth.UpdateProfile).Methods("PUT")
 	api.HandleFunc("/change-password", h.Auth.ChangePassword).Methods("POST")
 	api.HandleFunc("/mfa/setup", h.Auth.MFASetupBegin).Methods("POST")
 	api.HandleFunc("/mfa/confirm", h.Auth.MFASetupConfirm).Methods("POST")
 	api.HandleFunc("/mfa/disable", h.Auth.MFADisable).Methods("POST")
+	api.HandleFunc("/ip-rules", h.Auth.GetUserIPRule).Methods("GET")
+	api.HandleFunc("/ip-rules", h.Auth.SetUserIPRule).Methods("PUT")
 
 	// Providers (which OAuth providers are configured)
 	api.HandleFunc("/providers", h.API.GetProviders).Methods("GET")

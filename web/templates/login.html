@@ -19,7 +19,7 @@
 {{end}}
 {{define "scripts"}}
 <script>
-const msgs={invalid_credentials:'Invalid username or password.',missing_fields:'Please fill in all fields.'};
+const msgs={invalid_credentials:'Invalid username or password.',missing_fields:'Please fill in all fields.',location_not_authorized:'Access from your current location is not permitted for this account.'};
 const k=new URLSearchParams(location.search).get('error');
 if(k){const b=document.getElementById('err');b.textContent=msgs[k]||'An error occurred.';b.style.display='block';}
 </script>

@@ -227,7 +227,7 @@ func BruteForceProtect(database *db.DB, cfg *config.Config, next http.Handler) h
 		username := r.FormValue("username")
 		database.RecordLoginAttempt(ip, username, geoResult.Country, geoResult.CountryCode, success)
 
-		if !success {
+		if !success && !rw.skipBrute {
 			failures := database.CountRecentFailures(ip, cfg.BruteWindowMins)
 			if failures >= cfg.BruteMaxAttempts {
 				reason := "Too many failed logins"
@@ -260,16 +260,21 @@ func BruteForceProtect(database *db.DB, cfg *config.Config, next http.Handler) h
 	})
 }
 
-// loginResponseCapture captures the redirect location from the login handler.
+// loginResponseCapture captures the redirect location and skip-brute signal from the login handler.
 type loginResponseCapture struct {
 	http.ResponseWriter
 	statusCode int
 	location   string
+	skipBrute  bool
 }
 
 func (lrc *loginResponseCapture) WriteHeader(code int) {
 	lrc.statusCode = code
 	lrc.location = lrc.ResponseWriter.Header().Get("Location")
+	if lrc.Header().Get("X-Skip-Brute") == "1" {
+		lrc.skipBrute = true
+		lrc.Header().Del("X-Skip-Brute") // strip before sending to client
+	}
 	lrc.ResponseWriter.WriteHeader(code)
 }
 

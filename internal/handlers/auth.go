@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"net"
 	"net/http"
 	"time"
 
@@ -51,6 +52,17 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		h.db.WriteAudit(nil, models.AuditLoginFail, "unknown user: "+username, ip, ua)
 		http.Redirect(w, r, "/auth/login?error=invalid_credentials", http.StatusFound)
 		return
+	}
+
+	// Per-user IP access check — evaluated before password to avoid timing leaks
+	switch h.db.CheckUserIPAccess(user.ID, ip) {
+	case "deny":
+		h.db.WriteAudit(&user.ID, models.AuditLoginFail, "IP not in allow-list: "+ip, ip, ua)
+		http.Redirect(w, r, "/auth/login?error=location_not_authorized", http.StatusFound)
+		return
+	case "skip_brute":
+		// Signal the BruteForceProtect middleware to skip failure counting for this user/IP
+		w.Header().Set("X-Skip-Brute", "1")
 	}
 
 	if err := crypto.CheckPassword(password, user.PasswordHash); err != nil {
@@ -402,4 +414,120 @@ func writeJSONError(w http.ResponseWriter, status int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(map[string]string{"error": msg})
+}
+
+// ---- Profile Updates ----
+
+func (h *AuthHandler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.GetUserID(r)
+	user, err := h.db.GetUserByID(userID)
+	if err != nil || user == nil {
+		writeJSONError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+
+	var req struct {
+		Field    string `json:"field"`    // "email" | "username"
+		Value    string `json:"value"`
+		Password string `json:"password"` // current password required for confirmation
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+
+	if req.Value == "" {
+		writeJSONError(w, http.StatusBadRequest, "value required")
+		return
+	}
+	if req.Password == "" {
+		writeJSONError(w, http.StatusBadRequest, "current password required to confirm profile changes")
+		return
+	}
+	if err := crypto.CheckPassword(req.Password, user.PasswordHash); err != nil {
+		writeJSONError(w, http.StatusForbidden, "incorrect password")
+		return
+	}
+
+	switch req.Field {
+	case "email":
+		// Check uniqueness
+		existing, _ := h.db.GetUserByEmail(req.Value)
+		if existing != nil && existing.ID != userID {
+			writeJSONError(w, http.StatusConflict, "email already in use")
+			return
+		}
+		if err := h.db.UpdateUserEmail(userID, req.Value); err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "failed to update email")
+			return
+		}
+	case "username":
+		existing, _ := h.db.GetUserByUsername(req.Value)
+		if existing != nil && existing.ID != userID {
+			writeJSONError(w, http.StatusConflict, "username already in use")
+			return
+		}
+		if err := h.db.UpdateUserUsername(userID, req.Value); err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "failed to update username")
+			return
+		}
+	default:
+		writeJSONError(w, http.StatusBadRequest, "field must be 'email' or 'username'")
+		return
+	}
+
+	ip := middleware.ClientIP(r)
+	h.db.WriteAudit(&userID, models.AuditUserUpdate, "profile update: "+req.Field, ip, r.UserAgent())
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+}
+
+// ---- Per-User IP Rules ----
+
+func (h *AuthHandler) GetUserIPRule(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.GetUserID(r)
+	rule, err := h.db.GetUserIPRule(userID)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	if rule == nil {
+		rule = &db.UserIPRule{UserID: userID, Mode: "disabled", IPList: ""}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(rule)
+}
+
+func (h *AuthHandler) SetUserIPRule(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.GetUserID(r)
+	var req struct {
+		Mode   string `json:"mode"`    // "disabled" | "brute_skip" | "allow_only"
+		IPList string `json:"ip_list"` // comma-separated
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+
+	validModes := map[string]bool{"disabled": true, "brute_skip": true, "allow_only": true}
+	if !validModes[req.Mode] {
+		writeJSONError(w, http.StatusBadRequest, "mode must be disabled, brute_skip, or allow_only")
+		return
+	}
+
+	// Validate IPs
+	for _, rawIP := range db.SplitIPList(req.IPList) {
+		if net.ParseIP(rawIP) == nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid IP address: "+rawIP)
+			return
+		}
+	}
+
+	if req.Mode == "disabled" {
+		h.db.DeleteUserIPRule(userID)
+	} else {
+		if err := h.db.SetUserIPRule(userID, req.Mode, req.IPList); err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "failed to save rule")
+			return
+		}
+	}
+
+	ip := middleware.ClientIP(r)
+	h.db.WriteAudit(&userID, models.AuditUserUpdate, "IP rule updated: "+req.Mode, ip, r.UserAgent())
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 }

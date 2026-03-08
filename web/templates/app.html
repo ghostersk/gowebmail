@@ -264,10 +264,32 @@
 
 <!-- ── Settings Modal ─────────────────────────────────────────────────────── -->
 <div class="modal-overlay" id="settings-modal">
-  <div class="modal" style="width:520px">
+  <div class="modal" style="width:540px;max-height:90vh;overflow-y:auto">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:22px">
       <h2 style="margin-bottom:0">Settings</h2>
       <button onclick="closeModal('settings-modal')" class="icon-btn"><svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg></button>
+    </div>
+
+    <div class="settings-group">
+      <div class="settings-group-title">Profile</div>
+      <div class="modal-field">
+        <label>Username</label>
+        <div style="display:flex;gap:8px">
+          <input type="text" id="profile-username" placeholder="New username" style="flex:1">
+          <button class="btn-primary" onclick="updateProfile('username')">Save</button>
+        </div>
+      </div>
+      <div class="modal-field">
+        <label>Email Address</label>
+        <div style="display:flex;gap:8px">
+          <input type="email" id="profile-email" placeholder="New email address" style="flex:1">
+          <button class="btn-primary" onclick="updateProfile('email')">Save</button>
+        </div>
+      </div>
+      <div class="modal-field">
+        <label>Current Password <span style="color:var(--muted);font-size:11px">(required to confirm changes)</span></label>
+        <input type="password" id="profile-confirm-pw" placeholder="Enter your current password">
+      </div>
     </div>
 
     <div class="settings-group">
@@ -300,6 +322,27 @@
       </div>
       <div id="mfa-panel">Loading...</div>
     </div>
+
+    <div class="settings-group">
+      <div class="settings-group-title">IP Access Rules</div>
+      <div style="font-size:13px;color:var(--muted);margin-bottom:14px">
+        Control which IP addresses can access your account. This overrides global brute-force settings for your account only.
+      </div>
+      <div class="modal-field">
+        <label>Mode</label>
+        <select id="ip-rule-mode" onchange="toggleIPRuleHelp()" style="width:100%;padding:8px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;outline:none">
+          <option value="disabled">Disabled — use global settings</option>
+          <option value="brute_skip">Skip brute-force check — listed IPs bypass lockout</option>
+          <option value="allow_only">Allow only — only listed IPs can log in</option>
+        </select>
+      </div>
+      <div id="ip-rule-help" style="font-size:12px;color:var(--muted);margin-bottom:10px;display:none"></div>
+      <div class="modal-field" id="ip-rule-list-field">
+        <label>Allowed IPs <span style="color:var(--muted);font-size:11px">(comma-separated)</span></label>
+        <input type="text" id="ip-rule-list" placeholder="e.g. 192.168.1.10, 10.0.0.5">
+      </div>
+      <button class="btn-primary" onclick="saveIPRules()">Save IP Rules</button>
+    </div>
   </div>
 </div>
 
@@ -309,5 +352,5 @@
 {{end}}
 
 {{define "scripts"}}
-<script src="/static/js/app.js?v=20"></script>
+<script src="/static/js/app.js?v=21"></script>
 {{end}}
