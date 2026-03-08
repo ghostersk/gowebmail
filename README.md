@@ -1,4 +1,4 @@
-# GoMail
+# GoWebMail
 
 A self-hosted, encrypted web email client written entirely in Go. Supports Gmail and Outlook via OAuth2, plus any standard IMAP/SMTP provider.
 
@@ -13,7 +13,7 @@ A self-hosted, encrypted web email client written entirely in Go. Supports Gmail
 - **Gmail & Outlook OAuth2** — modern, token-based auth (no storing raw passwords for these providers)
 - **IMAP/SMTP** — connect any provider (ProtonMail Bridge, Fastmail, iCloud, etc.)
 - **AES-256-GCM encryption** — all email content encrypted at rest in SQLite
-- **bcrypt password hashing** — GoMail account passwords hashed with cost=12
+- **bcrypt password hashing** — GoWebMail account passwords hashed with cost=12
 - **Send / Reply / Forward** — full compose workflow
 - **Folder navigation** — per-account folder/label browsing
 - **Full-text search** — across all accounts locally
@@ -88,17 +88,9 @@ go run ./cmd/server/main.go
 - **ENCRYPTION_KEY** is critical — back it up. Without it, the encrypted SQLite database is unreadable.
 - Email content (subject, from, to, body) is encrypted at rest using AES-256-GCM.
 - OAuth2 tokens are stored encrypted in the database.
-- Passwords for GoMail accounts are bcrypt hashed (cost=12).
+- Passwords for GoWebMail accounts are bcrypt hashed (cost=12).
 - All HTTP responses include security headers (CSP, X-Frame-Options, etc.).
 - In production, run behind HTTPS (nginx/Caddy) and set `SECURE_COOKIE=true`.
-
-## Keyboard Shortcuts
-
-| Shortcut | Action |
-|---|---|
-| `Ctrl/Cmd + N` | Compose new message |
-| `Ctrl/Cmd + K` | Focus search |
-| `Escape` | Close compose / modal |
 
 ## Dependencies
 
