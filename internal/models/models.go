@@ -4,7 +4,7 @@ import "time"
 
 // ---- Users ----
 
-// UserRole controls access level within GoMail.
+// UserRole controls access level within GoWebMail.
 type UserRole string
 
 const (
@@ -12,7 +12,7 @@ const (
 	RoleUser  UserRole = "user"
 )
 
-// User represents a GoMail application user.
+// User represents a GoWebMail application user.
 type User struct {
 	ID           int64     `json:"id"`
 	Email        string    `json:"email"`
@@ -213,6 +213,8 @@ type ComposeRequest struct {
 	// For reply/forward
 	InReplyToID   int64  `json:"in_reply_to_id,omitempty"`
 	ForwardFromID int64  `json:"forward_from_id,omitempty"`
+	// Attachments: populated from multipart/form-data or inline base64
+	Attachments   []Attachment `json:"attachments,omitempty"`
 }
 
 // ---- Search ----

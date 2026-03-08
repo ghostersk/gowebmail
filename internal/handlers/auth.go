@@ -142,8 +142,8 @@ func (h *AuthHandler) MFASetupBegin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	qr := mfa.QRCodeURL("GoMail", user.Email, secret)
-	otpURL := mfa.OTPAuthURL("GoMail", user.Email, secret)
+	qr := mfa.QRCodeURL("GoWebMail", user.Email, secret)
+	otpURL := mfa.OTPAuthURL("GoWebMail", user.Email, secret)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{

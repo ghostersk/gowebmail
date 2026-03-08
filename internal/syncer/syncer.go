@@ -446,6 +446,10 @@ func (s *Scheduler) syncFolder(c *email.Client, account *models.EmailAccount, db
 		msg.FolderID = dbFolder.ID
 		if err := s.db.UpsertMessage(msg); err == nil {
 			newMessages++
+			// Save attachment metadata if any (enables download)
+			if len(msg.Attachments) > 0 && msg.ID > 0 {
+				_ = s.db.SaveAttachmentMeta(msg.ID, msg.Attachments)
+			}
 		}
 		uid := uint32(0)
 		fmt.Sscanf(msg.RemoteUID, "%d", &uid)

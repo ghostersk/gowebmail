@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -532,6 +533,26 @@ func (h *APIHandler) GetMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.db.MarkMessageRead(messageID, userID, true)
+
+	// Lazy attachment backfill: if has_attachment=true but no rows in attachments table
+	// (message was synced before attachment parsing was added), fetch from IMAP now and save.
+	if msg.HasAttachment && len(msg.Attachments) == 0 {
+		if uid, folderPath, account, iErr := h.db.GetMessageIMAPInfo(messageID, userID); iErr == nil && uid != 0 && account != nil {
+			if c, cErr := email.Connect(context.Background(), account); cErr == nil {
+				if raw, rErr := c.FetchRawByUID(folderPath, uid); rErr == nil {
+					_, _, atts := email.ParseMIMEFull(raw)
+					if len(atts) > 0 {
+						h.db.SaveAttachmentMeta(messageID, atts)
+						if fresh, fErr := h.db.GetAttachmentsByMessage(messageID, userID); fErr == nil {
+							msg.Attachments = fresh
+						}
+					}
+				}
+				c.Close()
+			}
+		}
+	}
+
 	h.writeJSON(w, msg)
 }
 
@@ -652,19 +673,84 @@ func (h *APIHandler) ReplyMessage(w http.ResponseWriter, r *http.Request) {
 func (h *APIHandler) ForwardMessage(w http.ResponseWriter, r *http.Request) {
 	h.handleSend(w, r, "forward")
 }
+func (h *APIHandler) ForwardAsAttachment(w http.ResponseWriter, r *http.Request) {
+	h.handleSend(w, r, "forward-attachment")
+}
 
 func (h *APIHandler) handleSend(w http.ResponseWriter, r *http.Request, mode string) {
 	userID := middleware.GetUserID(r)
+
 	var req models.ComposeRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		h.writeError(w, http.StatusBadRequest, "invalid request")
-		return
+
+	ct := r.Header.Get("Content-Type")
+	if strings.HasPrefix(ct, "multipart/form-data") {
+		// Parse multipart form (attachments present)
+		if err := r.ParseMultipartForm(32 << 20); err != nil {
+			h.writeError(w, http.StatusBadRequest, "invalid multipart form")
+			return
+		}
+		metaStr := r.FormValue("meta")
+		if err := json.NewDecoder(strings.NewReader(metaStr)).Decode(&req); err != nil {
+			h.writeError(w, http.StatusBadRequest, "invalid meta JSON")
+			return
+		}
+		if r.MultipartForm != nil {
+			for _, fheaders := range r.MultipartForm.File {
+				for _, fh := range fheaders {
+					f, err := fh.Open()
+					if err != nil {
+						continue
+					}
+					data, _ := io.ReadAll(f)
+					f.Close()
+					fileCT := fh.Header.Get("Content-Type")
+					if fileCT == "" {
+						fileCT = "application/octet-stream"
+					}
+					req.Attachments = append(req.Attachments, models.Attachment{
+						Filename:    fh.Filename,
+						ContentType: fileCT,
+						Size:        int64(len(data)),
+						Data:        data,
+					})
+				}
+			}
+		}
+	} else {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			h.writeError(w, http.StatusBadRequest, "invalid request")
+			return
+		}
 	}
 
 	account, err := h.db.GetAccount(req.AccountID)
 	if err != nil || account == nil || account.UserID != userID {
 		h.writeError(w, http.StatusBadRequest, "account not found")
 		return
+	}
+
+	// Forward-as-attachment: fetch original message as EML and attach it
+	if mode == "forward-attachment" && req.ForwardFromID > 0 {
+		origMsg, _ := h.db.GetMessage(req.ForwardFromID, userID)
+		if origMsg != nil {
+			uid, folderPath, origAccount, iErr := h.db.GetMessageIMAPInfo(req.ForwardFromID, userID)
+			if iErr == nil && uid != 0 && origAccount != nil {
+				if c, cErr := email.Connect(context.Background(), origAccount); cErr == nil {
+					if raw, rErr := c.FetchRawByUID(folderPath, uid); rErr == nil {
+						safe := sanitizeFilename(origMsg.Subject)
+						if safe == "" {
+							safe = "message"
+						}
+						req.Attachments = append(req.Attachments, models.Attachment{
+							Filename:    safe + ".eml",
+							ContentType: "message/rfc822",
+							Data:        raw,
+						})
+					}
+					c.Close()
+				}
+			}
+		}
 	}
 
 	if err := email.SendMessageFull(context.Background(), account, &req); err != nil {
@@ -1061,4 +1147,189 @@ func (h *APIHandler) NewMessagesSince(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.writeJSON(w, map[string]interface{}{"messages": msgs})
+}
+
+// ---- Attachment download ----
+
+// DownloadAttachment fetches and streams a message attachment from IMAP.
+func (h *APIHandler) DownloadAttachment(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.GetUserID(r)
+	messageID := pathInt64(r, "id")
+
+	// Get attachment metadata from DB
+	attachmentID := pathInt64(r, "att_id")
+	att, err := h.db.GetAttachment(attachmentID, userID)
+	if err != nil || att == nil {
+		h.writeError(w, http.StatusNotFound, "attachment not found")
+		return
+	}
+
+	_ = messageID // already verified via GetAttachment ownership check
+
+	// Get IMAP info for the message
+	uid, folderPath, account, iErr := h.db.GetMessageIMAPInfo(att.MessageID, userID)
+	if iErr != nil || uid == 0 || account == nil {
+		h.writeError(w, http.StatusNotFound, "message IMAP info not found")
+		return
+	}
+
+	c, cErr := email.Connect(context.Background(), account)
+	if cErr != nil {
+		h.writeError(w, http.StatusBadGateway, "IMAP connect failed: "+cErr.Error())
+		return
+	}
+	defer c.Close()
+
+	// att.ContentID stores the MIME part path (set during parse)
+	mimePartPath := att.ContentID
+	if mimePartPath == "" {
+		h.writeError(w, http.StatusNotFound, "attachment part path not stored")
+		return
+	}
+
+	data, filename, ct, fetchErr := c.FetchAttachmentRaw(folderPath, uid, mimePartPath)
+	if fetchErr != nil {
+		h.writeError(w, http.StatusBadGateway, "fetch failed: "+fetchErr.Error())
+		return
+	}
+	if filename == "" {
+		filename = att.Filename
+	}
+	if ct == "" {
+		ct = att.ContentType
+	}
+	if ct == "" {
+		ct = "application/octet-stream"
+	}
+
+	safe := sanitizeFilename(filename)
+	// For browser-viewable types, use inline disposition so they open in a new tab.
+	// For everything else, force download.
+	disposition := "attachment"
+	ctLower := strings.ToLower(ct)
+	if strings.HasPrefix(ctLower, "image/") ||
+		strings.HasPrefix(ctLower, "text/") ||
+		strings.HasPrefix(ctLower, "video/") ||
+		strings.HasPrefix(ctLower, "audio/") ||
+		ctLower == "application/pdf" {
+		disposition = "inline"
+	}
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`%s; filename="%s"`, disposition, safe))
+	w.Header().Set("Content-Type", ct)
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	w.WriteHeader(http.StatusOK)
+	w.Write(data)
+}
+
+// ListAttachments returns stored attachment metadata for a message.
+func (h *APIHandler) ListAttachments(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.GetUserID(r)
+	messageID := pathInt64(r, "id")
+	atts, err := h.db.GetAttachmentsByMessage(messageID, userID)
+	if err != nil {
+		h.writeError(w, http.StatusInternalServerError, "failed to list attachments")
+		return
+	}
+	if atts == nil {
+		atts = []models.Attachment{}
+	}
+	// Strip raw data from response, keep metadata only
+	type attMeta struct {
+		ID          int64  `json:"id"`
+		MessageID   int64  `json:"message_id"`
+		Filename    string `json:"filename"`
+		ContentType string `json:"content_type"`
+		Size        int64  `json:"size"`
+	}
+	result := make([]attMeta, len(atts))
+	for i, a := range atts {
+		result[i] = attMeta{a.ID, a.MessageID, a.Filename, a.ContentType, a.Size}
+	}
+	h.writeJSON(w, result)
+}
+
+// ---- Mark folder all read ----
+
+func (h *APIHandler) MarkFolderAllRead(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.GetUserID(r)
+	folderID := pathInt64(r, "id")
+
+	ops, err := h.db.MarkFolderAllRead(folderID, userID)
+	if err != nil {
+		h.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	// Enqueue all flag_read ops and trigger sync
+	accountIDs := map[int64]bool{}
+	for _, op := range ops {
+		h.db.EnqueueIMAPOp(&db.PendingIMAPOp{
+			AccountID: op.AccountID, OpType: "flag_read",
+			RemoteUID: op.RemoteUID, FolderPath: op.FolderPath, Extra: "1",
+		})
+		accountIDs[op.AccountID] = true
+	}
+	for accID := range accountIDs {
+		h.syncer.TriggerAccountSync(accID)
+	}
+
+	h.writeJSON(w, map[string]interface{}{"ok": true, "marked": len(ops)})
+}
+
+// ---- Save draft (IMAP APPEND to Drafts) ----
+
+func (h *APIHandler) SaveDraft(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.GetUserID(r)
+
+	var req models.ComposeRequest
+	ct := r.Header.Get("Content-Type")
+	if strings.HasPrefix(ct, "multipart/form-data") {
+		if err := r.ParseMultipartForm(32 << 20); err != nil {
+			h.writeError(w, http.StatusBadRequest, "invalid form")
+			return
+		}
+		json.NewDecoder(strings.NewReader(r.FormValue("meta"))).Decode(&req)
+	} else {
+		json.NewDecoder(r.Body).Decode(&req)
+	}
+
+	account, err := h.db.GetAccount(req.AccountID)
+	if err != nil || account == nil || account.UserID != userID {
+		h.writeError(w, http.StatusBadRequest, "account not found")
+		return
+	}
+
+	// Build the MIME message bytes
+	var buf strings.Builder
+	buf.WriteString("From: " + account.EmailAddress + "\r\n")
+	if len(req.To) > 0 {
+		buf.WriteString("To: " + strings.Join(req.To, ", ") + "\r\n")
+	}
+	buf.WriteString("Subject: " + req.Subject + "\r\n")
+	buf.WriteString("MIME-Version: 1.0\r\n")
+	buf.WriteString("Content-Type: text/html; charset=utf-8\r\n\r\n")
+	buf.WriteString(req.BodyHTML)
+
+	raw := []byte(buf.String())
+
+	// Append to IMAP Drafts in background
+	go func() {
+		c, err := email.Connect(context.Background(), account)
+		if err != nil {
+			log.Printf("[draft] IMAP connect %s: %v", account.EmailAddress, err)
+			return
+		}
+		defer c.Close()
+		draftsFolder, err := c.AppendToDrafts(raw)
+		if err != nil {
+			log.Printf("[draft] AppendToDrafts %s: %v", account.EmailAddress, err)
+			return
+		}
+		if draftsFolder != "" {
+			// Trigger a sync of the drafts folder to pick up the saved draft
+			h.syncer.TriggerAccountSync(account.ID)
+		}
+	}()
+
+	h.writeJSON(w, map[string]bool{"ok": true})
 }

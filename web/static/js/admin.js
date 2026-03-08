@@ -1,4 +1,4 @@
-// GoMail Admin SPA
+// GoWebMail Admin SPA
 
 const adminRoutes = {
   '/admin':          renderUsers,
@@ -26,7 +26,7 @@ async function renderUsers() {
   el.innerHTML = `
     <div class="admin-page-header">
       <h1>Users</h1>
-      <p>Manage GoMail accounts and permissions.</p>
+      <p>Manage GoWebMail accounts and permissions.</p>
     </div>
     <div class="admin-card">
       <div style="display:flex;justify-content:flex-end;margin-bottom:16px">
@@ -67,16 +67,19 @@ async function loadUsersTable() {
   if (!r) { el.innerHTML = '<p class="alert error">Failed to load users</p>'; return; }
   if (!r.length) { el.innerHTML = '<p style="color:var(--muted);font-size:13px">No users yet.</p>'; return; }
   el.innerHTML = `<table class="data-table">
-    <thead><tr><th>Username</th><th>Email</th><th>Role</th><th>Status</th><th>Last Login</th><th></th></tr></thead>
+    <thead><tr><th>Username</th><th>Email</th><th>Role</th><th>Status</th><th>MFA</th><th>Last Login</th><th></th></tr></thead>
     <tbody>${r.map(u => `
       <tr>
         <td style="font-weight:500">${esc(u.username)}</td>
         <td style="color:var(--muted)">${esc(u.email)}</td>
         <td><span class="badge ${u.role==='admin'?'blue':'amber'}">${u.role}</span></td>
         <td><span class="badge ${u.is_active?'green':'red'}">${u.is_active?'Active':'Disabled'}</span></td>
+        <td><span class="badge ${u.mfa_enabled?'blue':'amber'}">${u.mfa_enabled?'On':'Off'}</span></td>
         <td style="color:var(--muted);font-size:12px">${u.last_login_at ? new Date(u.last_login_at).toLocaleDateString() : 'Never'}</td>
-        <td style="display:flex;gap:6px;justify-content:flex-end">
+        <td style="display:flex;gap:4px;justify-content:flex-end;flex-wrap:wrap">
           <button class="btn-secondary" style="padding:4px 10px;font-size:12px" onclick="openEditUser(${u.id})">Edit</button>
+          <button class="btn-secondary" style="padding:4px 10px;font-size:12px" onclick="openResetPassword(${u.id},'${esc(u.username)}')">🔑 Reset PW</button>
+          ${u.mfa_enabled?`<button class="btn-secondary" style="padding:4px 10px;font-size:12px;color:var(--warning,#f90)" onclick="disableMFA(${u.id},'${esc(u.username)}')">🔒 Disable MFA</button>`:''}
           <button class="btn-danger" style="padding:4px 10px;font-size:12px" onclick="deleteUser(${u.id})">Delete</button>
         </td>
       </tr>`).join('')}
@@ -137,6 +140,23 @@ async function deleteUser(userId) {
   const r = await api('DELETE', '/admin/users/' + userId);
   if (r && r.ok) { toast('User deleted', 'success'); loadUsersTable(); }
   else toast((r && r.error) || 'Delete failed', 'error');
+}
+
+async function disableMFA(userId, username) {
+  if (!confirm(`Disable MFA for "${username}"? They will be able to log in without a TOTP code until they re-enable it.`)) return;
+  const r = await api('PUT', '/admin/users/' + userId, { disable_mfa: true });
+  if (r && r.ok) { toast('MFA disabled for ' + username, 'success'); loadUsersTable(); }
+  else toast((r && r.error) || 'Failed to disable MFA', 'error');
+}
+
+function openResetPassword(userId, username) {
+  const pw = prompt(`Reset password for "${username}"\n\nEnter new password (min. 8 characters):`);
+  if (!pw) return;
+  if (pw.length < 8) { toast('Password must be at least 8 characters', 'error'); return; }
+  api('PUT', '/admin/users/' + userId, { password: pw }).then(r => {
+    if (r && r.ok) toast('Password reset for ' + username, 'success');
+    else toast((r && r.error) || 'Failed to reset password', 'error');
+  });
 }
 
 // ============================================================

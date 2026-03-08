@@ -1,4 +1,4 @@
-// Package config loads and persists GoMail configuration from data/gowebmail.conf
+// Package config loads and persists GoWebMail configuration from data/gowebmail.conf
 package config
 
 import (
@@ -59,7 +59,7 @@ var allFields = []configField{
 		defVal: "localhost",
 		comments: []string{
 			"--- Server ---",
-			"Public hostname of this GoMail instance (no port, no protocol).",
+			"Public hostname of this GoWebMail instance (no port, no protocol).",
 			"Examples: localhost | mail.example.com | 192.168.1.10",
 			"Used to build BASE_URL and OAuth redirect URIs automatically.",
 			"Also used in security checks to reject requests with unexpected Host headers.",
@@ -92,7 +92,7 @@ var allFields = []configField{
 		key:    "SECURE_COOKIE",
 		defVal: "false",
 		comments: []string{
-			"Set to true when GoMail is served over HTTPS (directly or via proxy).",
+			"Set to true when GoWebMail is served over HTTPS (directly or via proxy).",
 			"Marks session cookies as Secure so browsers only send them over TLS.",
 		},
 	},
@@ -109,7 +109,7 @@ var allFields = []configField{
 		comments: []string{
 			"Comma-separated list of IP addresses or CIDR ranges of trusted reverse proxies.",
 			"Requests from these IPs may set X-Forwarded-For and X-Forwarded-Proto headers,",
-			"which GoMail uses to determine the real client IP and whether TLS is in use.",
+			"which GoWebMail uses to determine the real client IP and whether TLS is in use.",
 			"  Examples:",
 			"    127.0.0.1                        (loopback only — Nginx/Traefik on same host)",
 			"    10.0.0.0/8,172.16.0.0/12         (private networks)",
@@ -228,7 +228,7 @@ func Load() (*Config, error) {
 
 	// get returns env var if set, else file value, else ""
 	get := func(key string) string {
-		// Only check env vars that are explicitly GoMail-namespaced or well-known.
+		// Only check env vars that are explicitly GoWebMail-namespaced or well-known.
 		// We deliberately do NOT fall back to generic vars like PORT to avoid
 		// picking up cloud-platform env vars unintentionally.
 		if v := os.Getenv("GOMAIL_" + key); v != "" {
@@ -443,7 +443,7 @@ func readConfigFile(path string) (map[string]string, error) {
 
 func writeConfigFile(path string, values map[string]string) error {
 	var sb strings.Builder
-	sb.WriteString("# GoMail Configuration\n")
+	sb.WriteString("# GoWebMail Configuration\n")
 	sb.WriteString("# =====================\n")
 	sb.WriteString("# Auto-generated and updated on each startup.\n")
 	sb.WriteString("# Edit freely — your values are always preserved.\n")
@@ -576,7 +576,7 @@ func parseCIDRList(s string) ([]net.IPNet, error) {
 }
 
 func logStartupInfo(cfg *Config) {
-	fmt.Printf("GoMail starting:\n")
+	fmt.Printf("GoWebMail starting:\n")
 	fmt.Printf("  Listen  : %s\n", cfg.ListenAddr)
 	fmt.Printf("  Base URL: %s\n", cfg.BaseURL)
 	fmt.Printf("  Hostname: %s\n", cfg.Hostname)

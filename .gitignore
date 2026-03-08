@@ -4,3 +4,5 @@ data/*.db-shm
 data/*db-wal
 data/gowebmail.conf
 data/*.txt
+gowebmail-devplan.md
+testrun/

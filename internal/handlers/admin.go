@@ -108,9 +108,10 @@ func (h *AdminHandler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 	targetID, _ := strconv.ParseInt(vars["id"], 10, 64)
 
 	var req struct {
-		IsActive *bool  `json:"is_active"`
-		Password string `json:"password"`
-		Role     string `json:"role"`
+		IsActive   *bool  `json:"is_active"`
+		Password   string `json:"password"`
+		Role       string `json:"role"`
+		DisableMFA bool   `json:"disable_mfa"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.writeError(w, http.StatusBadRequest, "invalid request")
@@ -130,6 +131,12 @@ func (h *AdminHandler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := h.db.UpdateUserPassword(targetID, req.Password); err != nil {
 			h.writeError(w, http.StatusInternalServerError, "failed to update password")
+			return
+		}
+	}
+	if req.DisableMFA {
+		if err := h.db.AdminDisableMFAByID(targetID); err != nil {
+			h.writeError(w, http.StatusInternalServerError, "failed to disable MFA")
 			return
 		}
 	}

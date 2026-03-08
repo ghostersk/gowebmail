@@ -1,4 +1,4 @@
-// Package middleware provides HTTP middleware for GoMail.
+// Package middleware provides HTTP middleware for GoWebMail.
 package middleware
 
 import (

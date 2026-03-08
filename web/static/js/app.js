@@ -1,4 +1,4 @@
-// GoMail app.js — full client
+// GoWebMail app.js — full client
 
 // ── State ──────────────────────────────────────────────────────────────────
 const S = {
@@ -6,12 +6,8 @@ const S = {
   folders: [], messages: [], totalMessages: 0,
   currentPage: 1, currentFolder: 'unified', currentFolderName: 'Unified Inbox',
   currentMessage: null, selectedMessageId: null,
-  searchQuery: '', composeMode: 'new', composeReplyToId: null,
-  remoteWhitelist: new Set(),
-  draftTimer: null, draftDirty: false,
-  composeVisible: false, composeMinimised: false,
-  // Message list filters
-  filterUnread: false,
+  searchQuery: '', composeMode: 'new', composeReplyToId: null, composeForwardFromId: null,
+  filterUnread: false, filterAttachment: false,
   sortOrder: 'date-desc', // 'date-desc' | 'date-asc' | 'size-desc'
 };
 
@@ -387,6 +383,7 @@ function showFolderMenu(e, folderId) {
     <div class="ctx-item" onclick="syncFolderNow(${folderId});closeMenu()">↻ Sync this folder</div>
     <div class="ctx-item" onclick="toggleFolderSync(${folderId});closeMenu()">${syncLabel}</div>
     ${enableAllEntry}
+    <div class="ctx-item" onclick="markFolderAllRead(${folderId});closeMenu()">✓ Mark all as read</div>
     <div class="ctx-sep"></div>
     ${moveEntry}
     ${emptyEntry}
@@ -399,6 +396,15 @@ async function syncFolderNow(folderId) {
   const r=await api('POST','/folders/'+folderId+'/sync');
   if (r?.ok) { toast('Synced '+(r.synced||0)+' messages','success'); loadFolders(); loadMessages(); }
   else toast(r?.error||'Sync failed','error');
+}
+
+async function markFolderAllRead(folderId) {
+  const r=await api('POST','/folders/'+folderId+'/mark-all-read');
+  if(r?.ok){
+    toast(`Marked ${r.marked||0} message(s) as read`,'success');
+    loadFolders();
+    loadMessages();
+  } else toast(r?.error||'Failed','error');
 }
 
 async function toggleFolderSync(folderId) {
@@ -533,18 +539,19 @@ async function loadMessages(append) {
 
 function setFilter(mode) {
   S.filterUnread = (mode === 'unread');
-  S.sortOrder = (mode === 'unread' || mode === 'default') ? 'date-desc' : mode;
+  S.filterAttachment = (mode === 'attachment');
+  S.sortOrder = (mode === 'unread' || mode === 'default' || mode === 'attachment') ? 'date-desc' : mode;
 
   // Update checkmarks
-  ['default','unread','date-desc','date-asc','size-desc'].forEach(k => {
+  ['default','unread','attachment','date-desc','date-asc','size-desc'].forEach(k => {
     const el = document.getElementById('fopt-'+k);
     if (el) el.textContent = (k === mode ? '✓ ' : '○ ') + el.textContent.slice(2);
   });
 
   // Update button label
   const labels = {
-    'default':'Filter', 'unread':'Unread', 'date-desc':'↓ Date',
-    'date-asc':'↑ Date', 'size-desc':'↓ Size'
+    'default':'Filter', 'unread':'Unread', 'attachment':'📎 Has Attachment',
+    'date-desc':'↓ Date', 'date-asc':'↑ Date', 'size-desc':'↓ Size'
   };
   const labelEl = document.getElementById('filter-label');
   if (labelEl) {
@@ -569,6 +576,7 @@ function renderMessageList() {
 
   // Filter
   if (S.filterUnread) msgs = msgs.filter(m => !m.is_read);
+  if (S.filterAttachment) msgs = msgs.filter(m => m.has_attachment);
 
   // Sort
   if (S.sortOrder === 'date-asc') msgs.sort((a,b) => new Date(a.date)-new Date(b.date));
@@ -576,7 +584,8 @@ function renderMessageList() {
   else msgs.sort((a,b) => new Date(b.date)-new Date(a.date));
 
   if (!msgs.length){
-    list.innerHTML=`<div class="empty-state"><svg viewBox="0 0 24 24"><path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"/></svg><p>${S.filterUnread?'No unread messages':'No messages'}</p></div>`;
+    const emptyMsg = S.filterUnread ? 'No unread messages' : S.filterAttachment ? 'No messages with attachments' : 'No messages';
+    list.innerHTML=`<div class="empty-state"><svg viewBox="0 0 24 24"><path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"/></svg><p>${emptyMsg}</p></div>`;
     return;
   }
 
@@ -642,6 +651,7 @@ function handleMsgClick(e, id, idx) {
 function getFilteredSortedMsgs() {
   let msgs=[...S.messages];
   if (S.filterUnread) msgs=msgs.filter(m=>!m.is_read);
+  if (S.filterAttachment) msgs=msgs.filter(m=>m.has_attachment);
   if (S.sortOrder==='date-asc') msgs.sort((a,b)=>new Date(a.date)-new Date(b.date));
   else if (S.sortOrder==='size-desc') msgs.sort((a,b)=>(b.size||0)-(a.size||0));
   else msgs.sort((a,b)=>new Date(b.date)-new Date(a.date));
@@ -717,21 +727,36 @@ function renderMessageDetail(msg, showRemoteContent) {
   const allowed=showRemoteContent||S.remoteWhitelist.has(msg.from_email);
 
   // CSS injected into every iframe — forces white background so dark-themed emails
-  // don't inherit our app dark theme. allow-scripts is needed for some email onclick events.
+  // don't inherit our app dark theme.
   const cssReset = `<style>html,body{background:#ffffff!important;color:#1a1a1a!important;` +
     `font-family:Arial,sans-serif;font-size:14px;line-height:1.5;margin:8px}a{color:#1a5fb4}` +
     `img{max-width:100%;height:auto}</style>`;
 
+  // Script injected into srcdoc to report content height via postMessage.
+  // Required because removing allow-same-origin means contentDocument is null from parent.
+  const heightScript = `<script>
+    function _reportH(){parent.postMessage({type:'gomail-frame-h',h:document.documentElement.scrollHeight},'*');}
+    document.addEventListener('DOMContentLoaded',_reportH);
+    window.addEventListener('load',_reportH);
+    new MutationObserver(_reportH).observe(document.documentElement,{subtree:true,childList:true,attributes:true});
+  <\/script>`;
+
+  // NOTE: allow-scripts is needed for the height-reporting script above.
+  // allow-same-origin is intentionally excluded to prevent sandbox escape.
+  // Inline CID images are resolved to data: URIs during sync so no cid: scheme needed.
+  const sandboxAttr = 'allow-scripts allow-popups allow-popups-to-escape-sandbox';
+
   let bodyHtml='';
   if (msg.body_html) {
     if (allowed) {
-      const srcdoc = cssReset + msg.body_html;
-      bodyHtml=`<iframe id="msg-frame" sandbox="allow-same-origin allow-popups allow-scripts"
-        style="width:100%;border:none;min-height:400px;display:block"
+      const srcdoc = cssReset + heightScript + msg.body_html;
+      bodyHtml=`<iframe id="msg-frame" sandbox="${sandboxAttr}"
+        style="width:100%;border:none;min-height:200px;display:block"
         srcdoc="${srcdoc.replace(/"/g,'&quot;')}"></iframe>`;
     } else {
+      // Block external http(s) images but preserve data: URIs (inline/CID already resolved)
       const stripped = msg.body_html
-        .replace(/<img(\s[^>]*?)src\s*=\s*(['"])[^'"]*\2/gi, '<img$1src="" data-blocked="1"')
+        .replace(/<img(\s[^>]*?)src\s*=\s*(['"])(https?:\/\/[^'"]+)\2/gi, '<img$1src="" data-blocked-src="$3"')
         .replace(/url\s*\(\s*(['"]?)https?:\/\/[^)'"]+\1\s*\)/gi, 'url()')
         .replace(/<link[^>]*>/gi, '')
         .replace(/<script[\s\S]*?<\/script>/gi, '');
@@ -742,9 +767,9 @@ function renderMessageDetail(msg, showRemoteContent) {
         <button class="rcb-btn" onclick="renderMessageDetail(S.currentMessage,true)">Load images</button>
         <button class="rcb-btn" onclick="whitelistSender('${esc(msg.from_email)}')">Always allow from ${esc(msg.from_email)}</button>
       </div>
-      <iframe id="msg-frame" sandbox="allow-same-origin allow-popups allow-scripts"
-        style="width:100%;border:none;min-height:400px;display:block"
-        srcdoc="${srcdoc.replace(/"/g,'&quot;')}"></iframe>`;
+      <iframe id="msg-frame" sandbox="${sandboxAttr}"
+        style="width:100%;border:none;min-height:200px;display:block"
+        srcdoc="${(cssReset + heightScript + stripped).replace(/"/g,'&quot;')}"></iframe>`;
     }
   } else {
     bodyHtml=`<div class="detail-body-text">${esc(msg.body_text||'(empty)')}</div>`;
@@ -754,10 +779,20 @@ function renderMessageDetail(msg, showRemoteContent) {
   if (msg.attachments?.length) {
     attachHtml=`<div class="attachments-bar">
       <span style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;margin-right:8px">Attachments</span>
-      ${msg.attachments.map(a=>`<div class="attachment-chip">
-        📎 <span>${esc(a.filename)}</span>
-        <span style="color:var(--muted);font-size:10px">${formatSize(a.size)}</span>
-      </div>`).join('')}
+      ${msg.attachments.map(a=>{
+        const url=`/api/messages/${msg.id}/attachments/${a.id}`;
+        const viewable=/^(image\/|text\/|application\/pdf$|video\/|audio\/)/.test(a.content_type||'');
+        if(viewable){
+          return `<a class="attachment-chip" href="${url}" target="_blank" rel="noopener" title="Open ${esc(a.filename)}">
+            📎 <span>${esc(a.filename)}</span>
+            <span style="color:var(--muted);font-size:10px">${formatSize(a.size)}</span>
+          </a>`;
+        }
+        return `<a class="attachment-chip" href="${url}" download="${esc(a.filename)}" title="Download ${esc(a.filename)}">
+          📎 <span>${esc(a.filename)}</span>
+          <span style="color:var(--muted);font-size:10px">${formatSize(a.size)}</span>
+        </a>`;
+      }).join('')}
     </div>`;
   }
 
@@ -777,6 +812,7 @@ function renderMessageDetail(msg, showRemoteContent) {
     <div class="detail-actions">
       <button class="action-btn" onclick="openReply()">↩ Reply</button>
       <button class="action-btn" onclick="openForward()">↪ Forward</button>
+      <button class="action-btn" onclick="openForwardAsAttachment()" title="Forward the original message as an .eml file attachment">↪ Fwd as Attachment</button>
       <button class="action-btn" onclick="toggleStar(${msg.id})">${msg.is_starred?'★ Unstar':'☆ Star'}</button>
       <button class="action-btn" onclick="markRead(${msg.id},${!msg.is_read})">${msg.is_read?'Mark unread':'Mark read'}</button>
       <button class="action-btn" onclick="showMessageHeaders(${msg.id})">⋮ Headers</button>
@@ -786,24 +822,24 @@ function renderMessageDetail(msg, showRemoteContent) {
     ${attachHtml}
     <div class="detail-body">${bodyHtml}</div>`;
 
-  // Auto-size iframe to content height using ResizeObserver
+  // Auto-size iframe via postMessage from injected height-reporting script.
+  // We cannot use contentDocument (null without allow-same-origin in sandbox).
   if (msg.body_html) {
-    const frame=document.getElementById('msg-frame');
+    const frame = document.getElementById('msg-frame');
     if (frame) {
-      const sizeFrame = () => {
-        try {
-          const h = frame.contentDocument?.documentElement?.scrollHeight;
-          if (h && h > 50) frame.style.height = (h + 20) + 'px';
-        } catch(e) {}
+      // Clean up any previous listener
+      if (window._frameMsgHandler) window.removeEventListener('message', window._frameMsgHandler);
+      let lastH = 0;
+      window._frameMsgHandler = (e) => {
+        if (e.data?.type === 'gomail-frame-h' && e.data.h > 50) {
+          const h = e.data.h + 24;
+          if (Math.abs(h - lastH) > 4) { // avoid micro-flicker
+            lastH = h;
+            frame.style.height = h + 'px';
+          }
+        }
       };
-      frame.onload = () => {
-        sizeFrame();
-        // Also observe content changes (images loading)
-        try {
-          const ro = new ResizeObserver(sizeFrame);
-          ro.observe(frame.contentDocument.documentElement);
-        } catch(e) {}
-      };
+      window.addEventListener('message', window._frameMsgHandler);
     }
   }
 }
@@ -946,6 +982,7 @@ function showCompose() {
   d.style.display='flex';
   m.style.display='none';
   S.composeVisible=true; S.composeMinimised=false;
+  initComposeDragDrop();
 }
 
 function minimizeCompose() {
@@ -995,12 +1032,29 @@ function openReplyTo(msgId) {
 function openForward() {
   if (!S.currentMessage) return;
   const msg=S.currentMessage;
+  S.composeForwardFromId=msg.id;
   openCompose({
-    mode:'forward', title:'Forward',
+    mode:'forward', forwardId:msg.id, title:'Forward',
     subject:'Fwd: '+(msg.subject||''),
     body:`<br><br><div class="quote-divider">—— Forwarded message ——<br>From: ${esc(msg.from_email||'')}</div><blockquote>${msg.body_html||('<pre>'+esc(msg.body_text||'')+'</pre>')}</blockquote>`,
   });
 }
+
+function openForwardAsAttachment() {
+  if (!S.currentMessage) return;
+  const msg=S.currentMessage;
+  S.composeForwardFromId=msg.id;
+  openCompose({
+    mode:'forward-attachment', forwardId:msg.id, title:'Forward as Attachment',
+    subject:'Fwd: '+(msg.subject||''),
+    body:'',
+  });
+  // Add a visual placeholder chip (the actual EML is fetched server-side)
+  composeAttachments=[{name: sanitizeSubject(msg.subject||'message')+'.eml', size:0, isForward:true}];
+  updateAttachList();
+}
+
+function sanitizeSubject(s){return s.replace(/[/\\:*?"<>|]/g,'_').slice(0,60)||'message';}
 
 // ── Email Tag Input ────────────────────────────────────────────────────────
 function initTagField(containerId) {
@@ -1077,23 +1131,62 @@ function clearDraftAutosave() {
 
 async function saveDraft(silent) {
   S.draftDirty=false;
+  const accountId=parseInt(document.getElementById('compose-from')?.value||0);
+  if(!accountId){ if(!silent) toast('Draft saved locally','success'); return; }
+  const editor=document.getElementById('compose-editor');
+  const meta={
+    account_id:accountId,
+    to:getTagValues('compose-to'),
+    subject:document.getElementById('compose-subject').value,
+    body_html:editor.innerHTML.trim(),
+    body_text:editor.innerText.trim(),
+  };
+  const r=await api('POST','/draft',meta);
   if(!silent) toast('Draft saved','success');
-  else toast('Draft auto-saved','success');
+  else if(r?.ok) toast('Draft auto-saved to server','success');
 }
 
 // ── Compose formatting ─────────────────────────────────────────────────────
 function execFmt(cmd,val) { document.getElementById('compose-editor').focus(); document.execCommand(cmd,false,val||null); }
 function triggerAttach() { document.getElementById('compose-attach-input').click(); }
 function handleAttachFiles(input) { for(const file of input.files) composeAttachments.push({file,name:file.name,size:file.size}); input.value=''; updateAttachList(); S.draftDirty=true; }
-function removeAttachment(i) { composeAttachments.splice(i,1); updateAttachList(); }
+function removeAttachment(i) {
+  // Don't remove EML forward placeholder (isForward) from UI; it's handled server-side
+  if(composeAttachments[i]?.isForward && S.composeMode==='forward-attachment'){
+    toast('The original message will be attached when sent','info'); return;
+  }
+  composeAttachments.splice(i,1); updateAttachList();
+}
 function updateAttachList() {
   const el=document.getElementById('compose-attach-list');
   if(!composeAttachments.length){el.innerHTML='';return;}
   el.innerHTML=composeAttachments.map((a,i)=>`<div class="attachment-chip">
     📎 <span>${esc(a.name)}</span>
-    <span style="color:var(--muted);font-size:10px">${formatSize(a.size)}</span>
+    <span style="color:var(--muted);font-size:10px">${a.size?formatSize(a.size):''}</span>
     <button onclick="removeAttachment(${i})" class="tag-remove" type="button">×</button>
   </div>`).join('');
+}
+
+// ── Compose drag-and-drop attachments ──────────────────────────────────────
+function initComposeDragDrop() {
+  const dialog=document.getElementById('compose-dialog');
+  if(!dialog) return;
+  dialog.addEventListener('dragover', e=>{
+    e.preventDefault(); e.stopPropagation();
+    dialog.classList.add('drag-over');
+  });
+  dialog.addEventListener('dragleave', e=>{
+    if(!dialog.contains(e.relatedTarget)) dialog.classList.remove('drag-over');
+  });
+  dialog.addEventListener('drop', e=>{
+    e.preventDefault(); e.stopPropagation();
+    dialog.classList.remove('drag-over');
+    if(e.dataTransfer?.files?.length){
+      for(const file of e.dataTransfer.files) composeAttachments.push({file,name:file.name,size:file.size});
+      updateAttachList(); S.draftDirty=true;
+      toast(`${e.dataTransfer.files.length} file(s) attached`,'success');
+    }
+  });
 }
 
 async function sendMessage() {
@@ -1104,15 +1197,44 @@ async function sendMessage() {
   const bodyHTML=editor.innerHTML.trim(), bodyText=editor.innerText.trim();
   const btn=document.getElementById('send-btn');
   btn.disabled=true; btn.textContent='Sending…';
-  const endpoint=S.composeMode==='reply'?'/reply':S.composeMode==='forward'?'/forward':'/send';
-  const r=await api('POST',endpoint,{
+
+  const endpoint=S.composeMode==='reply'?'/reply'
+    :S.composeMode==='forward'?'/forward'
+    :S.composeMode==='forward-attachment'?'/forward-attachment'
+    :'/send';
+
+  const meta={
     account_id:accountId, to,
     cc:getTagValues('compose-cc-tags'),
     bcc:getTagValues('compose-bcc-tags'),
     subject:document.getElementById('compose-subject').value,
     body_text:bodyText, body_html:bodyHTML,
     in_reply_to_id:S.composeMode==='reply'?S.composeReplyToId:0,
-  });
+    forward_from_id:(S.composeMode==='forward'||S.composeMode==='forward-attachment')?S.composeForwardFromId:0,
+  };
+
+  let r;
+  // Use FormData when there are real file attachments, OR when forwarding as attachment
+  // (server needs multipart so it can read forward_from_id from meta and fetch the EML itself)
+  const hasRealFiles = composeAttachments.some(a => a.file instanceof Blob);
+  const needsFormData = hasRealFiles || S.composeMode === 'forward-attachment';
+  if(needsFormData){
+    const fd=new FormData();
+    fd.append('meta', JSON.stringify(meta));
+    for(const a of composeAttachments){
+      if(a.file instanceof Blob){        // only append real File/Blob objects
+        fd.append('file', a.file, a.name);
+      }
+      // isForward placeholders are intentionally skipped — the EML is fetched server-side
+    }
+    try{
+      const resp=await fetch('/api'+endpoint,{method:'POST',body:fd});
+      r=await resp.json();
+    }catch(e){ r={error:String(e)}; }
+  } else {
+    r=await api('POST',endpoint,meta);
+  }
+
   btn.disabled=false; btn.textContent='Send';
   if(r?.ok){ toast('Message sent!','success'); clearDraftAutosave(); _closeCompose(); }
   else toast(r?.error||'Send failed','error');
@@ -1386,7 +1508,7 @@ function updateUnreadBadgeFromPoll(inboxUnread) {
     badge.style.display = 'none';
   }
   // Update browser tab title
-  const base = 'GoMail';
+  const base = 'GoWebMail';
   document.title = inboxUnread > 0 ? `(${inboxUnread}) ${base}` : base;
 }
 
@@ -1444,7 +1566,7 @@ function sendOSNotification(msgs) {
   const first = msgs[0];
   const title = count === 1
     ? (first.from_name || first.from_email || 'New message')
-    : `${count} new messages in GoMail`;
+    : `${count} new messages in GoWebMail`;
   const body = count === 1
     ? (first.subject || '(no subject)')
     : `${first.from_name || first.from_email}: ${first.subject || '(no subject)'}`;

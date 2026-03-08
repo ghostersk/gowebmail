@@ -58,13 +58,14 @@
             <span id="filter-label">Filter</span>
           </button>
           <div class="filter-dropdown-menu" id="filter-dropdown-menu" style="display:none">
-            <div class="filter-opt" id="fopt-default"   onclick="goMailSetFilter('default');event.stopPropagation()">✓ Default order</div>
+            <div class="filter-opt" id="fopt-default"     onclick="goMailSetFilter('default');event.stopPropagation()">✓ Default order</div>
             <div class="filter-sep-line"></div>
-            <div class="filter-opt" id="fopt-unread"    onclick="goMailSetFilter('unread');event.stopPropagation()">○ Unread only</div>
+            <div class="filter-opt" id="fopt-unread"      onclick="goMailSetFilter('unread');event.stopPropagation()">○ Unread only</div>
+            <div class="filter-opt" id="fopt-attachment"  onclick="goMailSetFilter('attachment');event.stopPropagation()">○ 📎 Has attachment</div>
             <div class="filter-sep-line"></div>
-            <div class="filter-opt" id="fopt-date-desc" onclick="goMailSetFilter('date-desc');event.stopPropagation()">○ Newest first</div>
-            <div class="filter-opt" id="fopt-date-asc"  onclick="goMailSetFilter('date-asc');event.stopPropagation()">○ Oldest first</div>
-            <div class="filter-opt" id="fopt-size-desc" onclick="goMailSetFilter('size-desc');event.stopPropagation()">○ Largest first</div>
+            <div class="filter-opt" id="fopt-date-desc"   onclick="goMailSetFilter('date-desc');event.stopPropagation()">○ Newest first</div>
+            <div class="filter-opt" id="fopt-date-asc"    onclick="goMailSetFilter('date-asc');event.stopPropagation()">○ Oldest first</div>
+            <div class="filter-opt" id="fopt-size-desc"   onclick="goMailSetFilter('size-desc');event.stopPropagation()">○ Largest first</div>
           </div>
         </div>
       </div>
@@ -308,5 +309,5 @@
 {{end}}
 
 {{define "scripts"}}
-<script src="/static/js/app.js?v=12"></script>
+<script src="/static/js/app.js?v=15"></script>
 {{end}}

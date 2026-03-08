@@ -1,4 +1,4 @@
-// GoMail shared utilities - loaded on every page
+// GoWebMail shared utilities - loaded on every page
 
 // ---- API helper ----
 async function api(method, path, body) {

@@ -392,8 +392,14 @@ func parseIMAPMessage(msg *imap.Message, account *gomailModels.EmailAccount) (*g
 	return m, nil
 }
 
+// ParseMIMEFull is the exported version of parseMIME for use by handlers.
+func ParseMIMEFull(raw []byte) (text, html string, attachments []gomailModels.Attachment) {
+	return parseMIME(raw)
+}
+
 // parseMIME takes a full RFC822 raw message (with headers) and extracts
 // text/plain, text/html and attachment metadata.
+// Inline images referenced by cid: are base64-embedded into the HTML as data: URIs.
 func parseMIME(raw []byte) (text, html string, attachments []gomailModels.Attachment) {
 	msg, err := netmail.ReadMessage(bytes.NewReader(raw))
 	if err != nil {
@@ -405,12 +411,144 @@ func parseMIME(raw []byte) (text, html string, attachments []gomailModels.Attach
 		ct = "text/plain"
 	}
 	body, _ := io.ReadAll(msg.Body)
-	text, html, attachments = parsePart(ct, msg.Header.Get("Content-Transfer-Encoding"), body)
+	// cidMap: Content-ID → base64 data URI for inline images
+	cidMap := make(map[string]string)
+	text, html, attachments = parsePartIndexedCID(ct, msg.Header.Get("Content-Transfer-Encoding"), body, []int{}, cidMap)
+
+	// Rewrite cid: references in HTML to data: URIs
+	if html != "" && len(cidMap) > 0 {
+		html = rewriteCIDReferences(html, cidMap)
+	}
 	return
+}
+
+// rewriteCIDReferences replaces src="cid:xxx" with src="data:mime;base64,..." in HTML.
+func rewriteCIDReferences(html string, cidMap map[string]string) string {
+	for cid, dataURI := range cidMap {
+		// Match both with and without angle brackets
+		html = strings.ReplaceAll(html, `cid:`+cid, dataURI)
+		// Some clients wrap CID in angle brackets in the src attribute
+		html = strings.ReplaceAll(html, `cid:<`+cid+`>`, dataURI)
+	}
+	return html
 }
 
 // parsePart recursively handles a MIME part.
 func parsePart(contentType, transferEncoding string, body []byte) (text, html string, attachments []gomailModels.Attachment) {
+	return parsePartIndexed(contentType, transferEncoding, body, []int{})
+}
+
+// parsePartIndexedCID is like parsePartIndexed but also collects inline image parts into cidMap.
+func parsePartIndexedCID(contentType, transferEncoding string, body []byte, path []int, cidMap map[string]string) (text, html string, attachments []gomailModels.Attachment) {
+	mediaType, params, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		return string(body), "", nil
+	}
+	mediaType = strings.ToLower(mediaType)
+	decoded := decodeTransfer(transferEncoding, body)
+
+	switch {
+	case mediaType == "text/plain":
+		text = decodeCharset(params["charset"], decoded)
+	case mediaType == "text/html":
+		html = decodeCharset(params["charset"], decoded)
+	case strings.HasPrefix(mediaType, "multipart/"):
+		boundary := params["boundary"]
+		if boundary == "" {
+			return string(decoded), "", nil
+		}
+		mr := multipart.NewReader(bytes.NewReader(decoded), boundary)
+		partIdx := 0
+		for {
+			part, err := mr.NextPart()
+			if err != nil {
+				break
+			}
+			partIdx++
+			childPath := append(append([]int{}, path...), partIdx)
+
+			partBody, _ := io.ReadAll(part)
+			partCT := part.Header.Get("Content-Type")
+			if partCT == "" {
+				partCT = "text/plain"
+			}
+			partTE := part.Header.Get("Content-Transfer-Encoding")
+			disposition := part.Header.Get("Content-Disposition")
+			contentID := strings.Trim(part.Header.Get("Content-ID"), "<>")
+			dispType, dispParams, _ := mime.ParseMediaType(disposition)
+
+			filename := dispParams["filename"]
+			if filename == "" {
+				filename = part.FileName()
+			}
+			if filename != "" {
+				wd := mime.WordDecoder{}
+				if dec, e := wd.DecodeHeader(filename); e == nil {
+					filename = dec
+				}
+			}
+
+			partMedia, _, _ := mime.ParseMediaType(partCT)
+			partMediaLower := strings.ToLower(partMedia)
+
+			// Inline image with Content-ID → embed as data URI for cid: resolution
+			if contentID != "" && strings.HasPrefix(partMediaLower, "image/") {
+				decodedPart := decodeTransfer(partTE, partBody)
+				dataURI := "data:" + partMediaLower + ";base64," + base64.StdEncoding.EncodeToString(decodedPart)
+				cidMap[contentID] = dataURI
+				// Don't add as attachment chip — it's inline
+				continue
+			}
+
+			isAttachment := strings.EqualFold(dispType, "attachment") ||
+				(filename != "" && !strings.HasPrefix(partMediaLower, "text/") &&
+					!strings.HasPrefix(partMediaLower, "multipart/"))
+
+			if isAttachment {
+				if filename == "" {
+					filename = "attachment"
+				}
+				mimePartPath := mimePathString(childPath)
+				attachments = append(attachments, gomailModels.Attachment{
+					Filename:    filename,
+					ContentType: partMedia,
+					Size:        int64(len(partBody)),
+					ContentID:   mimePartPath,
+				})
+				continue
+			}
+
+			t, h, atts := parsePartIndexedCID(partCT, partTE, partBody, childPath, cidMap)
+			if text == "" && t != "" {
+				text = t
+			}
+			if html == "" && h != "" {
+				html = h
+			}
+			attachments = append(attachments, atts...)
+		}
+	default:
+		if mt, mtParams, e := mime.ParseMediaType(contentType); e == nil {
+			filename := mtParams["name"]
+			if filename != "" && !strings.HasPrefix(strings.ToLower(mt), "text/") {
+				wd := mime.WordDecoder{}
+				if dec, e2 := wd.DecodeHeader(filename); e2 == nil {
+					filename = dec
+				}
+				attachments = append(attachments, gomailModels.Attachment{
+					Filename:    filename,
+					ContentType: mt,
+					Size:        int64(len(decoded)),
+					ContentID:   mimePathString(path),
+				})
+			}
+		}
+	}
+	return
+}
+
+// parsePartIndexed recursively handles a MIME part, tracking MIME part path for download.
+func parsePartIndexed(contentType, transferEncoding string, body []byte, path []int) (text, html string, attachments []gomailModels.Attachment) {
 	mediaType, params, err := mime.ParseMediaType(contentType)
 	if err != nil {
 		return string(body), "", nil
@@ -430,11 +568,15 @@ func parsePart(contentType, transferEncoding string, body []byte) (text, html st
 			return string(decoded), "", nil
 		}
 		mr := multipart.NewReader(bytes.NewReader(decoded), boundary)
+		partIdx := 0
 		for {
 			part, err := mr.NextPart()
 			if err != nil {
 				break
 			}
+			partIdx++
+			childPath := append(append([]int{}, path...), partIdx)
+
 			partBody, _ := io.ReadAll(part)
 			partCT := part.Header.Get("Content-Type")
 			if partCT == "" {
@@ -444,24 +586,41 @@ func parsePart(contentType, transferEncoding string, body []byte) (text, html st
 			disposition := part.Header.Get("Content-Disposition")
 			dispType, dispParams, _ := mime.ParseMediaType(disposition)
 
-			if strings.EqualFold(dispType, "attachment") {
-				filename := dispParams["filename"]
-				if filename == "" {
-					filename = part.FileName()
+			// Filename from Content-Disposition or Content-Type params
+			filename := dispParams["filename"]
+			if filename == "" {
+				filename = part.FileName()
+			}
+			// Decode RFC 2047 encoded filename
+			if filename != "" {
+				wd := mime.WordDecoder{}
+				if dec, err := wd.DecodeHeader(filename); err == nil {
+					filename = dec
 				}
+			}
+
+			partMedia, _, _ := mime.ParseMediaType(partCT)
+
+			isAttachment := strings.EqualFold(dispType, "attachment") ||
+				(filename != "" && !strings.HasPrefix(strings.ToLower(partMedia), "text/") &&
+					!strings.HasPrefix(strings.ToLower(partMedia), "multipart/"))
+
+			if isAttachment {
 				if filename == "" {
 					filename = "attachment"
 				}
-				partMedia, _, _ := mime.ParseMediaType(partCT)
+				// Build MIME part path string e.g. "1.2" for nested
+				mimePartPath := mimePathString(childPath)
 				attachments = append(attachments, gomailModels.Attachment{
 					Filename:    filename,
 					ContentType: partMedia,
 					Size:        int64(len(partBody)),
+					ContentID:   mimePartPath, // reuse ContentID to store part path
 				})
 				continue
 			}
 
-			t, h, atts := parsePart(partCT, partTE, partBody)
+			t, h, atts := parsePartIndexed(partCT, partTE, partBody, childPath)
 			if text == "" && t != "" {
 				text = t
 			}
@@ -471,11 +630,33 @@ func parsePart(contentType, transferEncoding string, body []byte) (text, html st
 			attachments = append(attachments, atts...)
 		}
 	default:
-		// Any other type – treat as attachment if it has a filename
-		mt, _, _ := mime.ParseMediaType(contentType)
-		_ = mt
+		// Any other non-text type with a filename → treat as attachment
+		if mt, mtParams, e := mime.ParseMediaType(contentType); e == nil {
+			filename := mtParams["name"]
+			if filename != "" && !strings.HasPrefix(strings.ToLower(mt), "text/") {
+				wd := mime.WordDecoder{}
+				if dec, e2 := wd.DecodeHeader(filename); e2 == nil {
+					filename = dec
+				}
+				attachments = append(attachments, gomailModels.Attachment{
+					Filename:    filename,
+					ContentType: mt,
+					Size:        int64(len(decoded)),
+					ContentID:   mimePathString(path),
+				})
+			}
+		}
 	}
 	return
+}
+
+// mimePathString converts an int path like [1,2] to "1.2".
+func mimePathString(path []int) string {
+	parts := make([]string, len(path))
+	for i, n := range path {
+		parts[i] = fmt.Sprintf("%d", n)
+	}
+	return strings.Join(parts, ".")
 }
 
 func decodeTransfer(encoding string, data []byte) []byte {
@@ -763,7 +944,8 @@ func SendMessageFull(ctx context.Context, account *gomailModels.EmailAccount, re
 
 func buildMIMEMessage(buf *bytes.Buffer, account *gomailModels.EmailAccount, req *gomailModels.ComposeRequest) string {
 	from := netmail.Address{Name: account.DisplayName, Address: account.EmailAddress}
-	boundary := fmt.Sprintf("gomail_%x", time.Now().UnixNano())
+	altBoundary := fmt.Sprintf("gomail_alt_%x", time.Now().UnixNano())
+	mixedBoundary := fmt.Sprintf("gomail_mix_%x", time.Now().UnixNano()+1)
 	// Use the sender's actual domain for Message-ID so it passes spam filters
 	domain := account.EmailAddress
 	if at := strings.Index(domain, "@"); at >= 0 {
@@ -781,24 +963,32 @@ func buildMIMEMessage(buf *bytes.Buffer, account *gomailModels.EmailAccount, req
 	buf.WriteString("Subject: " + encodeMIMEHeader(req.Subject) + "\r\n")
 	buf.WriteString("Date: " + time.Now().Format("Mon, 02 Jan 2006 15:04:05 -0700") + "\r\n")
 	buf.WriteString("MIME-Version: 1.0\r\n")
-	buf.WriteString("Content-Type: multipart/alternative; boundary=\"" + boundary + "\"\r\n")
-	buf.WriteString("\r\n")
 
-	// Plain text part
-	buf.WriteString("--" + boundary + "\r\n")
-	buf.WriteString("Content-Type: text/plain; charset=utf-8\r\n")
-	buf.WriteString("Content-Transfer-Encoding: quoted-printable\r\n\r\n")
-	qpw := quotedprintable.NewWriter(buf)
+	hasAttachments := len(req.Attachments) > 0
+
+	if hasAttachments {
+		// Outer multipart/mixed wraps body + attachments
+		buf.WriteString("Content-Type: multipart/mixed; boundary=\"" + mixedBoundary + "\"\r\n\r\n")
+		buf.WriteString("--" + mixedBoundary + "\r\n")
+	}
+
+	// Inner multipart/alternative: text/plain + text/html
+	buf.WriteString("Content-Type: multipart/alternative; boundary=\"" + altBoundary + "\"\r\n\r\n")
+
 	plainText := req.BodyText
 	if plainText == "" && req.BodyHTML != "" {
 		plainText = htmlToPlainText(req.BodyHTML)
 	}
+
+	buf.WriteString("--" + altBoundary + "\r\n")
+	buf.WriteString("Content-Type: text/plain; charset=utf-8\r\n")
+	buf.WriteString("Content-Transfer-Encoding: quoted-printable\r\n\r\n")
+	qpw := quotedprintable.NewWriter(buf)
 	qpw.Write([]byte(plainText))
 	qpw.Close()
 	buf.WriteString("\r\n")
 
-	// HTML part
-	buf.WriteString("--" + boundary + "\r\n")
+	buf.WriteString("--" + altBoundary + "\r\n")
 	buf.WriteString("Content-Type: text/html; charset=utf-8\r\n")
 	buf.WriteString("Content-Transfer-Encoding: quoted-printable\r\n\r\n")
 	qpw2 := quotedprintable.NewWriter(buf)
@@ -809,8 +999,31 @@ func buildMIMEMessage(buf *bytes.Buffer, account *gomailModels.EmailAccount, req
 	}
 	qpw2.Close()
 	buf.WriteString("\r\n")
+	buf.WriteString("--" + altBoundary + "--\r\n")
 
-	buf.WriteString("--" + boundary + "--\r\n")
+	if hasAttachments {
+		for _, att := range req.Attachments {
+			buf.WriteString("\r\n--" + mixedBoundary + "\r\n")
+			ct := att.ContentType
+			if ct == "" {
+				ct = "application/octet-stream"
+			}
+			encodedName := mime.QEncoding.Encode("utf-8", att.Filename)
+			buf.WriteString("Content-Type: " + ct + "; name=\"" + encodedName + "\"\r\n")
+			buf.WriteString("Content-Transfer-Encoding: base64\r\n")
+			buf.WriteString("Content-Disposition: attachment; filename=\"" + encodedName + "\"\r\n\r\n")
+			encoded := base64.StdEncoding.EncodeToString(att.Data)
+			for i := 0; i < len(encoded); i += 76 {
+				end := i + 76
+				if end > len(encoded) {
+					end = len(encoded)
+				}
+				buf.WriteString(encoded[i:end] + "\r\n")
+			}
+		}
+		buf.WriteString("\r\n--" + mixedBoundary + "--\r\n")
+	}
+
 	return msgID
 }
 
@@ -873,6 +1086,123 @@ func (c *Client) AppendToSent(rawMsg []byte) error {
 	flags := []string{imap.SeenFlag}
 	now := time.Now()
 	return c.imap.Append(sentName, flags, now, bytes.NewReader(rawMsg))
+}
+
+// AppendToDrafts saves a draft message to the IMAP Drafts folder via APPEND.
+// Returns the folder name that was used (for sync purposes).
+func (c *Client) AppendToDrafts(rawMsg []byte) (string, error) {
+	mailboxes, err := c.ListMailboxes()
+	if err != nil {
+		return "", err
+	}
+	var draftsName string
+	for _, mb := range mailboxes {
+		ft := InferFolderType(mb.Name, mb.Attributes)
+		if ft == "drafts" {
+			draftsName = mb.Name
+			break
+		}
+	}
+	if draftsName == "" {
+		return "", nil // no Drafts folder, skip silently
+	}
+	flags := []string{imap.DraftFlag, imap.SeenFlag}
+	now := time.Now()
+	return draftsName, c.imap.Append(draftsName, flags, now, bytes.NewReader(rawMsg))
+}
+
+// FetchAttachmentRaw fetches a specific attachment from a message by fetching the full
+// raw message and parsing the requested MIME part path.
+func (c *Client) FetchAttachmentRaw(mailboxName string, uid uint32, mimePartPath string) ([]byte, string, string, error) {
+	raw, err := c.FetchRawByUID(mailboxName, uid)
+	if err != nil {
+		return nil, "", "", fmt.Errorf("fetch raw: %w", err)
+	}
+
+	msg, err := netmail.ReadMessage(bytes.NewReader(raw))
+	if err != nil {
+		return nil, "", "", fmt.Errorf("parse message: %w", err)
+	}
+
+	ct := msg.Header.Get("Content-Type")
+	if ct == "" {
+		ct = "text/plain"
+	}
+	body, _ := io.ReadAll(msg.Body)
+
+	data, filename, contentType, err := extractMIMEPart(ct, msg.Header.Get("Content-Transfer-Encoding"), body, mimePartPath)
+	if err != nil {
+		return nil, "", "", err
+	}
+	return data, filename, contentType, nil
+}
+
+// extractMIMEPart walks the MIME tree and returns the part at mimePartPath (e.g. "2" or "1.2").
+func extractMIMEPart(contentType, transferEncoding string, body []byte, targetPath string) ([]byte, string, string, error) {
+	return extractMIMEPartAt(contentType, transferEncoding, body, targetPath, []int{})
+}
+
+func extractMIMEPartAt(contentType, transferEncoding string, body []byte, targetPath string, currentPath []int) ([]byte, string, string, error) {
+	mediaType, params, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		return nil, "", "", fmt.Errorf("parse content-type: %w", err)
+	}
+	decoded := decodeTransfer(transferEncoding, body)
+
+	if strings.HasPrefix(strings.ToLower(mediaType), "multipart/") {
+		boundary := params["boundary"]
+		if boundary == "" {
+			return nil, "", "", fmt.Errorf("no boundary")
+		}
+		mr := multipart.NewReader(bytes.NewReader(decoded), boundary)
+		partIdx := 0
+		for {
+			part, err := mr.NextPart()
+			if err != nil {
+				break
+			}
+			partIdx++
+			childPath := append(append([]int{}, currentPath...), partIdx)
+			childPathStr := mimePathString(childPath)
+
+			partBody, _ := io.ReadAll(part)
+			partCT := part.Header.Get("Content-Type")
+			if partCT == "" {
+				partCT = "text/plain"
+			}
+			partTE := part.Header.Get("Content-Transfer-Encoding")
+
+			if childPathStr == targetPath {
+				// Found it
+				disposition := part.Header.Get("Content-Disposition")
+				_, dispParams, _ := mime.ParseMediaType(disposition)
+				filename := dispParams["filename"]
+				if filename == "" {
+					filename = part.FileName()
+				}
+				wd2 := mime.WordDecoder{}
+				if dec, e := wd2.DecodeHeader(filename); e == nil {
+					filename = dec
+				}
+				partMedia, _, _ := mime.ParseMediaType(partCT)
+				return decodeTransfer(partTE, partBody), filename, partMedia, nil
+			}
+			// Recurse into multipart children
+			partMedia, _, _ := mime.ParseMediaType(partCT)
+			if strings.HasPrefix(strings.ToLower(partMedia), "multipart/") {
+				if data, fn, ct2, e := extractMIMEPartAt(partCT, partTE, partBody, targetPath, childPath); e == nil && data != nil {
+					return data, fn, ct2, nil
+				}
+			}
+		}
+		return nil, "", "", fmt.Errorf("part %s not found", targetPath)
+	}
+
+	// Leaf node — only matches if path is root (empty)
+	if targetPath == "" || targetPath == "1" {
+		return decoded, "", strings.ToLower(mediaType), nil
+	}
+	return nil, "", "", fmt.Errorf("part %s not found", targetPath)
 }
 
 func htmlEscape(s string) string {

@@ -1,4 +1,4 @@
-// Package db provides encrypted SQLite storage for GoMail.
+// Package db provides encrypted SQLite storage for GoWebMail.
 package db
 
 import (
@@ -868,7 +868,14 @@ func (d *DB) UpsertMessage(m *models.Message) error {
 	if err != nil {
 		return err
 	}
+	// LastInsertId returns 0 on conflict in SQLite — always look up the real ID.
 	id, _ := res.LastInsertId()
+	if id == 0 {
+		d.sql.QueryRow(
+			`SELECT id FROM messages WHERE account_id=? AND folder_id=? AND remote_uid=?`,
+			m.AccountID, m.FolderID, m.RemoteUID,
+		).Scan(&id)
+	}
 	if m.ID == 0 {
 		m.ID = id
 	}
@@ -909,6 +916,12 @@ func (d *DB) GetMessage(messageID, userID int64) (*models.Message, error) {
 	m.ReplyTo, _ = d.enc.Decrypt(replyToEnc)
 	m.BodyText, _ = d.enc.Decrypt(bodyTextEnc)
 	m.BodyHTML, _ = d.enc.Decrypt(bodyHTMLEnc)
+
+	// Load attachment metadata
+	if m.HasAttachment {
+		atts, _ := d.GetAttachmentsByMessage(m.ID, userID)
+		m.Attachments = atts
+	}
 
 	return m, nil
 }
@@ -1563,4 +1576,120 @@ func (d *DB) GetNewMessagesSince(userID int64, sinceID int64) ([]map[string]inte
 		result = []map[string]interface{}{}
 	}
 	return result, rows.Err()
+}
+
+// ---- Attachment metadata ----
+
+// SaveAttachmentMeta saves attachment metadata for a message (no binary data).
+// Uses INSERT OR REPLACE so a re-sync always refreshes the part path (ContentID).
+func (d *DB) SaveAttachmentMeta(messageID int64, atts []models.Attachment) error {
+	// Delete stale rows first so re-syncs don't leave orphans
+	d.sql.Exec(`DELETE FROM attachments WHERE message_id=?`, messageID)
+	for _, a := range atts {
+		_, err := d.sql.Exec(`
+			INSERT INTO attachments (message_id, filename, content_type, size, content_id)
+			VALUES (?,?,?,?,?)`,
+			messageID, a.Filename, a.ContentType, a.Size, a.ContentID,
+		)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// GetAttachmentsByMessage returns attachment metadata for a message.
+func (d *DB) GetAttachmentsByMessage(messageID, userID int64) ([]models.Attachment, error) {
+	rows, err := d.sql.Query(`
+		SELECT a.id, a.message_id, a.filename, a.content_type, a.size, a.content_id
+		FROM attachments a
+		JOIN messages m ON m.id=a.message_id
+		JOIN email_accounts ac ON ac.id=m.account_id
+		WHERE a.message_id=? AND ac.user_id=?`, messageID, userID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []models.Attachment
+	for rows.Next() {
+		var a models.Attachment
+		rows.Scan(&a.ID, &a.MessageID, &a.Filename, &a.ContentType, &a.Size, &a.ContentID)
+		result = append(result, a)
+	}
+	return result, rows.Err()
+}
+
+// GetAttachment returns a single attachment record (ownership via userID check).
+func (d *DB) GetAttachment(attachmentID, userID int64) (*models.Attachment, error) {
+	var a models.Attachment
+	err := d.sql.QueryRow(`
+		SELECT a.id, a.message_id, a.filename, a.content_type, a.size, a.content_id
+		FROM attachments a
+		JOIN messages m ON m.id=a.message_id
+		JOIN email_accounts ac ON ac.id=m.account_id
+		WHERE a.id=? AND ac.user_id=?`, attachmentID, userID,
+	).Scan(&a.ID, &a.MessageID, &a.Filename, &a.ContentType, &a.Size, &a.ContentID)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return &a, err
+}
+
+// ---- Mark all read ----
+
+// MarkFolderAllRead marks every message in a folder as read and enqueues IMAP flag ops.
+// Returns the list of (remoteUID, folderPath, accountID) for IMAP ops.
+func (d *DB) MarkFolderAllRead(folderID, userID int64) ([]PendingIMAPOp, error) {
+	// Verify folder ownership
+	var accountID int64
+	var fullPath string
+	err := d.sql.QueryRow(`
+		SELECT f.account_id, f.full_path FROM folders f
+		JOIN email_accounts a ON a.id=f.account_id
+		WHERE f.id=? AND a.user_id=?`, folderID, userID,
+	).Scan(&accountID, &fullPath)
+	if err != nil {
+		return nil, fmt.Errorf("folder not found or not owned: %w", err)
+	}
+
+	// Get all unread messages in folder for IMAP ops
+	rows, err := d.sql.Query(`
+		SELECT remote_uid FROM messages WHERE folder_id=? AND is_read=0`, folderID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ops []PendingIMAPOp
+	for rows.Next() {
+		var uid string
+		rows.Scan(&uid)
+		var uidNum uint32
+		fmt.Sscanf(uid, "%d", &uidNum)
+		if uidNum > 0 {
+			ops = append(ops, PendingIMAPOp{
+				AccountID: accountID, OpType: "flag_read",
+				RemoteUID: uidNum, FolderPath: fullPath, Extra: "1",
+			})
+		}
+	}
+	rows.Close()
+
+	// Bulk mark read in DB
+	_, err = d.sql.Exec(`UPDATE messages SET is_read=1 WHERE folder_id=?`, folderID)
+	if err != nil {
+		return nil, err
+	}
+	d.UpdateFolderCounts(folderID)
+	return ops, nil
+}
+
+// ---- Admin MFA disable ----
+
+// AdminDisableMFAByID disables MFA for a user by ID (admin action).
+func (d *DB) AdminDisableMFAByID(targetUserID int64) error {
+	_, err := d.sql.Exec(`
+		UPDATE users SET mfa_enabled=0, mfa_secret='', mfa_pending=''
+		WHERE id=?`, targetUserID)
+	return err
 }

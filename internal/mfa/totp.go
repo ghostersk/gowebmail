@@ -34,7 +34,7 @@ func GenerateSecret() (string, error) {
 }
 
 // OTPAuthURL builds an otpauth:// URI for QR code generation.
-// issuer is the application name (e.g. "GoMail"), accountName is the user's email.
+// issuer is the application name (e.g. "GoWebMail"), accountName is the user's email.
 func OTPAuthURL(issuer, accountName, secret string) string {
 	v := url.Values{}
 	v.Set("secret", secret)

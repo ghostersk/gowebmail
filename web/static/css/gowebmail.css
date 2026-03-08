@@ -369,10 +369,13 @@ body.admin-page{overflow:auto;background:var(--bg)}
 
 /* ---- Attachment chips ---- */
 .attachment-chip{display:inline-flex;align-items:center;gap:5px;padding:4px 10px;
-  background:var(--surface3);border:1px solid var(--border2);border-radius:6px;font-size:12px;cursor:pointer}
+  background:var(--surface3);border:1px solid var(--border2);border-radius:6px;font-size:12px;cursor:pointer;
+  text-decoration:none;color:inherit}
 .attachment-chip:hover{background:var(--border2)}
 .attachments-bar{display:flex;align-items:center;flex-wrap:wrap;gap:6px;
   padding:8px 14px;border-bottom:1px solid var(--border)}
+/* Drag-and-drop compose overlay */
+.compose-dialog.drag-over{outline:3px dashed var(--accent);outline-offset:-4px;}
 
 /* ── Email tag input ─────────────────────────────────────────── */
 .tag-container{display:flex;flex-wrap:wrap;align-items:center;gap:4px;flex:1;
