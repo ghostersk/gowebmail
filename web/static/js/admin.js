@@ -1,9 +1,10 @@
 // GoWebMail Admin SPA
 
 const adminRoutes = {
-  '/admin':          renderUsers,
-  '/admin/settings': renderSettings,
-  '/admin/audit':    renderAudit,
+  '/admin':           renderUsers,
+  '/admin/settings':  renderSettings,
+  '/admin/audit':     renderAudit,
+  '/admin/security':  renderSecurity,
 };
 
 function navigate(path) {
@@ -202,6 +203,34 @@ const SETTINGS_META = [
       { key: 'DB_PATH', label: 'Database Path', desc: 'Path to SQLite file, relative to working directory', type: 'text' },
     ]
   },
+  {
+    group: 'Security Notifications',
+    fields: [
+      { key: 'NOTIFY_ENABLED',   label: 'Enabled',      desc: 'Send email to users when brute-force attack is detected on their account', type: 'select', options: ['true','false'] },
+      { key: 'NOTIFY_SMTP_HOST', label: 'SMTP Host',    desc: 'SMTP server for sending alerts. Example: smtp.example.com', type: 'text' },
+      { key: 'NOTIFY_SMTP_PORT', label: 'SMTP Port',    desc: '587 = STARTTLS, 465 = TLS, 25 = plain relay', type: 'number' },
+      { key: 'NOTIFY_FROM',      label: 'From Address', desc: 'Sender email. Example: security@example.com', type: 'text' },
+      { key: 'NOTIFY_USER',      label: 'SMTP Username', desc: 'Leave blank for unauthenticated relay', type: 'text' },
+      { key: 'NOTIFY_PASS',      label: 'SMTP Password', desc: 'Leave blank for unauthenticated relay', type: 'password' },
+    ]
+  },
+  {
+    group: 'Brute Force Protection',
+    fields: [
+      { key: 'BRUTE_ENABLED',        label: 'Enabled',         desc: 'Auto-block IPs after repeated failed logins', type: 'select', options: ['true','false'] },
+      { key: 'BRUTE_MAX_ATTEMPTS',   label: 'Max Attempts',    desc: 'Failed logins before ban', type: 'number' },
+      { key: 'BRUTE_WINDOW_MINUTES', label: 'Window (minutes)',desc: 'Time window for counting failures', type: 'number' },
+      { key: 'BRUTE_BAN_HOURS',      label: 'Ban Duration (hours)', desc: '0 = permanent ban (admin must unban)', type: 'number' },
+      { key: 'BRUTE_WHITELIST_IPS',  label: 'Whitelist IPs',   desc: 'Comma-separated IPs that are never blocked', type: 'text' },
+    ]
+  },
+  {
+    group: 'Geo Blocking',
+    fields: [
+      { key: 'GEO_BLOCK_COUNTRIES', label: 'Block Countries', desc: 'Comma-separated ISO codes to DENY (e.g. CN,RU,KP). Takes precedence over Allow list.', type: 'text' },
+      { key: 'GEO_ALLOW_COUNTRIES', label: 'Allow Countries', desc: 'Comma-separated ISO codes to ALLOW exclusively (e.g. SK,CZ,DE). Leave blank to allow all.', type: 'text' },
+    ]
+  },
 ];
 
 async function renderSettings() {
@@ -329,3 +358,134 @@ function eventBadge(evt) {
     });
   });
 })();
+// ============================================================
+// Security — IP Blocks & Login Attempts
+// ============================================================
+async function renderSecurity() {
+  const el = document.getElementById('admin-content');
+  el.innerHTML = `
+    <div class="admin-page-header">
+      <h1>Security</h1>
+      <p>Monitor login attempts, manage IP blocks, and control access by country.</p>
+    </div>
+
+    <div class="admin-card" style="margin-bottom:24px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+        <h2 style="margin:0;font-size:16px">Blocked IPs</h2>
+        <button class="btn-primary" onclick="openAddBlock()">+ Block IP</button>
+      </div>
+      <div id="blocks-table"><div class="spinner"></div></div>
+    </div>
+
+    <div class="admin-card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+        <h2 style="margin:0;font-size:16px">Login Attempts (last 72h)</h2>
+        <button class="btn-secondary" onclick="loadLoginAttempts()">↻ Refresh</button>
+      </div>
+      <div id="attempts-table"><div class="spinner"></div></div>
+    </div>
+
+    <div class="modal-overlay" id="add-block-modal">
+      <div class="modal" style="max-width:420px">
+        <h2>Block IP Address</h2>
+        <div class="modal-field"><label>IP Address</label><input type="text" id="block-ip" placeholder="e.g. 192.168.1.100"></div>
+        <div class="modal-field"><label>Reason</label><input type="text" id="block-reason" placeholder="Manual admin block"></div>
+        <div class="modal-field"><label>Ban Hours (0 = permanent)</label><input type="number" id="block-hours" value="24" min="0"></div>
+        <div class="modal-actions">
+          <button class="btn-secondary" onclick="closeModal('add-block-modal')">Cancel</button>
+          <button class="btn-primary" onclick="submitAddBlock()">Block IP</button>
+        </div>
+      </div>
+    </div>`;
+
+  loadIPBlocks();
+  loadLoginAttempts();
+}
+
+async function loadIPBlocks() {
+  const el = document.getElementById('blocks-table');
+  if (!el) return;
+  const r = await api('GET', '/admin/ip-blocks');
+  const blocks = r?.blocks || [];
+  if (!blocks.length) {
+    el.innerHTML = '<p style="color:var(--muted);padding:8px 0">No blocked IPs.</p>';
+    return;
+  }
+  el.innerHTML = `<table class="admin-table" style="width:100%">
+    <thead><tr>
+      <th>IP</th><th>Country</th><th>Reason</th><th>Attempts</th><th>Blocked At</th><th>Expires</th><th></th>
+    </tr></thead>
+    <tbody>
+    ${blocks.map(b => `<tr>
+      <td><code>${esc(b.ip)}</code></td>
+      <td>${b.country_code ? `<span title="${esc(b.country)}">${esc(b.country_code)}</span>` : '—'}</td>
+      <td>${esc(b.reason)}</td>
+      <td>${b.attempts||0}</td>
+      <td style="font-size:11px">${fmtDate(b.blocked_at)}</td>
+      <td style="font-size:11px;color:var(--muted)">${b.is_permanent ? '♾ Permanent' : b.expires_at ? fmtDate(b.expires_at) : '—'}</td>
+      <td><button class="action-btn danger" onclick="unblockIP('${esc(b.ip)}')">Unblock</button></td>
+    </tr>`).join('')}
+    </tbody>
+  </table>`;
+}
+
+async function loadLoginAttempts() {
+  const el = document.getElementById('attempts-table');
+  if (!el) return;
+  const r = await api('GET', '/admin/login-attempts');
+  const attempts = r?.attempts || [];
+  if (!attempts.length) {
+    el.innerHTML = '<p style="color:var(--muted);padding:8px 0">No login attempts recorded in the last 72 hours.</p>';
+    return;
+  }
+  el.innerHTML = `<table class="admin-table" style="width:100%">
+    <thead><tr>
+      <th>IP</th><th>Country</th><th>Total</th><th>Failures</th><th>Last Seen</th><th></th>
+    </tr></thead>
+    <tbody>
+    ${attempts.map(a => `<tr ${a.failures>3?'style="background:rgba(255,80,80,.07)"':''}>
+      <td><code>${esc(a.ip)}</code></td>
+      <td>${a.country_code ? `<span title="${esc(a.country)}">${esc(a.country_code)} ${esc(a.country)}</span>` : '—'}</td>
+      <td>${a.total}</td>
+      <td style="${a.failures>3?'color:#f87;font-weight:600':''}">${a.failures}</td>
+      <td style="font-size:11px">${a.last_seen||'—'}</td>
+      <td><button class="action-btn danger" onclick="blockFromAttempt('${esc(a.ip)}')">Block</button></td>
+    </tr>`).join('')}
+    </tbody>
+  </table>`;
+}
+
+function openAddBlock() { openModal('add-block-modal'); }
+
+async function submitAddBlock() {
+  const ip = document.getElementById('block-ip').value.trim();
+  const reason = document.getElementById('block-reason').value.trim() || 'Manual admin block';
+  const hours = parseInt(document.getElementById('block-hours').value) || 0;
+  if (!ip) { toast('IP address required', 'error'); return; }
+  const r = await api('POST', '/admin/ip-blocks', { ip, reason, ban_hours: hours });
+  if (r?.ok) { toast('IP blocked', 'success'); closeModal('add-block-modal'); loadIPBlocks(); }
+  else toast(r?.error || 'Failed', 'error');
+}
+
+async function unblockIP(ip) {
+  const r = await fetch('/api/admin/ip-blocks/' + encodeURIComponent(ip), { method: 'DELETE' });
+  const data = await r.json();
+  if (data?.ok) { toast('IP unblocked', 'success'); loadIPBlocks(); }
+  else toast(data?.error || 'Failed', 'error');
+}
+
+function blockFromAttempt(ip) {
+  document.getElementById('block-ip').value = ip;
+  document.getElementById('block-reason').value = 'Manual block from login attempts';
+  openModal('add-block-modal');
+}
+
+function fmtDate(s) {
+  if (!s) return '—';
+  try { return new Date(s).toLocaleString(); } catch(e) { return s; }
+}
+
+function esc(s) {
+  if (!s) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}

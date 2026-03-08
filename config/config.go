@@ -28,6 +28,23 @@ type Config struct {
 	SessionMaxAge  int
 	TrustedProxies []net.IPNet // CIDR ranges allowed to set X-Forwarded-For/Proto headers
 
+	// Notification SMTP (outbound alerts — separate from user mail accounts)
+	NotifyEnabled  bool
+	NotifySMTPHost string
+	NotifySMTPPort int
+	NotifyFrom     string
+	NotifyUser     string // optional — leave blank for unauthenticated relay
+	NotifyPass     string // optional
+
+	// Brute force protection
+	BruteEnabled      bool
+	BruteMaxAttempts  int
+	BruteWindowMins   int
+	BruteBanHours     int
+	BruteWhitelist    []net.IP // IPs exempt from blocking
+	GeoBlockCountries []string // 2-letter codes to deny (deny-list mode)
+	GeoAllowCountries []string // 2-letter codes to allow (allow-list mode, empty=allow all)
+
 	// Storage
 	DBPath string
 
@@ -116,6 +133,108 @@ var allFields = []configField{
 			"    192.168.1.50,192.168.1.51         (specific IPs)",
 			"  Leave blank to disable proxy trust (requests are taken at face value).",
 			"  NOTE: Do not add untrusted IPs — clients could spoof their source address.",
+		},
+	},
+	{
+		key:    "NOTIFY_ENABLED",
+		defVal: "true",
+		comments: []string{
+			"--- Security Notifications ---",
+			"Send email alerts to users when their account is targeted by brute-force attacks.",
+			"Set to false to disable all security notification emails.",
+		},
+	},
+	{
+		key:    "NOTIFY_SMTP_HOST",
+		defVal: "",
+		comments: []string{
+			"SMTP server hostname for sending security notification emails.",
+			"Example: smtp.example.com",
+		},
+	},
+	{
+		key:    "NOTIFY_SMTP_PORT",
+		defVal: "587",
+		comments: []string{
+			"SMTP server port. Common values: 587 (STARTTLS), 465 (TLS), 25 (relay, no auth).",
+		},
+	},
+	{
+		key:    "NOTIFY_FROM",
+		defVal: "",
+		comments: []string{
+			"Sender address for security notification emails. Example: security@example.com",
+		},
+	},
+	{
+		key:    "NOTIFY_USER",
+		defVal: "",
+		comments: []string{
+			"SMTP username for authenticated relay. Leave blank for unauthenticated relay.",
+		},
+	},
+	{
+		key:    "NOTIFY_PASS",
+		defVal: "",
+		comments: []string{
+			"SMTP password for authenticated relay. Leave blank for unauthenticated relay.",
+		},
+	},
+	{
+		key:    "BRUTE_ENABLED",
+		defVal: "true",
+		comments: []string{
+			"--- Brute Force Protection ---",
+			"Enable automatic IP blocking after repeated failed logins.",
+			"Set to false to disable entirely.",
+		},
+	},
+	{
+		key:    "BRUTE_MAX_ATTEMPTS",
+		defVal: "5",
+		comments: []string{
+			"Number of failed login attempts within BRUTE_WINDOW_MINUTES that triggers a ban.",
+		},
+	},
+	{
+		key:    "BRUTE_WINDOW_MINUTES",
+		defVal: "30",
+		comments: []string{
+			"Time window in minutes for counting failed login attempts.",
+		},
+	},
+	{
+		key:    "BRUTE_BAN_HOURS",
+		defVal: "12",
+		comments: []string{
+			"How many hours to ban an offending IP. Set to 0 for permanent ban (admin must unban manually).",
+		},
+	},
+	{
+		key:    "BRUTE_WHITELIST_IPS",
+		defVal: "",
+		comments: []string{
+			"Comma-separated IPv4/IPv6 addresses that are never blocked by brute force protection.",
+			"Example: 192.168.1.1,10.0.0.1",
+		},
+	},
+	{
+		key:    "GEO_BLOCK_COUNTRIES",
+		defVal: "",
+		comments: []string{
+			"--- Geo Blocking (uses ip-api.com, requires internet access) ---",
+			"Comma-separated 2-letter ISO country codes to DENY access from.",
+			"Example: CN,RU,KP",
+			"Leave blank to disable deny-list. Takes precedence over GEO_ALLOW_COUNTRIES.",
+		},
+	},
+	{
+		key:    "GEO_ALLOW_COUNTRIES",
+		defVal: "",
+		comments: []string{
+			"Comma-separated 2-letter ISO country codes to ALLOW (all others are denied).",
+			"Example: SK,CZ,DE",
+			"Leave blank to allow all countries. Only active if GEO_BLOCK_COUNTRIES is also blank.",
 		},
 	},
 	{
@@ -313,6 +432,21 @@ func Load() (*Config, error) {
 		SessionMaxAge:  atoi(get("SESSION_MAX_AGE"), 604800),
 		TrustedProxies: trustedProxies,
 
+		BruteEnabled:    atobool(get("BRUTE_ENABLED"), true),
+		BruteMaxAttempts: atoi(get("BRUTE_MAX_ATTEMPTS"), 5),
+		BruteWindowMins: atoi(get("BRUTE_WINDOW_MINUTES"), 30),
+		BruteBanHours:   atoi(get("BRUTE_BAN_HOURS"), 12),
+		BruteWhitelist:  parseIPList(get("BRUTE_WHITELIST_IPS")),
+		GeoBlockCountries: parseCountryList(get("GEO_BLOCK_COUNTRIES")),
+		GeoAllowCountries: parseCountryList(get("GEO_ALLOW_COUNTRIES")),
+
+		NotifyEnabled:  atobool(get("NOTIFY_ENABLED"), true),
+		NotifySMTPHost: get("NOTIFY_SMTP_HOST"),
+		NotifySMTPPort: atoi(get("NOTIFY_SMTP_PORT"), 587),
+		NotifyFrom:     get("NOTIFY_FROM"),
+		NotifyUser:     get("NOTIFY_USER"),
+		NotifyPass:     get("NOTIFY_PASS"),
+
 		GoogleClientID:        get("GOOGLE_CLIENT_ID"),
 		GoogleClientSecret:    get("GOOGLE_CLIENT_SECRET"),
 		GoogleRedirectURL:     googleRedirect,
@@ -343,6 +477,42 @@ func buildBaseURL(hostname, port string) string {
 	default:
 		return "http://" + hostname + ":" + port
 	}
+}
+
+// IsIPWhitelisted returns true if the IP is in the brute force whitelist.
+func (c *Config) IsIPWhitelisted(ipStr string) bool {
+	ip := net.ParseIP(ipStr)
+	if ip == nil {
+		return false
+	}
+	for _, w := range c.BruteWhitelist {
+		if w.Equal(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// IsCountryAllowed returns true if traffic from the given 2-letter country code is permitted.
+// Logic: deny-list takes precedence; then allow-list if non-empty; otherwise allow all.
+func (c *Config) IsCountryAllowed(code string) bool {
+	code = strings.ToUpper(code)
+	if len(c.GeoBlockCountries) > 0 {
+		for _, bc := range c.GeoBlockCountries {
+			if bc == code {
+				return false
+			}
+		}
+	}
+	if len(c.GeoAllowCountries) > 0 {
+		for _, ac := range c.GeoAllowCountries {
+			if ac == code {
+				return true
+			}
+		}
+		return false
+	}
+	return true
 }
 
 // IsAllowedHost returns true if the request Host header matches our expected hostname.
@@ -587,6 +757,31 @@ func logStartupInfo(cfg *Config) {
 		}
 		fmt.Printf("  Proxies : %s\n", strings.Join(cidrs, ", "))
 	}
+}
+
+func parseIPList(s string) []net.IP {
+	var ips []net.IP
+	for _, raw := range strings.Split(s, ",") {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		if ip := net.ParseIP(raw); ip != nil {
+			ips = append(ips, ip)
+		}
+	}
+	return ips
+}
+
+func parseCountryList(s string) []string {
+	var codes []string
+	for _, raw := range strings.Split(s, ",") {
+		raw = strings.TrimSpace(strings.ToUpper(raw))
+		if len(raw) == 2 {
+			codes = append(codes, raw)
+		}
+	}
+	return codes
 }
 
 func mustHex(n int) string {

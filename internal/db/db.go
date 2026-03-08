@@ -199,6 +199,37 @@ func (d *DB) Migrate() error {
 		return fmt.Errorf("create pending_imap_ops: %w", err)
 	}
 
+	// Login attempt tracking for brute-force protection.
+	if _, err := d.sql.Exec(`CREATE TABLE IF NOT EXISTS login_attempts (
+		id         INTEGER PRIMARY KEY AUTOINCREMENT,
+		ip         TEXT    NOT NULL,
+		username   TEXT    NOT NULL DEFAULT '',
+		success    INTEGER NOT NULL DEFAULT 0,
+		country    TEXT    NOT NULL DEFAULT '',
+		country_code TEXT  NOT NULL DEFAULT '',
+		created_at DATETIME DEFAULT (datetime('now'))
+	)`); err != nil {
+		return fmt.Errorf("create login_attempts: %w", err)
+	}
+	if _, err := d.sql.Exec(`CREATE INDEX IF NOT EXISTS idx_login_attempts_ip_time ON login_attempts(ip, created_at)`); err != nil {
+		return fmt.Errorf("create login_attempts index: %w", err)
+	}
+
+	// IP block list — manually added or auto-created by brute force protection.
+	if _, err := d.sql.Exec(`CREATE TABLE IF NOT EXISTS ip_blocks (
+		id           INTEGER PRIMARY KEY AUTOINCREMENT,
+		ip           TEXT    NOT NULL UNIQUE,
+		reason       TEXT    NOT NULL DEFAULT '',
+		country      TEXT    NOT NULL DEFAULT '',
+		country_code TEXT    NOT NULL DEFAULT '',
+		attempts     INTEGER NOT NULL DEFAULT 0,
+		blocked_at   DATETIME DEFAULT (datetime('now')),
+		expires_at   DATETIME,
+		is_permanent INTEGER NOT NULL DEFAULT 0
+	)`); err != nil {
+		return fmt.Errorf("create ip_blocks: %w", err)
+	}
+
 	// Bootstrap admin account if no users exist
 	return d.bootstrapAdmin()
 }
@@ -1692,4 +1723,153 @@ func (d *DB) AdminDisableMFAByID(targetUserID int64) error {
 		UPDATE users SET mfa_enabled=0, mfa_secret='', mfa_pending=''
 		WHERE id=?`, targetUserID)
 	return err
+}
+
+// ---- Brute Force / IP Block ----
+
+// IPBlock represents a blocked IP entry.
+type IPBlock struct {
+	ID          int64     `json:"id"`
+	IP          string    `json:"ip"`
+	Reason      string    `json:"reason"`
+	Country     string    `json:"country"`
+	CountryCode string    `json:"country_code"`
+	Attempts    int       `json:"attempts"`
+	BlockedAt   time.Time `json:"blocked_at"`
+	ExpiresAt   *time.Time `json:"expires_at"`
+	IsPermanent bool      `json:"is_permanent"`
+}
+
+// LoginAttemptStat is used for summary display.
+type LoginAttemptStat struct {
+	IP          string `json:"ip"`
+	Country     string `json:"country"`
+	CountryCode string `json:"country_code"`
+	Total       int    `json:"total"`
+	Failures    int    `json:"failures"`
+	LastSeen    string `json:"last_seen"`
+}
+
+// RecordLoginAttempt saves a login attempt for an IP.
+func (d *DB) RecordLoginAttempt(ip, username, country, countryCode string, success bool) {
+	suc := 0
+	if success {
+		suc = 1
+	}
+	d.sql.Exec(`INSERT INTO login_attempts (ip, username, success, country, country_code) VALUES (?,?,?,?,?)`,
+		ip, username, suc, country, countryCode)
+}
+
+// CountRecentFailures returns the number of failed logins from an IP in the last windowMinutes.
+func (d *DB) CountRecentFailures(ip string, windowMinutes int) int {
+	var count int
+	d.sql.QueryRow(`
+		SELECT COUNT(*) FROM login_attempts
+		WHERE ip=? AND success=0 AND created_at >= datetime('now', ? || ' minutes')`,
+		ip, fmt.Sprintf("-%d", windowMinutes),
+	).Scan(&count)
+	return count
+}
+
+// IsIPBlocked returns true if the IP is currently blocked (non-expired entry).
+func (d *DB) IsIPBlocked(ip string) bool {
+	var count int
+	d.sql.QueryRow(`
+		SELECT COUNT(*) FROM ip_blocks
+		WHERE ip=? AND (is_permanent=1 OR expires_at IS NULL OR expires_at > datetime('now'))`,
+		ip,
+	).Scan(&count)
+	return count > 0
+}
+
+// BlockIP adds or updates a block entry for an IP.
+// banHours=0 means permanent block (admin must remove manually).
+func (d *DB) BlockIP(ip, reason, country, countryCode string, attempts int, banHours int) {
+	isPermanent := 0
+	var expiresExpr string
+	if banHours == 0 {
+		isPermanent = 1
+		expiresExpr = "NULL"
+	} else {
+		expiresExpr = fmt.Sprintf("datetime('now', '+%d hours')", banHours)
+	}
+	d.sql.Exec(fmt.Sprintf(`
+		INSERT INTO ip_blocks (ip, reason, country, country_code, attempts, is_permanent, expires_at)
+		VALUES (?,?,?,?,?,%d,%s)
+		ON CONFLICT(ip) DO UPDATE SET
+			reason=excluded.reason, attempts=excluded.attempts,
+			blocked_at=datetime('now'), is_permanent=%d, expires_at=%s`,
+		isPermanent, expiresExpr, isPermanent, expiresExpr,
+	), ip, reason, country, countryCode, attempts)
+}
+
+// UnblockIP removes a block entry.
+func (d *DB) UnblockIP(ip string) error {
+	_, err := d.sql.Exec(`DELETE FROM ip_blocks WHERE ip=?`, ip)
+	return err
+}
+
+// ListIPBlocks returns all current (non-expired or permanent) blocked IPs.
+func (d *DB) ListIPBlocks() ([]IPBlock, error) {
+	rows, err := d.sql.Query(`
+		SELECT id, ip, reason, country, country_code, attempts, blocked_at, expires_at, is_permanent
+		FROM ip_blocks
+		WHERE is_permanent=1 OR expires_at IS NULL OR expires_at > datetime('now')
+		ORDER BY blocked_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []IPBlock
+	for rows.Next() {
+		var b IPBlock
+		var expiresStr sql.NullString
+		rows.Scan(&b.ID, &b.IP, &b.Reason, &b.Country, &b.CountryCode,
+			&b.Attempts, &b.BlockedAt, &expiresStr, &b.IsPermanent)
+		if expiresStr.Valid {
+			t, _ := time.Parse("2006-01-02 15:04:05", expiresStr.String)
+			b.ExpiresAt = &t
+		}
+		result = append(result, b)
+	}
+	return result, rows.Err()
+}
+
+// ListLoginAttemptStats returns per-IP attempt summaries for display.
+func (d *DB) ListLoginAttemptStats(limitHours int) ([]LoginAttemptStat, error) {
+	rows, err := d.sql.Query(`
+		SELECT ip, country, country_code,
+		       COUNT(*) as total,
+		       SUM(CASE WHEN success=0 THEN 1 ELSE 0 END) as failures,
+		       MAX(created_at) as last_seen
+		FROM login_attempts
+		WHERE created_at >= datetime('now', ? || ' hours')
+		GROUP BY ip ORDER BY failures DESC LIMIT 100`,
+		fmt.Sprintf("-%d", limitHours),
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []LoginAttemptStat
+	for rows.Next() {
+		var s LoginAttemptStat
+		rows.Scan(&s.IP, &s.Country, &s.CountryCode, &s.Total, &s.Failures, &s.LastSeen)
+		result = append(result, s)
+	}
+	return result, rows.Err()
+}
+
+// PurgeExpiredBlocks removes expired (non-permanent) blocks from the table.
+func (d *DB) PurgeExpiredBlocks() {
+	d.sql.Exec(`DELETE FROM ip_blocks WHERE is_permanent=0 AND expires_at IS NOT NULL AND expires_at <= datetime('now')`)
+}
+
+// LookupIPCountry returns cached country info for an IP from recent login_attempts.
+func (d *DB) LookupCachedCountry(ip string) (country, countryCode string) {
+	d.sql.QueryRow(`
+		SELECT country, country_code FROM login_attempts
+		WHERE ip=? AND country != '' ORDER BY created_at DESC LIMIT 1`, ip,
+	).Scan(&country, &countryCode)
+	return
 }

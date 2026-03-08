@@ -85,6 +85,14 @@ func main() {
 	r.Use(middleware.CORS)
 	r.Use(cfg.HostCheckMiddleware)
 
+	// Custom error handlers for non-API paths
+	r.NotFoundHandler = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		middleware.ServeErrorPage(w, req, http.StatusNotFound, "Page Not Found", "The page you're looking for doesn't exist or has been moved.")
+	})
+	r.MethodNotAllowedHandler = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		middleware.ServeErrorPage(w, req, http.StatusMethodNotAllowed, "Method Not Allowed", "This request method is not supported for this URL.")
+	})
+
 	// Static files
 	r.PathPrefix("/static/").Handler(
 		http.StripPrefix("/static/", http.FileServer(http.FS(staticFS))),
@@ -103,7 +111,7 @@ func main() {
 	// Public auth routes
 	auth := r.PathPrefix("/auth").Subrouter()
 	auth.HandleFunc("/login", h.Auth.ShowLogin).Methods("GET")
-	auth.HandleFunc("/login", h.Auth.Login).Methods("POST")
+	auth.Handle("/login", middleware.BruteForceProtect(database, cfg, http.HandlerFunc(h.Auth.Login))).Methods("POST")
 	auth.HandleFunc("/logout", h.Auth.Logout).Methods("POST")
 
 	// MFA (session exists but mfa_verified=0)
@@ -133,6 +141,7 @@ func main() {
 	adminUI.HandleFunc("/", h.Admin.ShowAdmin).Methods("GET")
 	adminUI.HandleFunc("/settings", h.Admin.ShowAdmin).Methods("GET")
 	adminUI.HandleFunc("/audit", h.Admin.ShowAdmin).Methods("GET")
+	adminUI.HandleFunc("/security", h.Admin.ShowAdmin).Methods("GET")
 
 	// API
 	api := r.PathPrefix("/api").Subrouter()
@@ -218,6 +227,19 @@ func main() {
 	adminAPI.HandleFunc("/audit", h.Admin.ListAuditLogs).Methods("GET")
 	adminAPI.HandleFunc("/settings", h.Admin.GetSettings).Methods("GET")
 	adminAPI.HandleFunc("/settings", h.Admin.SetSettings).Methods("PUT")
+	adminAPI.HandleFunc("/ip-blocks", h.Admin.ListIPBlocks).Methods("GET")
+	adminAPI.HandleFunc("/ip-blocks", h.Admin.AddIPBlock).Methods("POST")
+	adminAPI.HandleFunc("/ip-blocks/{ip}", h.Admin.RemoveIPBlock).Methods("DELETE")
+	adminAPI.HandleFunc("/login-attempts", h.Admin.ListLoginAttempts).Methods("GET")
+
+	// Periodically purge expired IP blocks
+	go func() {
+		ticker := time.NewTicker(1 * time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			database.PurgeExpiredBlocks()
+		}
+	}()
 
 	srv := &http.Server{
 		Addr:         cfg.ListenAddr,

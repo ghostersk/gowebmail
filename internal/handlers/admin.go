@@ -8,6 +8,7 @@ import (
 
 	"github.com/ghostersk/gowebmail/config"
 	"github.com/ghostersk/gowebmail/internal/db"
+	"github.com/ghostersk/gowebmail/internal/geo"
 	"github.com/ghostersk/gowebmail/internal/middleware"
 	"github.com/ghostersk/gowebmail/internal/models"
 	"github.com/gorilla/mux"
@@ -224,4 +225,69 @@ func (h *AdminHandler) SetSettings(w http.ResponseWriter, r *http.Request) {
 		"ok":      true,
 		"changed": changed,
 	})
+}
+
+// ---- IP Blocks ----
+
+func (h *AdminHandler) ListIPBlocks(w http.ResponseWriter, r *http.Request) {
+	blocks, err := h.db.ListIPBlocks()
+	if err != nil {
+		h.writeError(w, http.StatusInternalServerError, "failed to list blocks")
+		return
+	}
+	if blocks == nil {
+		blocks = []db.IPBlock{}
+	}
+	h.writeJSON(w, map[string]interface{}{"blocks": blocks})
+}
+
+func (h *AdminHandler) AddIPBlock(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		IP          string `json:"ip"`
+		Reason      string `json:"reason"`
+		BanHours    int    `json:"ban_hours"` // 0 = permanent
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+	if req.IP == "" {
+		h.writeError(w, http.StatusBadRequest, "ip required")
+		return
+	}
+	// Try geo lookup for the IP being manually blocked
+	g := geo.Lookup(req.IP)
+	if req.Reason == "" {
+		req.Reason = "Manual admin block"
+	}
+	h.db.BlockIP(req.IP, req.Reason, g.Country, g.CountryCode, 0, req.BanHours)
+	adminID := middleware.GetUserID(r)
+	h.db.WriteAudit(&adminID, models.AuditConfigChange, "manual IP block: "+req.IP, middleware.ClientIP(r), r.UserAgent())
+	h.writeJSON(w, map[string]bool{"ok": true})
+}
+
+func (h *AdminHandler) RemoveIPBlock(w http.ResponseWriter, r *http.Request) {
+	ip := mux.Vars(r)["ip"]
+	if ip == "" {
+		h.writeError(w, http.StatusBadRequest, "ip required")
+		return
+	}
+	if err := h.db.UnblockIP(ip); err != nil {
+		h.writeError(w, http.StatusInternalServerError, "unblock failed")
+		return
+	}
+	adminID := middleware.GetUserID(r)
+	h.db.WriteAudit(&adminID, models.AuditConfigChange, "unblocked IP: "+ip, middleware.ClientIP(r), r.UserAgent())
+	h.writeJSON(w, map[string]bool{"ok": true})
+}
+
+// ---- Login Attempts ----
+
+func (h *AdminHandler) ListLoginAttempts(w http.ResponseWriter, r *http.Request) {
+	stats, err := h.db.ListLoginAttemptStats(72) // last 72 hours
+	if err != nil {
+		h.writeError(w, http.StatusInternalServerError, "failed to query attempts")
+		return
+	}
+	if stats == nil {
+		stats = []db.LoginAttemptStat{}
+	}
+	h.writeJSON(w, map[string]interface{}{"attempts": stats})
 }
