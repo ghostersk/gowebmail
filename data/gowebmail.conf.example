@@ -47,7 +47,7 @@ TRUSTED_PROXIES =
 
 # --- Storage ---
 # Path to the SQLite database file.
-DB_PATH = ./data/gomail.db
+DB_PATH = ./data/gowebmail.db
 
 # AES-256 key protecting all sensitive data at rest (emails, tokens, MFA secrets).
 # Must be exactly 64 hex characters (= 32 bytes). Auto-generated on first run.

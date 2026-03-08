@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yourusername/gomail/internal/crypto"
-	"github.com/yourusername/gomail/internal/models"
+	"github.com/ghostersk/gowebmail/internal/crypto"
+	"github.com/ghostersk/gowebmail/internal/models"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -526,7 +526,6 @@ func (d *DB) ListAuditLogs(page, pageSize int, eventFilter string) (*models.Audi
 	}, rows.Err()
 }
 
-
 // ---- Email Accounts ----
 
 func (d *DB) CreateAccount(a *models.EmailAccount) error {
@@ -797,7 +796,8 @@ func (d *DB) GetFolderByPath(accountID int64, fullPath string) (*models.Folder, 
 		       COALESCE(is_hidden,0), COALESCE(sync_enabled,1)
 		 FROM folders WHERE account_id=? AND full_path=?`, accountID, fullPath,
 	).Scan(&f.ID, &f.AccountID, &f.Name, &f.FullPath, &f.FolderType, &f.UnreadCount, &f.TotalCount, &isHidden, &syncEnabled)
-	f.IsHidden = isHidden == 1; f.SyncEnabled = syncEnabled == 1
+	f.IsHidden = isHidden == 1
+	f.SyncEnabled = syncEnabled == 1
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -1161,8 +1161,12 @@ func (d *DB) IsRemoteContentAllowed(userID int64, sender string) (bool, error) {
 // SetFolderVisibility sets is_hidden and sync_enabled for a folder owned by the user.
 func (d *DB) SetFolderVisibility(folderID, userID int64, isHidden, syncEnabled bool) error {
 	ih, se := 0, 0
-	if isHidden { ih = 1 }
-	if syncEnabled { se = 1 }
+	if isHidden {
+		ih = 1
+	}
+	if syncEnabled {
+		se = 1
+	}
 	_, err := d.sql.Exec(`
 		UPDATE folders SET is_hidden=?, sync_enabled=?
 		WHERE id=? AND account_id IN (SELECT id FROM email_accounts WHERE user_id=?)`,
@@ -1212,7 +1216,8 @@ func (d *DB) GetFolderByID(folderID int64) (*models.Folder, error) {
 		       COALESCE(is_hidden,0), COALESCE(sync_enabled,1)
 		 FROM folders WHERE id=?`, folderID,
 	).Scan(&f.ID, &f.AccountID, &f.Name, &f.FullPath, &f.FolderType, &f.UnreadCount, &f.TotalCount, &isHidden, &syncEnabled)
-	f.IsHidden = isHidden == 1; f.SyncEnabled = syncEnabled == 1
+	f.IsHidden = isHidden == 1
+	f.SyncEnabled = syncEnabled == 1
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -1464,4 +1469,97 @@ func boolToInt(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+// EmptyFolder deletes all messages in a folder (Trash/Spam).
+// Returns count deleted.
+func (d *DB) EmptyFolder(folderID, userID int64) (int, error) {
+	res, err := d.sql.Exec(`
+		DELETE FROM messages WHERE folder_id=?
+		AND folder_id IN (SELECT id FROM folders WHERE account_id IN
+			(SELECT id FROM email_accounts WHERE user_id=?))`,
+		folderID, userID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
+}
+
+// EnableAllFolderSync enables sync for all currently-disabled folders belonging
+// to accounts owned by userID. Returns count updated.
+func (d *DB) EnableAllFolderSync(accountID, userID int64) (int, error) {
+	res, err := d.sql.Exec(`
+		UPDATE folders SET sync_enabled=1
+		WHERE account_id=? AND sync_enabled=0
+		AND account_id IN (SELECT id FROM email_accounts WHERE user_id=?)`,
+		accountID, userID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
+}
+
+// PollUnread returns inbox unread count + total unread, and whether there are
+// new messages since `sinceID`. Used by the client-side poller.
+func (d *DB) PollUnread(userID int64, sinceID int64) (inboxUnread int, totalUnread int, newestID int64, err error) {
+	// Inbox unread count
+	d.sql.QueryRow(`
+		SELECT COALESCE(SUM(f.unread_count),0) FROM folders f
+		JOIN email_accounts a ON a.id=f.account_id
+		WHERE a.user_id=? AND f.folder_type='inbox'`, userID,
+	).Scan(&inboxUnread)
+
+	// Total unread (all folders except trash/spam)
+	d.sql.QueryRow(`
+		SELECT COALESCE(SUM(f.unread_count),0) FROM folders f
+		JOIN email_accounts a ON a.id=f.account_id
+		WHERE a.user_id=? AND f.folder_type NOT IN ('trash','spam')`, userID,
+	).Scan(&totalUnread)
+
+	// Newest message ID in inbox
+	d.sql.QueryRow(`
+		SELECT COALESCE(MAX(m.id),0) FROM messages m
+		JOIN folders f ON f.id=m.folder_id
+		JOIN email_accounts a ON a.id=f.account_id
+		WHERE a.user_id=? AND f.folder_type='inbox'`, userID,
+	).Scan(&newestID)
+
+	return
+}
+
+// GetNewMessagesSince returns inbox message summaries with id > sinceID for notifications.
+func (d *DB) GetNewMessagesSince(userID int64, sinceID int64) ([]map[string]interface{}, error) {
+	rows, err := d.sql.Query(`
+		SELECT m.id, m.subject, m.from_name, m.from_email
+		FROM messages m
+		JOIN folders f ON f.id=m.folder_id
+		JOIN email_accounts a ON a.id=f.account_id
+		WHERE a.user_id=? AND f.folder_type='inbox' AND m.id>?
+		ORDER BY m.id DESC LIMIT 5`, userID, sinceID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []map[string]interface{}
+	for rows.Next() {
+		var id int64
+		var subject, fromName, fromEmail string
+		rows.Scan(&id, &subject, &fromName, &fromEmail)
+		// Decrypt
+		subject, _ = d.enc.Decrypt(subject)
+		fromName, _ = d.enc.Decrypt(fromName)
+		fromEmail, _ = d.enc.Decrypt(fromEmail)
+		result = append(result, map[string]interface{}{
+			"id": id, "subject": subject, "from_name": fromName, "from_email": fromEmail,
+		})
+	}
+	if result == nil {
+		result = []map[string]interface{}{}
+	}
+	return result, rows.Err()
 }

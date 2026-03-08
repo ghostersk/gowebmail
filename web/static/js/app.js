@@ -31,6 +31,10 @@ async function init() {
   await loadAccounts();
   await loadFolders();
   await loadMessages();
+  // Seed poller ID so we don't notify on initial load
+  if (S.messages.length > 0) {
+    POLLER.lastKnownID = Math.max(...S.messages.map(m=>m.id));
+  }
 
   const p = new URLSearchParams(location.search);
   if (p.get('connected')) { toast('Account connected!', 'success'); history.replaceState({},'','/'); }
@@ -44,6 +48,7 @@ async function init() {
   });
 
   initComposeDragResize();
+  startPoller();
 }
 
 // ── Providers ──────────────────────────────────────────────────────────────
@@ -372,11 +377,19 @@ function showFolderMenu(e, folderId) {
       <span class="ctx-sub-arrow">›</span>
       <div class="ctx-submenu">${moveItems}</div>
     </div>` : '';
+  const isTrashOrSpam = f.folder_type==='trash' || f.folder_type==='spam';
+  const emptyEntry = isTrashOrSpam
+    ? `<div class="ctx-item danger" onclick="confirmEmptyFolder(${folderId});closeMenu()">🗑 Empty ${f.name}</div>` : '';
+  const disabledCount = S.folders.filter(x=>x.account_id===f.account_id&&!x.sync_enabled).length;
+  const enableAllEntry = disabledCount > 0
+    ? `<div class="ctx-item" onclick="enableAllFolderSync(${f.account_id});closeMenu()">↻ Enable sync for all folders (${disabledCount})</div>` : '';
   showCtxMenu(e, `
     <div class="ctx-item" onclick="syncFolderNow(${folderId});closeMenu()">↻ Sync this folder</div>
     <div class="ctx-item" onclick="toggleFolderSync(${folderId});closeMenu()">${syncLabel}</div>
+    ${enableAllEntry}
     <div class="ctx-sep"></div>
     ${moveEntry}
+    ${emptyEntry}
     <div class="ctx-item" onclick="confirmHideFolder(${folderId});closeMenu()">👁 Hide from sidebar</div>
     <div class="ctx-item danger" onclick="confirmDeleteFolder(${folderId});closeMenu()">🗑 Delete folder</div>`);
 }
@@ -398,6 +411,36 @@ async function toggleFolderSync(folderId) {
     toast(newSync?'Folder sync enabled':'Folder sync disabled', 'success');
     renderFolders();
   } else toast('Update failed','error');
+}
+
+async function enableAllFolderSync(accountId) {
+  const r = await api('POST','/accounts/'+accountId+'/enable-all-sync');
+  if (r?.ok) {
+    // Update local state
+    S.folders.forEach(f=>{ if(f.account_id===accountId) f.sync_enabled=true; });
+    toast(`Sync enabled for ${r.enabled||0} folder${r.enabled===1?'':'s'}`, 'success');
+    renderFolders();
+  } else toast('Failed to enable sync', 'error');
+}
+
+async function confirmEmptyFolder(folderId) {
+  const f = S.folders.find(f=>f.id===folderId);
+  if (!f) return;
+  const label = f.folder_type==='trash' ? 'Trash' : 'Spam';
+  inlineConfirm(
+    `Permanently delete all messages in ${label}? This cannot be undone.`,
+    async () => {
+      const r = await api('POST','/folders/'+folderId+'/empty');
+      if (r?.ok) {
+        toast(`Emptied ${label} (${r.deleted||0} messages)`, 'success');
+        // Remove locally
+        S.messages = S.messages.filter(m=>m.folder_id!==folderId);
+        if (S.currentMessage && S.currentFolder===folderId) resetDetail();
+        await loadFolders();
+        if (S.currentFolder===folderId) renderMessageList();
+      } else toast('Failed to empty folder','error');
+    }
+  );
 }
 
 async function confirmHideFolder(folderId) {
@@ -639,9 +682,16 @@ async function bulkMarkRead(read) {
 }
 
 async function bulkDelete() {
-  await Promise.all([...SEL.ids].map(id=>api('DELETE','/messages/'+id)));
-  SEL.ids.forEach(id=>{S.messages=S.messages.filter(m=>m.id!==id);});
-  SEL.ids.clear(); renderMessageList();
+  const count = SEL.ids.size;
+  inlineConfirm(
+    `Delete ${count} message${count===1?'':'s'}? This cannot be undone.`,
+    async () => {
+      const ids = [...SEL.ids];
+      await Promise.all(ids.map(id=>api('DELETE','/messages/'+id)));
+      ids.forEach(id=>{S.messages=S.messages.filter(m=>m.id!==id);});
+      SEL.ids.clear(); renderMessageList(); loadFolders();
+    }
+  );
 }
 
 function loadMoreMessages(){ S.currentPage++; loadMessages(true); }
@@ -655,7 +705,11 @@ async function openMessage(id) {
   S.currentMessage=msg;
   renderMessageDetail(msg, false);
   const li=S.messages.find(m=>m.id===id);
-  if (li&&!li.is_read){li.is_read=true;renderMessageList();}
+  if (li&&!li.is_read){
+    li.is_read=true; renderMessageList();
+    // Sync read status to server (enqueues IMAP op via backend)
+    api('PUT','/messages/'+id+'/read',{read:true});
+  }
 }
 
 function renderMessageDetail(msg, showRemoteContent) {
@@ -1249,3 +1303,169 @@ function _bootApp() {
 
 // Run immediately — DOM is ready since this script is at end of <body>
 _bootApp();
+
+// ── Real-time poller + notifications ────────────────────────────────────────
+// Polls /api/poll every 20s for unread count changes and new message detection.
+// When new messages arrive: updates badge instantly, shows corner toast,
+// and fires a browser OS notification if permission granted.
+
+const POLLER = {
+  lastKnownID: 0,      // highest message ID we've seen
+  timer: null,
+  active: false,
+  notifGranted: false,
+};
+
+async function startPoller() {
+  // Request browser notification permission (non-blocking)
+  if ('Notification' in window && Notification.permission === 'default') {
+    Notification.requestPermission().then(p => {
+      POLLER.notifGranted = p === 'granted';
+    });
+  } else if ('Notification' in window) {
+    POLLER.notifGranted = Notification.permission === 'granted';
+  }
+
+  POLLER.active = true;
+  schedulePoll();
+}
+
+function schedulePoll() {
+  if (!POLLER.active) return;
+  POLLER.timer = setTimeout(runPoll, 20000); // 20 second interval
+}
+
+async function runPoll() {
+  if (!POLLER.active) return;
+  try {
+    const data = await api('GET', '/poll?since=' + POLLER.lastKnownID);
+    if (!data) { schedulePoll(); return; }
+
+    // Update badge immediately without full loadFolders()
+    updateUnreadBadgeFromPoll(data.inbox_unread);
+
+    // New messages arrived
+    if (data.has_new && data.newest_id > POLLER.lastKnownID) {
+      const prevID = POLLER.lastKnownID;
+      POLLER.lastKnownID = data.newest_id;
+
+      // Fetch new message details for notifications
+      const newData = await api('GET', '/new-messages?since=' + prevID);
+      const newMsgs = newData?.messages || [];
+
+      if (newMsgs.length > 0) {
+        showNewMailToast(newMsgs);
+        sendOSNotification(newMsgs);
+      }
+
+      // Refresh current view if we're looking at inbox/unified
+      const isInboxView = S.currentFolder === 'unified' ||
+        S.folders.find(f => f.id === S.currentFolder && f.folder_type === 'inbox');
+      if (isInboxView) {
+        await loadMessages();
+        await loadFolders();
+      } else {
+        await loadFolders(); // update counts in sidebar
+      }
+    }
+  } catch(e) {
+    // Network error — silent, retry next cycle
+  }
+  schedulePoll();
+}
+
+// Update the unread badge in the sidebar and browser tab title
+// without triggering a full folder reload
+function updateUnreadBadgeFromPoll(inboxUnread) {
+  const badge = document.getElementById('unread-total');
+  if (!badge) return;
+  if (inboxUnread > 0) {
+    badge.textContent = inboxUnread > 99 ? '99+' : inboxUnread;
+    badge.style.display = '';
+  } else {
+    badge.style.display = 'none';
+  }
+  // Update browser tab title
+  const base = 'GoMail';
+  document.title = inboxUnread > 0 ? `(${inboxUnread}) ${base}` : base;
+}
+
+// Corner toast notification for new mail
+function showNewMailToast(msgs) {
+  const existing = document.getElementById('newmail-toast');
+  if (existing) existing.remove();
+
+  const count = msgs.length;
+  const first = msgs[0];
+  const fromLabel = first.from_name || first.from_email || 'Unknown';
+  const subject = first.subject || '(no subject)';
+
+  const text = count === 1
+    ? `<strong>${escHtml(fromLabel)}</strong><br><span>${escHtml(subject)}</span>`
+    : `<strong>${count} new messages</strong><br><span>${escHtml(fromLabel)}: ${escHtml(subject)}</span>`;
+
+  const el = document.createElement('div');
+  el.id = 'newmail-toast';
+  el.className = 'newmail-toast';
+  el.innerHTML = `
+    <div class="newmail-toast-icon">✉</div>
+    <div class="newmail-toast-body">${text}</div>
+    <button class="newmail-toast-close" onclick="this.parentElement.remove()">✕</button>`;
+
+  // Click to open the message
+  el.addEventListener('click', (e) => {
+    if (e.target.classList.contains('newmail-toast-close')) return;
+    el.remove();
+    if (count === 1) {
+      selectFolder(
+        S.folders.find(f=>f.folder_type==='inbox')?.id || 'unified',
+        'Inbox'
+      );
+      setTimeout(()=>openMessage(first.id), 400);
+    } else {
+      selectFolder('unified', 'Unified Inbox');
+    }
+  });
+
+  document.body.appendChild(el);
+
+  // Auto-dismiss after 6s
+  setTimeout(() => { if (el.parentElement) el.remove(); }, 6000);
+}
+
+function escHtml(s) {
+  return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// OS / browser notification
+function sendOSNotification(msgs) {
+  if (!POLLER.notifGranted || !('Notification' in window)) return;
+  const count = msgs.length;
+  const first = msgs[0];
+  const title = count === 1
+    ? (first.from_name || first.from_email || 'New message')
+    : `${count} new messages in GoMail`;
+  const body = count === 1
+    ? (first.subject || '(no subject)')
+    : `${first.from_name || first.from_email}: ${first.subject || '(no subject)'}`;
+
+  try {
+    const n = new Notification(title, {
+      body,
+      icon: '/static/icons/icon-192.png', // use if you have one, else falls back gracefully
+      tag: 'gowebmail-new',   // replaces previous if still visible
+    });
+    n.onclick = () => {
+      window.focus();
+      n.close();
+      if (count === 1) {
+        selectFolder(S.folders.find(f=>f.folder_type==='inbox')?.id||'unified','Inbox');
+        setTimeout(()=>openMessage(first.id), 400);
+      }
+    };
+    // Auto-close OS notification after 8s
+    setTimeout(()=>n.close(), 8000);
+  } catch(e) {
+    // Some browsers block even with granted permission in certain contexts
+  }
+}

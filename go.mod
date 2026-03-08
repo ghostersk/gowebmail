@@ -1,4 +1,4 @@
-module github.com/yourusername/gomail
+module github.com/ghostersk/gowebmail
 
 go 1.26
 

@@ -6,11 +6,11 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/ghostersk/gowebmail/config"
+	"github.com/ghostersk/gowebmail/internal/db"
+	"github.com/ghostersk/gowebmail/internal/middleware"
+	"github.com/ghostersk/gowebmail/internal/models"
 	"github.com/gorilla/mux"
-	"github.com/yourusername/gomail/config"
-	"github.com/yourusername/gomail/internal/db"
-	"github.com/yourusername/gomail/internal/middleware"
-	"github.com/yourusername/gomail/internal/models"
 )
 
 // AdminHandler handles /admin/* routes (all require admin role).
@@ -46,14 +46,14 @@ func (h *AdminHandler) ListUsers(w http.ResponseWriter, r *http.Request) {
 	}
 	// Sanitize: strip password hash
 	type safeUser struct {
-		ID          int64            `json:"id"`
-		Email       string           `json:"email"`
-		Username    string           `json:"username"`
-		Role        models.UserRole  `json:"role"`
-		IsActive    bool             `json:"is_active"`
-		MFAEnabled  bool             `json:"mfa_enabled"`
-		LastLoginAt interface{}      `json:"last_login_at"`
-		CreatedAt   interface{}      `json:"created_at"`
+		ID          int64           `json:"id"`
+		Email       string          `json:"email"`
+		Username    string          `json:"username"`
+		Role        models.UserRole `json:"role"`
+		IsActive    bool            `json:"is_active"`
+		MFAEnabled  bool            `json:"mfa_enabled"`
+		LastLoginAt interface{}     `json:"last_login_at"`
+		CreatedAt   interface{}     `json:"created_at"`
 	}
 	result := make([]safeUser, 0, len(users))
 	for _, u := range users {
@@ -108,9 +108,9 @@ func (h *AdminHandler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 	targetID, _ := strconv.ParseInt(vars["id"], 10, 64)
 
 	var req struct {
-		IsActive *bool   `json:"is_active"`
-		Password string  `json:"password"`
-		Role     string  `json:"role"`
+		IsActive *bool  `json:"is_active"`
+		Password string `json:"password"`
+		Role     string `json:"role"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.writeError(w, http.StatusBadRequest, "invalid request")

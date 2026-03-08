@@ -7,13 +7,13 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/yourusername/gomail/config"
-	goauth "github.com/yourusername/gomail/internal/auth"
-	"github.com/yourusername/gomail/internal/crypto"
-	"github.com/yourusername/gomail/internal/db"
-	"github.com/yourusername/gomail/internal/mfa"
-	"github.com/yourusername/gomail/internal/middleware"
-	"github.com/yourusername/gomail/internal/models"
+	"github.com/ghostersk/gowebmail/config"
+	goauth "github.com/ghostersk/gowebmail/internal/auth"
+	"github.com/ghostersk/gowebmail/internal/crypto"
+	"github.com/ghostersk/gowebmail/internal/db"
+	"github.com/ghostersk/gowebmail/internal/mfa"
+	"github.com/ghostersk/gowebmail/internal/middleware"
+	"github.com/ghostersk/gowebmail/internal/models"
 
 	"golang.org/x/oauth2"
 )
@@ -155,7 +155,9 @@ func (h *AuthHandler) MFASetupBegin(w http.ResponseWriter, r *http.Request) {
 
 func (h *AuthHandler) MFASetupConfirm(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.GetUserID(r)
-	var req struct{ Code string `json:"code"` }
+	var req struct {
+		Code string `json:"code"`
+	}
 	json.NewDecoder(r.Body).Decode(&req)
 
 	user, _ := h.db.GetUserByID(userID)
@@ -181,7 +183,9 @@ func (h *AuthHandler) MFASetupConfirm(w http.ResponseWriter, r *http.Request) {
 
 func (h *AuthHandler) MFADisable(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.GetUserID(r)
-	var req struct{ Code string `json:"code"` }
+	var req struct {
+		Code string `json:"code"`
+	}
 	json.NewDecoder(r.Body).Decode(&req)
 
 	user, _ := h.db.GetUserByID(userID)

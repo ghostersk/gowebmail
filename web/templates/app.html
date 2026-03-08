@@ -1,5 +1,5 @@
 {{template "base" .}}
-{{define "title"}}GoMail{{end}}
+{{define "title"}}GoWebMail{{end}}
 {{define "body_class"}}app-page{{end}}
 
 {{define "body"}}
@@ -9,9 +9,9 @@
     <div class="sidebar-header">
       <div class="logo">
         <div class="logo-icon"><svg viewBox="0 0 24 24"><path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"/></svg></div>
-        <span class="logo-text">GoMail</span>
+        <span class="logo-text"><a href="/">GoWebMail</a></span>
       </div>
-      <button class="compose-btn" onclick="openCompose()">+ Compose</button>
+      <button class="compose-btn" onclick="openCompose()">+ New</button>
     </div>
 
     <div class="nav-section">
@@ -30,7 +30,7 @@
     <div class="sidebar-footer">
       <div class="user-info">
         <span class="user-name" id="user-display">...</span>
-        <a href="/admin" id="admin-link" style="display:none;font-size:11px;color:var(--accent);text-decoration:none">Admin</a>
+        <a href="/admin" id="admin-link" style="display:none;font-size:11px;color:var(--accent);text-decoration:none">Server Administration</a>
       </div>
       <div class="footer-actions">
         <button class="icon-btn" id="accounts-btn" onclick="toggleAccountsMenu(event)" title="Manage accounts">
@@ -308,5 +308,5 @@
 {{end}}
 
 {{define "scripts"}}
-<script src="/static/js/app.js?v=11"></script>
+<script src="/static/js/app.js?v=12"></script>
 {{end}}

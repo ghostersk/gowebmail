@@ -21,7 +21,7 @@ import (
 	"github.com/emersion/go-imap"
 	"github.com/emersion/go-imap/client"
 
-	gomailModels "github.com/yourusername/gomail/internal/models"
+	gomailModels "github.com/ghostersk/gowebmail/internal/models"
 )
 
 func imapHostFor(provider gomailModels.AccountProvider) (string, int) {

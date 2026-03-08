@@ -41,7 +41,7 @@ Visit http://localhost:8080, default login admin/admin, register an account, the
 ```bash
 git clone https://github.com/ghostersk/gowebmail && cd gowebmail
 go run ./cmd/server/main.go
-# check ./data/gomail.conf what gets generated on first run if not exists, update as needed.
+# check ./data/gowebmail.conf what gets generated on first run if not exists, update as needed.
 # then restart the app
 ```
 ### Reset Admin password, MFA
@@ -115,7 +115,7 @@ golang.org/x/oauth2              OAuth2 + Google/Microsoft endpoints
 ## Building for Production
 
 ```bash
-CGO_ENABLED=1 GOOS=linux go build -ldflags="-s -w" -o gomail ./cmd/server
+CGO_ENABLED=1 GOOS=linux go build -ldflags="-s -w" -o gowebmail ./cmd/server
 ```
 
 CGO is required by `go-sqlite3`. Cross-compilation requires a C cross-compiler.

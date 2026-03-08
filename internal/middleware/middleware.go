@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yourusername/gomail/config"
-	"github.com/yourusername/gomail/internal/db"
-	"github.com/yourusername/gomail/internal/models"
+	"github.com/ghostersk/gowebmail/config"
+	"github.com/ghostersk/gowebmail/internal/db"
+	"github.com/ghostersk/gowebmail/internal/models"
 )
 
 type contextKey string

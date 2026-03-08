@@ -1,12 +1,12 @@
 version: '3.9'
 
 services:
-  gomail:
+  gowebmail:
     build: .
     ports:
       - "8080:8080"
     volumes:
-      - gomail-data:/data
+      - gowebmail-data:/data
     environment:
       # REQUIRED: Generate with: openssl rand -hex 32
       ENCRYPTION_KEY: ""
@@ -32,4 +32,4 @@ services:
     restart: unless-stopped
 
 volumes:
-  gomail-data:
+  gowebmail-data:

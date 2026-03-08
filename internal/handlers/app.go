@@ -3,8 +3,8 @@ package handlers
 import (
 	"net/http"
 
-	"github.com/yourusername/gomail/config"
-	"github.com/yourusername/gomail/internal/db"
+	"github.com/ghostersk/gowebmail/config"
+	"github.com/ghostersk/gowebmail/internal/db"
 )
 
 // AppHandler serves the main app pages using the shared Renderer.

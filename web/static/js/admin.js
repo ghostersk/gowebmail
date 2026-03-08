@@ -209,7 +209,7 @@ async function renderSettings() {
   el.innerHTML = `
     <div class="admin-page-header">
       <h1>Application Settings</h1>
-      <p>Changes are saved to <code style="font-family:monospace;background:var(--surface3);padding:2px 6px;border-radius:4px">data/gomail.conf</code> and take effect immediately for most settings. A restart is required for LISTEN_ADDR changes.</p>
+      <p>Changes are saved to <code style="font-family:monospace;background:var(--surface3);padding:2px 6px;border-radius:4px">data/gowebmail.conf</code> and take effect immediately for most settings. A restart is required for LISTEN_ADDR changes.</p>
     </div>
     <div id="settings-alert" style="display:none"></div>
     <div class="admin-card">

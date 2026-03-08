@@ -11,20 +11,20 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ghostersk/gowebmail/config"
+	"github.com/ghostersk/gowebmail/internal/db"
+	"github.com/ghostersk/gowebmail/internal/email"
+	"github.com/ghostersk/gowebmail/internal/middleware"
+	"github.com/ghostersk/gowebmail/internal/models"
+	"github.com/ghostersk/gowebmail/internal/syncer"
 	"github.com/gorilla/mux"
-	"github.com/yourusername/gomail/config"
-	"github.com/yourusername/gomail/internal/db"
-	"github.com/yourusername/gomail/internal/email"
-	"github.com/yourusername/gomail/internal/middleware"
-	"github.com/yourusername/gomail/internal/models"
-	"github.com/yourusername/gomail/internal/syncer"
 )
 
 // APIHandler handles all /api/* JSON endpoints.
 type APIHandler struct {
-	db      *db.DB
-	cfg     *config.Config
-	syncer  *syncer.Scheduler
+	db     *db.DB
+	cfg    *config.Config
+	syncer *syncer.Scheduler
 }
 
 func (h *APIHandler) writeJSON(w http.ResponseWriter, v interface{}) {
@@ -93,13 +93,13 @@ func (h *APIHandler) ListAccounts(w http.ResponseWriter, r *http.Request) {
 
 func (h *APIHandler) AddAccount(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Email        string `json:"email"`
-		DisplayName  string `json:"display_name"`
-		Password     string `json:"password"`
-		IMAPHost     string `json:"imap_host"`
-		IMAPPort     int    `json:"imap_port"`
-		SMTPHost     string `json:"smtp_host"`
-		SMTPPort     int    `json:"smtp_port"`
+		Email       string `json:"email"`
+		DisplayName string `json:"display_name"`
+		Password    string `json:"password"`
+		IMAPHost    string `json:"imap_host"`
+		IMAPPort    int    `json:"imap_port"`
+		SMTPHost    string `json:"smtp_host"`
+		SMTPPort    int    `json:"smtp_port"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.writeError(w, http.StatusBadRequest, "invalid request body")
@@ -128,8 +128,8 @@ func (h *APIHandler) AddAccount(w http.ResponseWriter, r *http.Request) {
 	account := &models.EmailAccount{
 		UserID: userID, Provider: models.ProviderIMAPSMTP,
 		EmailAddress: req.Email, DisplayName: req.DisplayName,
-		AccessToken:  req.Password,
-		IMAPHost: req.IMAPHost, IMAPPort: req.IMAPPort,
+		AccessToken: req.Password,
+		IMAPHost:    req.IMAPHost, IMAPPort: req.IMAPPort,
 		SMTPHost: req.SMTPHost, SMTPPort: req.SMTPPort,
 		Color: color, IsActive: true,
 	}
@@ -170,12 +170,12 @@ func (h *APIHandler) UpdateAccount(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		DisplayName  string `json:"display_name"`
-		Password     string `json:"password"`
-		IMAPHost     string `json:"imap_host"`
-		IMAPPort     int    `json:"imap_port"`
-		SMTPHost     string `json:"smtp_host"`
-		SMTPPort     int    `json:"smtp_port"`
+		DisplayName string `json:"display_name"`
+		Password    string `json:"password"`
+		IMAPHost    string `json:"imap_host"`
+		IMAPPort    int    `json:"imap_port"`
+		SMTPHost    string `json:"smtp_host"`
+		SMTPPort    int    `json:"smtp_port"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.writeError(w, http.StatusBadRequest, "invalid request")
@@ -538,7 +538,9 @@ func (h *APIHandler) GetMessage(w http.ResponseWriter, r *http.Request) {
 func (h *APIHandler) MarkRead(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.GetUserID(r)
 	messageID := pathInt64(r, "id")
-	var req struct{ Read bool `json:"read"` }
+	var req struct {
+		Read bool `json:"read"`
+	}
 	json.NewDecoder(r.Body).Decode(&req)
 
 	// Update local DB first
@@ -548,7 +550,9 @@ func (h *APIHandler) MarkRead(w http.ResponseWriter, r *http.Request) {
 	uid, folderPath, account, err := h.db.GetMessageIMAPInfo(messageID, userID)
 	if err == nil && uid != 0 && account != nil {
 		val := "0"
-		if req.Read { val = "1" }
+		if req.Read {
+			val = "1"
+		}
 		h.db.EnqueueIMAPOp(&db.PendingIMAPOp{
 			AccountID: account.ID, OpType: "flag_read",
 			RemoteUID: uid, FolderPath: folderPath, Extra: val,
@@ -569,7 +573,9 @@ func (h *APIHandler) ToggleStar(w http.ResponseWriter, r *http.Request) {
 	uid, folderPath, account, ierr := h.db.GetMessageIMAPInfo(messageID, userID)
 	if ierr == nil && uid != 0 && account != nil {
 		val := "0"
-		if starred { val = "1" }
+		if starred {
+			val = "1"
+		}
 		h.db.EnqueueIMAPOp(&db.PendingIMAPOp{
 			AccountID: account.ID, OpType: "flag_star",
 			RemoteUID: uid, FolderPath: folderPath, Extra: val,
@@ -582,7 +588,9 @@ func (h *APIHandler) ToggleStar(w http.ResponseWriter, r *http.Request) {
 func (h *APIHandler) MoveMessage(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.GetUserID(r)
 	messageID := pathInt64(r, "id")
-	var req struct{ FolderID int64 `json:"folder_id"` }
+	var req struct {
+		FolderID int64 `json:"folder_id"`
+	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.FolderID == 0 {
 		h.writeError(w, http.StatusBadRequest, "folder_id required")
 		return
@@ -966,4 +974,91 @@ func (h *APIHandler) AddRemoteContentWhitelist(w http.ResponseWriter, r *http.Re
 		return
 	}
 	h.writeJSON(w, map[string]bool{"ok": true})
+}
+
+// ---- Empty folder (Trash/Spam) ----
+
+func (h *APIHandler) EmptyFolder(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.GetUserID(r)
+	folderID := pathInt64(r, "id")
+
+	// Verify folder is trash or spam before allowing bulk delete
+	folder, err := h.db.GetFolderByID(folderID)
+	if err != nil || folder == nil {
+		h.writeError(w, http.StatusNotFound, "folder not found")
+		return
+	}
+	if folder.FolderType != "trash" && folder.FolderType != "spam" {
+		h.writeError(w, http.StatusBadRequest, "can only empty trash or spam folders")
+		return
+	}
+
+	n, err := h.db.EmptyFolder(folderID, userID)
+	if err != nil {
+		h.writeError(w, http.StatusInternalServerError, "failed to empty folder")
+		return
+	}
+	h.db.UpdateFolderCounts(folderID)
+	h.writeJSON(w, map[string]interface{}{"ok": true, "deleted": n})
+}
+
+// ---- Enable sync for all folders of an account ----
+
+func (h *APIHandler) EnableAllFolderSync(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.GetUserID(r)
+	vars := mux.Vars(r)
+	accountIDStr := vars["account_id"]
+	var accountID int64
+	fmt.Sscanf(accountIDStr, "%d", &accountID)
+	if accountID == 0 {
+		h.writeError(w, http.StatusBadRequest, "account_id required")
+		return
+	}
+	n, err := h.db.EnableAllFolderSync(accountID, userID)
+	if err != nil {
+		h.writeError(w, http.StatusInternalServerError, "failed to enable sync")
+		return
+	}
+	h.writeJSON(w, map[string]interface{}{"ok": true, "enabled": n})
+}
+
+// ---- Long-poll for unread counts + new message detection ----
+// GET /api/poll?since=<lastKnownMessageID>
+// Returns immediately with current counts; client polls every ~20s.
+
+func (h *APIHandler) PollUnread(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.GetUserID(r)
+	var sinceID int64
+	fmt.Sscanf(r.URL.Query().Get("since"), "%d", &sinceID)
+
+	inboxUnread, totalUnread, newestID, err := h.db.PollUnread(userID, sinceID)
+	if err != nil {
+		h.writeError(w, http.StatusInternalServerError, "poll failed")
+		return
+	}
+
+	h.writeJSON(w, map[string]interface{}{
+		"inbox_unread": inboxUnread,
+		"total_unread": totalUnread,
+		"newest_id":    newestID,
+		"has_new":      newestID > sinceID && sinceID > 0,
+	})
+}
+
+// ---- Get new messages since ID (for notification content) ----
+
+func (h *APIHandler) NewMessagesSince(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.GetUserID(r)
+	var sinceID int64
+	fmt.Sscanf(r.URL.Query().Get("since"), "%d", &sinceID)
+	if sinceID == 0 {
+		h.writeJSON(w, map[string]interface{}{"messages": []interface{}{}})
+		return
+	}
+	msgs, err := h.db.GetNewMessagesSince(userID, sinceID)
+	if err != nil {
+		h.writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	h.writeJSON(w, map[string]interface{}{"messages": msgs})
 }

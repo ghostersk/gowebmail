@@ -10,11 +10,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/yourusername/gomail/config"
-	"github.com/yourusername/gomail/internal/db"
-	"github.com/yourusername/gomail/internal/handlers"
-	"github.com/yourusername/gomail/internal/middleware"
-	"github.com/yourusername/gomail/internal/syncer"
+	"github.com/ghostersk/gowebmail/config"
+	"github.com/ghostersk/gowebmail/internal/db"
+	"github.com/ghostersk/gowebmail/internal/handlers"
+	"github.com/ghostersk/gowebmail/internal/middleware"
+	"github.com/ghostersk/gowebmail/internal/syncer"
 
 	"github.com/gorilla/mux"
 )
@@ -22,9 +22,9 @@ import (
 func main() {
 	// ── CLI admin commands (run without starting the HTTP server) ──────────
 	// Usage:
-	//   ./gomail --list-admin              list all admin usernames
-	//   ./gomail --pw <username> <pass>    reset an admin's password
-	//   ./gomail --mfa-off <username>      disable MFA for an admin
+	//   ./gowebmail --list-admin              list all admin usernames
+	//   ./gowebmail --pw <username> <pass>    reset an admin's password
+	//   ./gowebmail --mfa-off <username>      disable MFA for an admin
 	args := os.Args[1:]
 	if len(args) > 0 {
 		switch args[0] {
@@ -33,14 +33,14 @@ func main() {
 			return
 		case "--pw":
 			if len(args) < 3 {
-				fmt.Fprintln(os.Stderr, "Usage: gomail --pw <username> \"<password>\"")
+				fmt.Fprintln(os.Stderr, "Usage: gowebmail --pw <username> \"<password>\"")
 				os.Exit(1)
 			}
 			runResetPassword(args[1], args[2])
 			return
 		case "--mfa-off":
 			if len(args) < 2 {
-				fmt.Fprintln(os.Stderr, "Usage: gomail --mfa-off <username>")
+				fmt.Fprintln(os.Stderr, "Usage: gowebmail --mfa-off <username>")
 				os.Exit(1)
 			}
 			runDisableMFA(args[1])
@@ -83,7 +83,9 @@ func main() {
 	r.PathPrefix("/static/").Handler(
 		http.StripPrefix("/static/", http.FileServer(http.Dir("./web/static/"))),
 	)
-
+	r.HandleFunc("/favicon.ico", func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFile(w, r, "./web/static/img/favicon.png")
+	})
 	// Public auth routes
 	auth := r.PathPrefix("/auth").Subrouter()
 	auth.HandleFunc("/login", h.Auth.ShowLogin).Methods("GET")
@@ -172,7 +174,11 @@ func main() {
 	api.HandleFunc("/folders/{id:[0-9]+}/visibility", h.API.SetFolderVisibility).Methods("PUT")
 	api.HandleFunc("/folders/{id:[0-9]+}/count", h.API.CountFolderMessages).Methods("GET")
 	api.HandleFunc("/folders/{id:[0-9]+}/move-to/{toId:[0-9]+}", h.API.MoveFolderContents).Methods("POST")
+	api.HandleFunc("/folders/{id:[0-9]+}/empty", h.API.EmptyFolder).Methods("POST")
 	api.HandleFunc("/folders/{id:[0-9]+}", h.API.DeleteFolder).Methods("DELETE")
+	api.HandleFunc("/accounts/{account_id:[0-9]+}/enable-all-sync", h.API.EnableAllFolderSync).Methods("POST")
+	api.HandleFunc("/poll", h.API.PollUnread).Methods("GET")
+	api.HandleFunc("/new-messages", h.API.NewMessagesSince).Methods("GET")
 
 	api.HandleFunc("/sync-interval", h.API.GetSyncInterval).Methods("GET")
 	api.HandleFunc("/sync-interval", h.API.SetSyncInterval).Methods("PUT")
@@ -206,7 +212,7 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
-		log.Printf("GoMail listening on %s", cfg.ListenAddr)
+		log.Printf("GoWebMail listening on %s", cfg.ListenAddr)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("server: %v", err)
 		}
@@ -289,19 +295,18 @@ func printHelp() {
 	fmt.Print(`GoMail — Admin CLI
 
 Usage:
-  gomail                          Start the mail server
-  gomail --list-admin             List all admin accounts (username, email, MFA status)
-  gomail --pw <username> <pass>   Reset password for an admin account
-  gomail --mfa-off <username>     Disable MFA for an admin account
+  gowebmail                          Start the mail server
+  gowebmail --list-admin             List all admin accounts (username, email, MFA status)
+  gowebmail --pw <username> <pass>   Reset password for an admin account
+  gowebmail --mfa-off <username>     Disable MFA for an admin account
 
 Examples:
-  ./gomail --list-admin
-  ./gomail --pw admin "NewSecurePass123"
-  ./gomail --mfa-off admin
+  ./gowebmail --list-admin
+  ./gowebmail --pw admin "NewSecurePass123"
+  ./gowebmail --mfa-off admin
 
 Note: These commands only work on admin accounts.
       Regular user management is done through the web UI.
       Requires the same environment variables as the server (DB_PATH, ENCRYPTION_KEY, etc).
 `)
 }
-

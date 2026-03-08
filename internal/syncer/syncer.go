@@ -12,9 +12,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yourusername/gomail/internal/db"
-	"github.com/yourusername/gomail/internal/email"
-	"github.com/yourusername/gomail/internal/models"
+	"github.com/ghostersk/gowebmail/internal/db"
+	"github.com/ghostersk/gowebmail/internal/email"
+	"github.com/ghostersk/gowebmail/internal/models"
 )
 
 // Scheduler coordinates all background sync activity.
@@ -24,8 +24,8 @@ type Scheduler struct {
 	wg   sync.WaitGroup
 
 	// push channels: accountID -> channel to signal "something changed on server"
-	pushMu   sync.Mutex
-	pushCh   map[int64]chan struct{}
+	pushMu sync.Mutex
+	pushCh map[int64]chan struct{}
 }
 
 // New creates a new Scheduler.
@@ -570,5 +570,3 @@ func (s *Scheduler) SyncFolderNow(accountID, folderID int64) (int, error) {
 
 	return s.syncFolder(c, account, folder)
 }
-
-

@@ -3,9 +3,9 @@ package handlers
 import (
 	"log"
 
-	"github.com/yourusername/gomail/config"
-	"github.com/yourusername/gomail/internal/db"
-	"github.com/yourusername/gomail/internal/syncer"
+	"github.com/ghostersk/gowebmail/config"
+	"github.com/ghostersk/gowebmail/internal/db"
+	"github.com/ghostersk/gowebmail/internal/syncer"
 )
 
 type Handlers struct {

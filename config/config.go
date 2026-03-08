@@ -1,4 +1,4 @@
-// Package config loads and persists GoMail configuration from data/gomail.conf
+// Package config loads and persists GoMail configuration from data/gowebmail.conf
 package config
 
 import (
@@ -43,7 +43,7 @@ type Config struct {
 	MicrosoftRedirectURL  string // auto-derived from BaseURL if blank
 }
 
-const configPath = "./data/gomail.conf"
+const configPath = "./data/gowebmail.conf"
 
 type configField struct {
 	key      string
@@ -52,7 +52,7 @@ type configField struct {
 }
 
 // allFields is the single source of truth for config keys.
-// Adding a field here causes it to automatically appear in gomail.conf on next startup.
+// Adding a field here causes it to automatically appear in gowebmail.conf on next startup.
 var allFields = []configField{
 	{
 		key:    "HOSTNAME",
@@ -120,7 +120,7 @@ var allFields = []configField{
 	},
 	{
 		key:    "DB_PATH",
-		defVal: "./data/gomail.db",
+		defVal: "./data/gowebmail.db",
 		comments: []string{
 			"--- Storage ---",
 			"Path to the SQLite database file.",
@@ -200,7 +200,7 @@ var allFields = []configField{
 	},
 }
 
-// Load reads/creates data/gomail.conf, fills in missing keys, then returns Config.
+// Load reads/creates data/gowebmail.conf, fills in missing keys, then returns Config.
 // Environment variables override file values when set.
 func Load() (*Config, error) {
 	if err := os.MkdirAll("./data", 0700); err != nil {
@@ -215,7 +215,7 @@ func Load() (*Config, error) {
 	// Auto-generate secrets if missing
 	if existing["ENCRYPTION_KEY"] == "" {
 		existing["ENCRYPTION_KEY"] = mustHex(32)
-		fmt.Println("WARNING: Generated new ENCRYPTION_KEY — it is saved in data/gomail.conf — back it up!")
+		fmt.Println("WARNING: Generated new ENCRYPTION_KEY — it is saved in data/gowebmail.conf — back it up!")
 	}
 	if existing["SESSION_SECRET"] == "" {
 		existing["SESSION_SECRET"] = mustHex(32)
