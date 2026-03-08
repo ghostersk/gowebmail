@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ghostersk/gowebmail"
 	"github.com/ghostersk/gowebmail/config"
 	"github.com/ghostersk/gowebmail/internal/db"
 	"github.com/ghostersk/gowebmail/internal/handlers"
@@ -52,6 +54,10 @@ func main() {
 	}
 
 	// ── Normal server startup ──────────────────────────────────────────────
+	staticFS, err := fs.Sub(gowebmail.WebFS, "web/static")
+	if err != nil {
+		log.Fatalf("embed static fs: %v", err)
+	}
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("config load: %v", err)
@@ -81,10 +87,18 @@ func main() {
 
 	// Static files
 	r.PathPrefix("/static/").Handler(
-		http.StripPrefix("/static/", http.FileServer(http.Dir("./web/static/"))),
+		http.StripPrefix("/static/", http.FileServer(http.FS(staticFS))),
 	)
 	r.HandleFunc("/favicon.ico", func(w http.ResponseWriter, r *http.Request) {
-		http.ServeFile(w, r, "./web/static/img/favicon.png")
+		data, err := gowebmail.WebFS.ReadFile("web/static/img/favicon.png")
+		if err != nil {
+			log.Printf("favicon error: %v", err)
+			http.NotFound(w, r)
+			return
+		}
+
+		w.Header().Set("Content-Type", "image/png")
+		w.Write(data)
 	})
 	// Public auth routes
 	auth := r.PathPrefix("/auth").Subrouter()
