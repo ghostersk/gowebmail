@@ -47,6 +47,16 @@ func main() {
 			}
 			runDisableMFA(args[1])
 			return
+		case "--blocklist":
+			runBlockList()
+			return
+		case "--unblock":
+			if len(args) < 2 {
+				fmt.Fprintln(os.Stderr, "Usage: gowebmail --unblock <ip>")
+				os.Exit(1)
+			}
+			runUnblock(args[1])
+			return
 		case "--help", "-h":
 			printHelp()
 			return
@@ -335,6 +345,69 @@ func runDisableMFA(username string) {
 	fmt.Printf("MFA disabled for admin '%s'. They can now log in with password only.\n", username)
 }
 
+func runBlockList() {
+	database, close := openDB()
+	defer close()
+
+	blocks, err := database.ListIPBlocksWithUsername()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	if len(blocks) == 0 {
+		fmt.Println("No blocked IPs.")
+		return
+	}
+
+	fmt.Printf("%-18s  %-20s  %-5s  %-22s  %-22s  %s\n",
+		"IP", "USERNAME USED", "TRIES", "BLOCKED AT", "EXPIRES", "REMAINING")
+	fmt.Printf("%-18s  %-20s  %-5s  %-22s  %-22s  %s\n",
+		"--", "-------------", "-----", "----------", "-------", "---------")
+	for _, b := range blocks {
+		blockedAt := b.BlockedAt.UTC().Format("2006-01-02 15:04:05")
+		var expires, remaining string
+		if b.IsPermanent || b.ExpiresAt == nil {
+			expires = "permanent"
+			remaining = "∞  (manual unblock)"
+		} else {
+			expires = b.ExpiresAt.UTC().Format("2006-01-02 15:04:05")
+			left := time.Until(*b.ExpiresAt)
+			if left <= 0 {
+				remaining = "expired (purge pending)"
+			} else {
+				h := int(left.Hours())
+				m := int(left.Minutes()) % 60
+				s := int(left.Seconds()) % 60
+				if h > 0 {
+					remaining = fmt.Sprintf("%dh %dm", h, m)
+				} else if m > 0 {
+					remaining = fmt.Sprintf("%dm %ds", m, s)
+				} else {
+					remaining = fmt.Sprintf("%ds", s)
+				}
+			}
+		}
+		username := b.LastUsername
+		if username == "" {
+			username = "(unknown)"
+		}
+		fmt.Printf("%-18s  %-20s  %-5d  %-22s  %-22s  %s\n",
+			b.IP, username, b.Attempts, blockedAt, expires, remaining)
+	}
+	fmt.Printf("\nTotal: %d blocked IP(s)\n", len(blocks))
+}
+
+func runUnblock(ip string) {
+	database, close := openDB()
+	defer close()
+
+	if err := database.UnblockIP(ip); err != nil {
+		fmt.Fprintf(os.Stderr, "Error unblocking %s: %v\n", ip, err)
+		os.Exit(1)
+	}
+	fmt.Printf("IP %s has been unblocked.\n", ip)
+}
+
 func printHelp() {
 	fmt.Print(`GoWebMail — Admin CLI
 
@@ -343,13 +416,17 @@ Usage:
   gowebmail --list-admin             List all admin accounts (username, email, MFA status)
   gowebmail --pw <username> <pass>   Reset password for an admin account
   gowebmail --mfa-off <username>     Disable MFA for an admin account
+  gowebmail --blocklist              List all currently blocked IP addresses
+  gowebmail --unblock <ip>           Remove block for a specific IP address
 
 Examples:
   ./gowebmail --list-admin
   ./gowebmail --pw admin "NewSecurePass123"
   ./gowebmail --mfa-off admin
+  ./gowebmail --blocklist
+  ./gowebmail --unblock 1.2.3.4
 
-Note: These commands only work on admin accounts.
+Note: --list-admin, --pw, and --mfa-off only work on admin accounts.
       Regular user management is done through the web UI.
       Requires the same environment variables as the server (DB_PATH, ENCRYPTION_KEY, etc).
 `)

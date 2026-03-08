@@ -1838,11 +1838,11 @@ func (d *DB) ListIPBlocks() ([]IPBlock, error) {
 	var result []IPBlock
 	for rows.Next() {
 		var b IPBlock
-		var expiresStr sql.NullString
+		var expiresAt sql.NullTime
 		rows.Scan(&b.ID, &b.IP, &b.Reason, &b.Country, &b.CountryCode,
-			&b.Attempts, &b.BlockedAt, &expiresStr, &b.IsPermanent)
-		if expiresStr.Valid {
-			t, _ := time.Parse("2006-01-02 15:04:05", expiresStr.String)
+			&b.Attempts, &b.BlockedAt, &expiresAt, &b.IsPermanent)
+		if expiresAt.Valid {
+			t := expiresAt.Time
 			b.ExpiresAt = &t
 		}
 		result = append(result, b)
@@ -1987,4 +1987,52 @@ func splitIPs(s string) []string {
 		}
 	}
 	return result
+}
+
+// IPBlockWithUsername extends IPBlock with the last username attempted from that IP.
+type IPBlockWithUsername struct {
+	IPBlock
+	LastUsername string
+}
+
+// ListIPBlocksWithUsername returns active blocks enriched with the most recent
+// username that was attempted from each IP (from login_attempts history).
+func (d *DB) ListIPBlocksWithUsername() ([]IPBlockWithUsername, error) {
+	rows, err := d.sql.Query(`
+		SELECT
+			b.id, b.ip, b.reason, b.country, b.country_code,
+			b.attempts, b.blocked_at, b.expires_at, b.is_permanent,
+			COALESCE(
+				(SELECT username FROM login_attempts
+				 WHERE ip=b.ip AND username != ''
+				 ORDER BY created_at DESC LIMIT 1),
+				''
+			) AS last_username
+		FROM ip_blocks b
+		WHERE b.is_permanent=1 OR b.expires_at IS NULL OR b.expires_at > datetime('now')
+		ORDER BY b.blocked_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []IPBlockWithUsername
+	for rows.Next() {
+		var b IPBlockWithUsername
+		var expiresAt sql.NullTime
+		err := rows.Scan(
+			&b.ID, &b.IP, &b.Reason, &b.Country, &b.CountryCode,
+			&b.Attempts, &b.BlockedAt, &expiresAt, &b.IsPermanent,
+			&b.LastUsername,
+		)
+		if err != nil {
+			return nil, err
+		}
+		if expiresAt.Valid {
+			t := expiresAt.Time
+			b.ExpiresAt = &t
+		}
+		result = append(result, b)
+	}
+	return result, rows.Err()
 }
