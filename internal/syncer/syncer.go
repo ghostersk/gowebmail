@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/ghostersk/gowebmail/internal/auth"
 	"github.com/ghostersk/gowebmail/internal/db"
 	"github.com/ghostersk/gowebmail/internal/email"
+	"github.com/ghostersk/gowebmail/internal/graph"
 	"github.com/ghostersk/gowebmail/internal/models"
 )
 
@@ -29,15 +31,28 @@ type Scheduler struct {
 	// push channels: accountID -> channel to signal "something changed on server"
 	pushMu sync.Mutex
 	pushCh map[int64]chan struct{}
+
+	// reconcileCh signals the main loop to immediately check for new/removed accounts.
+	reconcileCh chan struct{}
 }
 
 // New creates a new Scheduler.
 func New(database *db.DB, cfg *config.Config) *Scheduler {
 	return &Scheduler{
-		db:     database,
-		cfg:    cfg,
-		stop:   make(chan struct{}),
-		pushCh: make(map[int64]chan struct{}),
+		db:          database,
+		cfg:         cfg,
+		stop:        make(chan struct{}),
+		pushCh:      make(map[int64]chan struct{}),
+		reconcileCh: make(chan struct{}, 1),
+	}
+}
+
+// TriggerReconcile asks the main loop to immediately check for new accounts.
+// Safe to call from any goroutine; non-blocking.
+func (s *Scheduler) TriggerReconcile() {
+	select {
+	case s.reconcileCh <- struct{}{}:
+	default:
 	}
 }
 
@@ -127,6 +142,13 @@ func (s *Scheduler) mainLoop() {
 				stopWorker(id)
 			}
 			return
+		case <-s.reconcileCh:
+			// Immediately check for new/removed accounts (e.g. after OAuth connect)
+			activeIDs := make(map[int64]bool, len(workers))
+			for id := range workers {
+				activeIDs[id] = true
+			}
+			s.reconcileWorkers(activeIDs, spawnWorker, stopWorker)
 		case <-ticker.C:
 			// Build active IDs map for reconciliation
 			activeIDs := make(map[int64]bool, len(workers))
@@ -189,6 +211,12 @@ func (s *Scheduler) accountWorker(account *models.EmailAccount, stop chan struct
 			return account
 		}
 		return a
+	}
+
+	// Graph-based accounts (personal outlook.com) use a different sync path
+	if account.Provider == models.ProviderOutlookPersonal {
+		s.graphWorker(account, stop, push)
+		return
 	}
 
 	// Initial sync on startup
@@ -355,7 +383,20 @@ func (s *Scheduler) deltaSync(account *models.EmailAccount) {
 
 	mailboxes, err := c.ListMailboxes()
 	if err != nil {
+		errMsg := err.Error()
+		if strings.Contains(errMsg, "not connected") {
+			// For personal outlook.com accounts: Microsoft does not issue JWT Bearer tokens
+			// to custom Azure app registrations for IMAP OAuth — only opaque v1 tokens which
+			// authenticate but cannot access the mailbox. This is a Microsoft platform limitation.
+			// Workaround: use a Microsoft 365 work/school account, or add this account as a
+			// standard IMAP account using an App Password from account.microsoft.com/security.
+			errMsg = "IMAP OAuth is not supported for personal outlook.com accounts with custom Azure app registrations. " +
+				"To connect this account: go to account.microsoft.com/security → Advanced security options → App passwords, " +
+				"create an app password, then remove this account and re-add it as a standard IMAP account using " +
+				"server: outlook.office365.com, port: 993, with your email and the app password."
+		}
 		log.Printf("[sync:%s] list mailboxes: %v", account.EmailAddress, err)
+		s.db.SetAccountError(account.ID, errMsg)
 		return
 	}
 
@@ -555,11 +596,19 @@ func (s *Scheduler) drainPendingOps(account *models.EmailAccount) {
 // to the database, and returns a refreshed account pointer.
 // For non-OAuth accounts (imap_smtp) it is a no-op.
 func (s *Scheduler) ensureFreshToken(account *models.EmailAccount) *models.EmailAccount {
-	if account.Provider != models.ProviderGmail && account.Provider != models.ProviderOutlook {
+	if account.Provider != models.ProviderGmail && account.Provider != models.ProviderOutlook && account.Provider != models.ProviderOutlookPersonal {
 		return account
 	}
-	if !auth.IsTokenExpired(account.TokenExpiry) {
+	// Force refresh if Outlook token is opaque (not a JWT — doesn't contain dots).
+	// Opaque tokens (EwAYBOl3... format) are v1.0 tokens that IMAP rejects.
+	// A valid IMAP token is a 3-part JWT: header.payload.signature
+	isOpaque := account.Provider == models.ProviderOutlook &&
+		strings.Count(account.AccessToken, ".") < 2
+	if !auth.IsTokenExpired(account.TokenExpiry) && !isOpaque {
 		return account
+	}
+	if isOpaque {
+		log.Printf("[oauth:%s] opaque v1 token detected — forcing refresh to get JWT", account.EmailAddress)
 	}
 	if account.RefreshToken == "" {
 		log.Printf("[oauth:%s] token expired but no refresh token stored — re-authorisation required", account.EmailAddress)
@@ -630,4 +679,132 @@ func (s *Scheduler) SyncFolderNow(accountID, folderID int64) (int, error) {
 	defer c.Close()
 
 	return s.syncFolder(c, account, folder)
+}
+
+// ---- Microsoft Graph sync (personal outlook.com accounts) ----
+
+// graphWorker is the accountWorker equivalent for ProviderOutlookPersonal accounts.
+// It polls Graph API instead of using IMAP.
+func (s *Scheduler) graphWorker(account *models.EmailAccount, stop chan struct{}, push chan struct{}) {
+	log.Printf("[graph] worker started for %s", account.EmailAddress)
+
+	getAccount := func() *models.EmailAccount {
+		a, _ := s.db.GetAccount(account.ID)
+		if a == nil {
+			return account
+		}
+		return a
+	}
+
+	// Initial sync
+	s.graphDeltaSync(getAccount())
+
+	syncTicker := time.NewTicker(30 * time.Second)
+	defer syncTicker.Stop()
+
+	for {
+		select {
+		case <-stop:
+			log.Printf("[graph] worker stopped for %s", account.EmailAddress)
+			return
+		case <-push:
+			acc := getAccount()
+			s.graphDeltaSync(acc)
+		case <-syncTicker.C:
+			acc := getAccount()
+			// Respect sync interval
+			if !acc.LastSync.IsZero() {
+				interval := time.Duration(acc.SyncInterval) * time.Minute
+				if interval <= 0 {
+					interval = 15 * time.Minute
+				}
+				if time.Since(acc.LastSync) < interval {
+					continue
+				}
+			}
+			s.graphDeltaSync(acc)
+		}
+	}
+}
+
+// graphDeltaSync fetches mail via Graph API and stores it in the same DB tables
+// as the IMAP sync path, so the rest of the app works unchanged.
+func (s *Scheduler) graphDeltaSync(account *models.EmailAccount) {
+	account = s.ensureFreshToken(account)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	gc := graph.New(account)
+
+	// Fetch folders
+	gFolders, err := gc.ListFolders(ctx)
+	if err != nil {
+		log.Printf("[graph:%s] list folders: %v", account.EmailAddress, err)
+		s.db.SetAccountError(account.ID, "Graph API error: "+err.Error())
+		return
+	}
+	s.db.ClearAccountError(account.ID)
+
+	totalNew := 0
+	for _, gf := range gFolders {
+		folderType := graph.InferFolderType(gf.DisplayName)
+		dbFolder := &models.Folder{
+			AccountID:   account.ID,
+			Name:        gf.DisplayName,
+			FullPath:    gf.ID, // Graph uses opaque IDs as folder path
+			FolderType:  folderType,
+			UnreadCount: gf.UnreadCount,
+			TotalCount:  gf.TotalCount,
+			SyncEnabled: true,
+		}
+		if err := s.db.UpsertFolder(dbFolder); err != nil {
+			continue
+		}
+		dbFolderSaved, _ := s.db.GetFolderByPath(account.ID, gf.ID)
+		if dbFolderSaved == nil || !dbFolderSaved.SyncEnabled {
+			continue
+		}
+
+		// Determine how far back to fetch
+		var since time.Time
+		if account.SyncMode == "days" && account.SyncDays > 0 {
+			since = time.Now().AddDate(0, 0, -account.SyncDays)
+		}
+
+		msgs, err := gc.ListMessages(ctx, gf.ID, since, 500)
+		if err != nil {
+			log.Printf("[graph:%s] list messages in %s: %v", account.EmailAddress, gf.DisplayName, err)
+			continue
+		}
+
+		for _, gm := range msgs {
+			// Body is NOT included in list response — fetched lazily on first open via GetMessage.
+			msg := &models.Message{
+				AccountID:     account.ID,
+				FolderID:      dbFolderSaved.ID,
+				RemoteUID:     gm.ID,
+				MessageID:     gm.InternetMessageID,
+				Subject:       gm.Subject,
+				FromName:      gm.FromName(),
+				FromEmail:     gm.FromEmail(),
+				ToList:        gm.ToList(),
+				Date:          gm.ReceivedDateTime,
+				IsRead:        gm.IsRead,
+				IsStarred:     gm.IsFlagged(),
+				HasAttachment: gm.HasAttachments,
+			}
+			if err := s.db.UpsertMessage(msg); err == nil {
+				totalNew++
+			}
+		}
+
+		// Update folder counts from Graph (more accurate than counting locally)
+		s.db.UpdateFolderCountsDirect(dbFolderSaved.ID, gf.TotalCount, gf.UnreadCount)
+	}
+
+	s.db.UpdateAccountLastSync(account.ID)
+	if totalNew > 0 {
+		log.Printf("[graph:%s] %d new messages", account.EmailAddress, totalNew)
+	}
 }

@@ -52,16 +52,20 @@ async function init() {
   if (p.get('connected')) {
     toast('Account connected! Loading…', 'success');
     history.replaceState({},'','/');
-    // Poll until the new account appears (syncer needs a moment to start)
+    // Reload accounts immediately — new account may already be in DB
+    await loadAccounts();
+    await loadFolders();
+    // Poll for folder population (syncer takes a moment after account creation)
     let tries = 0;
-    const prevCount = S.accounts.length;
     const poll = setInterval(async () => {
       tries++;
       await loadAccounts();
       await loadFolders();
-      if (S.accounts.length > prevCount || tries >= 12) {
+      // Stop when at least one account now has folders, or after ~30s
+      const hasFolders = S.accounts.some(a => S.folders.some(f => f.account_id === a.id));
+      if (hasFolders || tries >= 12) {
         clearInterval(poll);
-        if (S.accounts.length > prevCount) toast('Account ready!', 'success');
+        toast('Account ready!', 'success');
       }
     }, 2500);
   }
@@ -76,11 +80,12 @@ async function init() {
 
   initComposeDragResize();
   startPoller();
+  mobSetView('list'); // initialise mobile view state
 }
 
 // ── Providers ──────────────────────────────────────────────────────────────
 function updateProviderButtons() {
-  ['gmail','outlook'].forEach(p => {
+  ['gmail','outlook','outlook_personal'].forEach(p => {
     const btn = document.getElementById('btn-'+p);
     if (!btn) return;
     if (!S.providers[p]) { btn.disabled=true; btn.classList.add('unavailable'); btn.title='Not configured'; }
@@ -145,7 +150,13 @@ async function loadAccounts() {
   populateComposeFrom();
 }
 
-function connectOAuth(p) { location.href='/auth/'+p+'/connect'; }
+function connectOAuth(p) {
+  if (p === 'outlook_personal') {
+    location.href = '/auth/outlook-personal/connect';
+  } else {
+    location.href = '/auth/' + p + '/connect';
+  }
+}
 
 function openAddAccountModal() {
   ['imap-email','imap-name','imap-password','imap-host','smtp-host'].forEach(id=>{ const el=document.getElementById(id); if(el) el.value=''; });
@@ -221,7 +232,7 @@ async function openEditAccount(id) {
   document.getElementById('edit-account-email').textContent=r.email_address;
   document.getElementById('edit-name').value=r.display_name||'';
 
-  const isOAuth = r.provider==='gmail' || r.provider==='outlook';
+  const isOAuth = r.provider==='gmail' || r.provider==='outlook' || r.provider==='outlook_personal';
 
   // Show/hide credential section and test button based on provider type
   document.getElementById('edit-creds-section').style.display = isOAuth ? 'none' : '';
@@ -229,7 +240,7 @@ async function openEditAccount(id) {
   const oauthSection = document.getElementById('edit-oauth-section');
   if (oauthSection) oauthSection.style.display = isOAuth ? '' : 'none';
   if (isOAuth) {
-    const providerLabel = r.provider==='gmail' ? 'Google' : 'Microsoft';
+    const providerLabel = r.provider==='gmail' ? 'Google' : r.provider==='outlook_personal' ? 'Microsoft (Personal)' : 'Microsoft';
     const lbl = document.getElementById('edit-oauth-provider-label');
     const lblBtn = document.getElementById('edit-oauth-provider-label-btn');
     const expWarn = document.getElementById('edit-oauth-expired-warning');
@@ -412,7 +423,26 @@ function renderFolders() {
 
   el.innerHTML = orderedAccounts.map(acc => {
     const folders = byAcc[acc.id];
-    if (!folders?.length) return '';
+    // Show account even if no folders yet — it was just added and syncer hasn't run
+    if (!folders?.length) {
+      const statusHtml = acc.last_error
+        ? `<div style="padding:6px 10px 8px;font-size:11px;color:var(--danger);background:rgba(239,68,68,.08);border-radius:0 0 6px 6px;line-height:1.4">
+             ⚠ ${esc(acc.last_error)}
+           </div>`
+        : `<div style="padding:6px 12px 8px;font-size:11px;color:var(--muted)">⏳ Syncing folders…</div>`;
+      return `<div class="nav-account-group" data-acc-id="${acc.id}">
+        <div class="nav-folder-header" style="cursor:default">
+          <span class="acc-drag-handle">&#8942;</span>
+          <span style="width:7px;height:7px;border-radius:50%;background:${acc.color};display:inline-block;flex-shrink:0"></span>
+          <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+                title="${esc(acc.email_address)}">${esc(acc.display_name||acc.email_address)}</span>
+          <button class="icon-sync-btn" title="Retry sync" onclick="syncNow(${acc.id},event)" style="flex-shrink:0">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg>
+          </button>
+        </div>
+        ${statusHtml}
+      </div>`;
+    }
     const accId = acc.id;
     const collapsed = isAccountCollapsed(accId);
     const sorted = [
@@ -666,6 +696,8 @@ function selectFolder(folderId, folderName) {
     :folderId==='starred'?document.getElementById('nav-starred')
     :document.getElementById('nav-f'+folderId);
   if (navEl) navEl.classList.add('active');
+  mobCloseNav();
+  mobSetView('list');
   loadMessages();
 }
 
@@ -862,6 +894,7 @@ function loadMoreMessages(){ S.currentPage++; loadMessages(true); }
 
 async function openMessage(id) {
   S.selectedMessageId=id; renderMessageList();
+  mobSetView('detail');
   const detail=document.getElementById('message-detail');
   detail.innerHTML='<div class="spinner" style="margin-top:100px"></div>';
   const msg=await api('GET','/messages/'+id);
@@ -1152,10 +1185,17 @@ function formatSize(b){if(!b)return'';if(b<1024)return b+' B';if(b<1048576)retur
 // ── Compose ────────────────────────────────────────────────────────────────
 let composeAttachments=[];
 
-function populateComposeFrom() {
+function populateComposeFrom(preferAccountId) {
   const sel=document.getElementById('compose-from');
   if(!sel) return;
   sel.innerHTML=S.accounts.map(a=>`<option value="${a.id}">${esc(a.display_name||a.email_address)} &lt;${esc(a.email_address)}&gt;</option>`).join('');
+  // Default to the account of the currently viewed folder, or explicitly passed account
+  if (preferAccountId) {
+    sel.value = String(preferAccountId);
+  } else if (S.currentFolder && S.currentFolder !== 'unified' && S.currentFolder !== 'starred') {
+    const folder = S.folders.find(f => f.id === S.currentFolder);
+    if (folder) sel.value = String(folder.account_id);
+  }
 }
 
 function openCompose(opts={}) {
@@ -1175,6 +1215,7 @@ function openCompose(opts={}) {
   editor.innerHTML=opts.body||'';
   S.draftDirty=false;
   updateAttachList();
+  populateComposeFrom(opts.accountId||null);
   showCompose();
   setTimeout(()=>{ const inp=document.querySelector('#compose-to .tag-input'); if(inp) inp.focus(); },80);
   startDraftAutosave();
@@ -1227,6 +1268,7 @@ function openReplyTo(msgId) {
   if (!msg) return;
   openCompose({
     mode:'reply', replyId:msgId, title:'Reply',
+    accountId: msg.account_id||null,
     subject:msg.subject&&!msg.subject.startsWith('Re:')?'Re: '+msg.subject:(msg.subject||''),
     body:`<br><br><div class="quote-divider">—— Original message ——</div><blockquote>${msg.body_html||('<pre>'+esc(msg.body_text||'')+'</pre>')}</blockquote>`,
   });
@@ -1239,6 +1281,7 @@ function openForward() {
   S.composeForwardFromId=msg.id;
   openCompose({
     mode:'forward', forwardId:msg.id, title:'Forward',
+    accountId: msg.account_id||null,
     subject:'Fwd: '+(msg.subject||''),
     body:`<br><br><div class="quote-divider">—— Forwarded message ——<br>From: ${esc(msg.from_email||'')}</div><blockquote>${msg.body_html||('<pre>'+esc(msg.body_text||'')+'</pre>')}</blockquote>`,
   });
@@ -1250,6 +1293,7 @@ function openForwardAsAttachment() {
   S.composeForwardFromId=msg.id;
   openCompose({
     mode:'forward-attachment', forwardId:msg.id, title:'Forward as Attachment',
+    accountId: msg.account_id||null,
     subject:'Fwd: '+(msg.subject||''),
     body:'',
   });
@@ -1850,3 +1894,58 @@ function sendOSNotification(msgs) {
     // Some browsers block even with granted permission in certain contexts
   }
 }
+
+// ── Mobile navigation ────────────────────────────────────────────────────────
+function isMobile() { return window.innerWidth <= 700; }
+
+function mobSetView(view) {
+  if (!isMobile()) return;
+  const app = document.getElementById('app-root');
+  if (!app) return;
+  app.dataset.mobView = view;
+  const navBtn  = document.getElementById('mob-nav-btn');
+  const backBtn = document.getElementById('mob-back-btn');
+  const titleEl = document.getElementById('mob-title');
+  if (view === 'detail') {
+    if (navBtn)  navBtn.style.display  = 'none';
+    if (backBtn) backBtn.style.display = 'flex';
+    if (titleEl) titleEl.textContent = S.currentMessage?.subject || 'Message';
+  } else {
+    if (navBtn)  navBtn.style.display  = 'flex';
+    if (backBtn) backBtn.style.display = 'none';
+    if (titleEl) titleEl.textContent = S.currentFolderName || 'GoWebMail';
+  }
+}
+
+function mobBack() {
+  if (!isMobile()) return;
+  const app = document.getElementById('app-root');
+  if (!app) return;
+  if (app.dataset.mobView === 'detail') {
+    mobSetView('list');
+  }
+}
+
+function mobShowNav() {
+  document.querySelector('.sidebar')?.classList.add('mob-open');
+  document.getElementById('mob-sidebar-backdrop')?.classList.add('mob-open');
+}
+
+function mobCloseNav() {
+  document.querySelector('.sidebar')?.classList.remove('mob-open');
+  document.getElementById('mob-sidebar-backdrop')?.classList.remove('mob-open');
+}
+
+// Update mob title when folder changes
+const _origSelectFolder = selectFolder;
+// (selectFolder already calls mobSetView/mobCloseNav inline)
+
+// On resize between mobile/desktop, reset any leftover mobile state
+window.addEventListener('resize', () => {
+  if (!isMobile()) {
+    const app = document.getElementById('app-root');
+    if (app) app.dataset.mobView = 'list';
+    document.querySelector('.sidebar')?.classList.remove('mob-open');
+    document.getElementById('mob-sidebar-backdrop')?.classList.remove('mob-open');
+  }
+});

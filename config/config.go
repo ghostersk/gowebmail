@@ -303,10 +303,15 @@ var allFields = []configField{
 	},
 	{
 		key:    "MICROSOFT_TENANT_ID",
-		defVal: "common",
+		defVal: "consumers",
 		comments: []string{
-			"Use 'common' to allow any Microsoft account,",
-			"or your Azure tenant ID to restrict to one organisation.",
+			"Tenant endpoint to use for Microsoft OAuth2.",
+			"  common    - Any Entra ID + Personal Microsoft accounts (outlook.com/hotmail/live)",
+			"             Use this if your Azure app is registered as 'Any Entra ID + Personal'.",
+			"  consumers - Personal Microsoft accounts only (outlook.com/hotmail/live).",
+			"             Use if registered as 'Personal accounts only'.",
+			"  organizations - Work/school Microsoft 365 accounts only.",
+			"  <your-tenant-id> - Restrict to a single Azure AD tenant (company accounts).",
 		},
 	},
 	{
@@ -452,7 +457,7 @@ func Load() (*Config, error) {
 		GoogleRedirectURL:     googleRedirect,
 		MicrosoftClientID:     get("MICROSOFT_CLIENT_ID"),
 		MicrosoftClientSecret: get("MICROSOFT_CLIENT_SECRET"),
-		MicrosoftTenantID:     orDefault(get("MICROSOFT_TENANT_ID"), "common"),
+		MicrosoftTenantID:     orDefault(get("MICROSOFT_TENANT_ID"), "consumers"),
 		MicrosoftRedirectURL:  outlookRedirect,
 	}
 
@@ -756,6 +761,13 @@ func logStartupInfo(cfg *Config) {
 			cidrs[i] = n.String()
 		}
 		fmt.Printf("  Proxies : %s\n", strings.Join(cidrs, ", "))
+	}
+	if cfg.GoogleClientID != "" {
+		fmt.Printf("  Gmail OAuth redirect  : %s\n", cfg.GoogleRedirectURL)
+	}
+	if cfg.MicrosoftClientID != "" {
+		fmt.Printf("  Outlook OAuth redirect: %s\n", cfg.MicrosoftRedirectURL)
+		fmt.Printf("  Outlook tenant        : %s\n", cfg.MicrosoftTenantID)
 	}
 }
 

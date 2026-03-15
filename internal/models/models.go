@@ -83,9 +83,10 @@ type AuditPage struct {
 type AccountProvider string
 
 const (
-	ProviderGmail   AccountProvider = "gmail"
-	ProviderOutlook AccountProvider = "outlook"
-	ProviderIMAPSMTP AccountProvider = "imap_smtp"
+	ProviderGmail          AccountProvider = "gmail"
+	ProviderOutlook        AccountProvider = "outlook"
+	ProviderOutlookPersonal AccountProvider = "outlook_personal" // personal outlook.com via Graph API
+	ProviderIMAPSMTP       AccountProvider = "imap_smtp"
 )
 
 // EmailAccount represents a connected email account (Gmail, Outlook, IMAP).

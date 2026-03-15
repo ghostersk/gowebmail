@@ -908,6 +908,13 @@ func (d *DB) SetUIPrefs(userID int64, prefs string) error {
 	return err
 }
 
+// UpdateFolderCountsDirect sets folder counts directly (used by Graph sync where
+// the server provides accurate counts without needing a local recount).
+func (d *DB) UpdateFolderCountsDirect(folderID int64, total, unread int) {
+	d.sql.Exec(`UPDATE folders SET total_count=?, unread_count=? WHERE id=?`,
+		total, unread, folderID)
+}
+
 // UpdateFolderCounts refreshes the unread/total counts for a folder.
 func (d *DB) UpdateFolderCounts(folderID int64) {
 	d.sql.Exec(`
@@ -1220,6 +1227,14 @@ func (d *DB) MarkMessageRead(messageID, userID int64, read bool) error {
 	return err
 }
 
+// UpdateMessageBody persists body text/html for a message (used by Graph lazy fetch).
+func (d *DB) UpdateMessageBody(messageID int64, bodyText, bodyHTML string) {
+	bodyTextEnc, _ := d.enc.Encrypt(bodyText)
+	bodyHTMLEnc, _ := d.enc.Encrypt(bodyHTML)
+	d.sql.Exec(`UPDATE messages SET body_text=?, body_html=? WHERE id=?`,
+		bodyTextEnc, bodyHTMLEnc, messageID)
+}
+
 func (d *DB) ToggleMessageStar(messageID, userID int64) (bool, error) {
 	var current bool
 	err := d.sql.QueryRow(`
@@ -1413,6 +1428,28 @@ func (d *DB) GetMessageIMAPInfo(messageID, userID int64) (remoteUID uint32, fold
 	}
 	account, err = d.GetAccount(accountID)
 	return remoteUID, folder.FullPath, account, err
+}
+
+// GetMessageGraphInfo returns the Graph message ID (remote_uid as string), folder ID string,
+// and account for a Graph-backed message. Used by handlers for outlook_personal accounts.
+func (d *DB) GetMessageGraphInfo(messageID, userID int64) (graphMsgID string, folderGraphID string, account *models.EmailAccount, err error) {
+	var accountID int64
+	var folderID int64
+	err = d.sql.QueryRow(`
+		SELECT m.remote_uid, m.account_id, m.folder_id
+		FROM messages m
+		JOIN email_accounts a ON a.id = m.account_id
+		WHERE m.id=? AND a.user_id=?`, messageID, userID,
+	).Scan(&graphMsgID, &accountID, &folderID)
+	if err != nil {
+		return "", "", nil, err
+	}
+	folder, err := d.GetFolderByID(folderID)
+	if err != nil || folder == nil {
+		return graphMsgID, "", nil, fmt.Errorf("folder not found")
+	}
+	account, err = d.GetAccount(accountID)
+	return graphMsgID, folder.FullPath, account, err
 }
 
 // ListStarredMessages returns all starred messages for a user, newest first.

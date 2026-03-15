@@ -22,7 +22,7 @@ func New(database *db.DB, cfg *config.Config, sc *syncer.Scheduler) *Handlers {
 	}
 
 	return &Handlers{
-		Auth:  &AuthHandler{db: database, cfg: cfg, renderer: renderer},
+		Auth:  &AuthHandler{db: database, cfg: cfg, renderer: renderer, syncer: sc},
 		App:   &AppHandler{db: database, cfg: cfg, renderer: renderer},
 		API:   &APIHandler{db: database, cfg: cfg, syncer: sc},
 		Admin: &AdminHandler{db: database, cfg: cfg, renderer: renderer},

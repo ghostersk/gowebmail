@@ -506,3 +506,66 @@ body.admin-page{overflow:auto;background:var(--bg)}
   from{opacity:0;transform:translateY(16px) scale(.96)}
   to{opacity:1;transform:translateY(0) scale(1)}
 }
+
+/* ── Mobile top bar (hidden on desktop) ───────────────────────────────── */
+.mob-topbar{display:none}
+
+/* ── Responsive layout ────────────────────────────────────────────────── */
+@media (max-width:700px){
+  /* Show mobile top bar */
+  .mob-topbar{
+    display:flex;align-items:center;gap:8px;
+    position:fixed;top:0;left:0;right:0;height:50px;z-index:200;
+    background:var(--surface);border-bottom:1px solid var(--border);
+    padding:0 12px;
+  }
+  .mob-nav-btn,.mob-back-btn{
+    background:none;border:none;cursor:pointer;color:var(--text);
+    padding:6px;border-radius:6px;display:flex;align-items:center;justify-content:center;
+    flex-shrink:0;
+  }
+  .mob-nav-btn:hover,.mob-back-btn:hover{background:var(--surface3)}
+  .mob-nav-btn svg,.mob-back-btn svg{width:20px;height:20px;fill:currentColor}
+  .mob-title{font-family:'DM Serif Display',serif;font-size:15px;overflow:hidden;
+    text-overflow:ellipsis;white-space:nowrap;flex:1}
+
+  /* Push content below topbar */
+  body.app-page{overflow:hidden}
+  .app{flex-direction:column;height:100dvh;height:100vh;padding-top:50px}
+
+  /* Sidebar becomes a drawer */
+  .sidebar{
+    position:fixed;top:50px;left:0;bottom:0;z-index:150;
+    transform:translateX(-100%);transition:transform .25s ease;
+    width:280px;max-width:85vw;
+  }
+  .sidebar.mob-open{transform:translateX(0)}
+  .mob-sidebar-backdrop{
+    display:none;position:fixed;inset:0;top:50px;z-index:140;
+    background:rgba(0,0,0,.45);
+  }
+  .mob-sidebar-backdrop.mob-open{display:block}
+
+  /* Desktop compose button in sidebar header hidden on mobile (topbar has one) */
+  .sidebar-header .compose-btn{display:none}
+
+  /* Message list panel: full width, shown/hidden by data-mob-view */
+  .message-list-panel{width:100%;border-right:none;flex-shrink:0}
+  .message-detail{width:100%}
+
+  /* View switching via data-mob-view on #app-root */
+  #app-root[data-mob-view="list"] .message-list-panel{display:flex}
+  #app-root[data-mob-view="list"] .message-detail{display:none}
+  #app-root[data-mob-view="detail"] .message-list-panel{display:none}
+  #app-root[data-mob-view="detail"] .message-detail{display:flex}
+
+  /* Compose dialog: full screen on mobile */
+  .compose-dialog{
+    position:fixed!important;
+    top:50px!important;left:0!important;right:0!important;bottom:0!important;
+    width:100%!important;height:calc(100dvh - 50px)!important;
+    border-radius:0!important;resize:none!important;
+  }
+  /* Hide floating minimised bar on mobile, use back button instead */
+  .compose-minimised{display:none!important}
+}

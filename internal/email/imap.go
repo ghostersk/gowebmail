@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -54,7 +55,24 @@ func (x *xoauth2Client) Start() (string, []byte, error) {
 	payload := fmt.Sprintf("user=%s\x01auth=Bearer %s\x01\x01", x.user, x.token)
 	return "XOAUTH2", []byte(payload), nil
 }
-func (x *xoauth2Client) Next([]byte) ([]byte, error) { return []byte{}, nil }
+
+// Next handles the XOAUTH2 challenge from the server.
+// When auth fails, Microsoft sends a base64-encoded JSON error as a challenge.
+// The correct response is an empty \x01 byte to abort; go-imap then gets the
+// final tagged NO response and returns a proper error.
+func (x *xoauth2Client) Next(challenge []byte) ([]byte, error) {
+	if len(challenge) > 0 {
+		// Decode and log the error from Microsoft so it appears in server logs
+		if dec, err := base64.StdEncoding.DecodeString(string(challenge)); err == nil {
+			log.Printf("[imap:xoauth2] server error for %s: %s", x.user, string(dec))
+		} else {
+			log.Printf("[imap:xoauth2] server challenge for %s: %s", x.user, string(challenge))
+		}
+		// Send empty response to let the server send the final error
+		return []byte("\x01"), nil
+	}
+	return nil, nil
+}
 
 type xoauth2SMTP struct{ user, token string }
 
@@ -80,6 +98,9 @@ type Client struct {
 }
 
 func Connect(ctx context.Context, account *gomailModels.EmailAccount) (*Client, error) {
+	if account.Provider == gomailModels.ProviderOutlookPersonal {
+		return nil, fmt.Errorf("outlook_personal accounts use Graph API, not IMAP")
+	}
 	host, port := imapHostFor(account.Provider)
 	if account.IMAPHost != "" {
 		host = account.IMAPHost
@@ -108,6 +129,33 @@ func Connect(ctx context.Context, account *gomailModels.EmailAccount) (*Client, 
 
 	switch account.Provider {
 	case gomailModels.ProviderGmail, gomailModels.ProviderOutlook:
+		// Always log the token's audience and scope so we can diagnose IMAP auth failures.
+		tokenPreview := account.AccessToken
+		if len(tokenPreview) > 20 {
+			tokenPreview = tokenPreview[:20] + "..."
+		}
+		if parts := strings.SplitN(account.AccessToken, ".", 3); len(parts) == 3 {
+			if payload, err := base64.RawURLEncoding.DecodeString(parts[1]); err == nil {
+				var claims struct {
+					Aud interface{} `json:"aud"`
+					Scp string      `json:"scp"`
+					Upn string      `json:"upn"`
+				}
+				if json.Unmarshal(payload, &claims) == nil {
+					log.Printf("[imap:connect] %s aud=%v scp=%q token=%s",
+						account.EmailAddress, claims.Aud, claims.Scp, tokenPreview)
+				} else {
+					log.Printf("[imap:connect] %s raw claims: %s token=%s",
+						account.EmailAddress, string(payload), tokenPreview)
+				}
+			} else {
+				log.Printf("[imap:connect] %s opaque token (not JWT): %s",
+					account.EmailAddress, tokenPreview)
+			}
+		} else {
+			log.Printf("[imap:connect] %s token has %d parts (not JWT): %s",
+				account.EmailAddress, len(strings.Split(account.AccessToken, ".")), tokenPreview)
+		}
 		sasl := &xoauth2Client{user: account.EmailAddress, token: account.AccessToken}
 		if err := c.Authenticate(sasl); err != nil {
 			c.Logout()

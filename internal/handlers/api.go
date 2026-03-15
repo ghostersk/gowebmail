@@ -16,6 +16,7 @@ import (
 	"github.com/ghostersk/gowebmail/internal/auth"
 	"github.com/ghostersk/gowebmail/internal/db"
 	"github.com/ghostersk/gowebmail/internal/email"
+	graphpkg "github.com/ghostersk/gowebmail/internal/graph"
 	"github.com/ghostersk/gowebmail/internal/middleware"
 	"github.com/ghostersk/gowebmail/internal/models"
 	"github.com/ghostersk/gowebmail/internal/syncer"
@@ -45,8 +46,9 @@ func (h *APIHandler) writeError(w http.ResponseWriter, status int, msg string) {
 // GetProviders returns which OAuth providers are configured and enabled.
 func (h *APIHandler) GetProviders(w http.ResponseWriter, r *http.Request) {
 	h.writeJSON(w, map[string]bool{
-		"gmail":   h.cfg.GoogleClientID != "" && h.cfg.GoogleClientSecret != "",
-		"outlook": h.cfg.MicrosoftClientID != "" && h.cfg.MicrosoftClientSecret != "",
+		"gmail":            h.cfg.GoogleClientID != "" && h.cfg.GoogleClientSecret != "",
+		"outlook":          h.cfg.MicrosoftClientID != "" && h.cfg.MicrosoftClientSecret != "",
+		"outlook_personal": h.cfg.MicrosoftClientID != "" && h.cfg.MicrosoftClientSecret != "",
 	})
 }
 
@@ -76,7 +78,7 @@ func toSafeAccount(a *models.EmailAccount) safeAccount {
 		lastSync = a.LastSync.Format("2006-01-02T15:04:05Z")
 	}
 	tokenExpired := false
-	if (a.Provider == models.ProviderGmail || a.Provider == models.ProviderOutlook) && auth.IsTokenExpired(a.TokenExpiry) {
+	if (a.Provider == models.ProviderGmail || a.Provider == models.ProviderOutlook || a.Provider == models.ProviderOutlookPersonal) && auth.IsTokenExpired(a.TokenExpiry) {
 		tokenExpired = true
 	}
 	return safeAccount{
@@ -591,6 +593,22 @@ func (h *APIHandler) GetMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	h.db.MarkMessageRead(messageID, userID, true)
 
+	// For Graph accounts: fetch body lazily on open (not stored during list sync)
+	if msg.BodyHTML == "" && msg.BodyText == "" {
+		if graphMsgID, _, account, gerr := h.db.GetMessageGraphInfo(messageID, userID); gerr == nil &&
+			account != nil && account.Provider == models.ProviderOutlookPersonal {
+			if gMsg, gErr := graphpkg.New(account).GetMessage(context.Background(), graphMsgID); gErr == nil {
+				if gMsg.Body.ContentType == "html" {
+					msg.BodyHTML = gMsg.Body.Content
+				} else {
+					msg.BodyText = gMsg.Body.Content
+				}
+				// Persist so next open is instant
+				h.db.UpdateMessageBody(messageID, msg.BodyText, msg.BodyHTML)
+			}
+		}
+	}
+
 	// Lazy attachment backfill: if has_attachment=true but no rows in attachments table
 	// (message was synced before attachment parsing was added), fetch from IMAP now and save.
 	if msg.HasAttachment && len(msg.Attachments) == 0 {
@@ -620,22 +638,22 @@ func (h *APIHandler) MarkRead(w http.ResponseWriter, r *http.Request) {
 		Read bool `json:"read"`
 	}
 	json.NewDecoder(r.Body).Decode(&req)
-
-	// Update local DB first
 	h.db.MarkMessageRead(messageID, userID, req.Read)
 
-	// Enqueue IMAP op — drained by background worker with retry
-	uid, folderPath, account, err := h.db.GetMessageIMAPInfo(messageID, userID)
-	if err == nil && uid != 0 && account != nil {
-		val := "0"
-		if req.Read {
-			val = "1"
+	if graphMsgID, _, account, err := h.db.GetMessageGraphInfo(messageID, userID); err == nil && account != nil &&
+		account.Provider == models.ProviderOutlookPersonal {
+		go graphpkg.New(account).MarkRead(context.Background(), graphMsgID, req.Read)
+	} else {
+		uid, folderPath, acc, err2 := h.db.GetMessageIMAPInfo(messageID, userID)
+		if err2 == nil && uid != 0 && acc != nil {
+			val := "0"
+			if req.Read { val = "1" }
+			h.db.EnqueueIMAPOp(&db.PendingIMAPOp{
+				AccountID: acc.ID, OpType: "flag_read",
+				RemoteUID: uid, FolderPath: folderPath, Extra: val,
+			})
+			h.syncer.TriggerAccountSync(acc.ID)
 		}
-		h.db.EnqueueIMAPOp(&db.PendingIMAPOp{
-			AccountID: account.ID, OpType: "flag_read",
-			RemoteUID: uid, FolderPath: folderPath, Extra: val,
-		})
-		h.syncer.TriggerAccountSync(account.ID)
 	}
 	h.writeJSON(w, map[string]bool{"ok": true})
 }
@@ -648,17 +666,20 @@ func (h *APIHandler) ToggleStar(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, http.StatusInternalServerError, "failed to toggle star")
 		return
 	}
-	uid, folderPath, account, ierr := h.db.GetMessageIMAPInfo(messageID, userID)
-	if ierr == nil && uid != 0 && account != nil {
-		val := "0"
-		if starred {
-			val = "1"
+	if graphMsgID, _, account, err2 := h.db.GetMessageGraphInfo(messageID, userID); err2 == nil && account != nil &&
+		account.Provider == models.ProviderOutlookPersonal {
+		go graphpkg.New(account).MarkFlagged(context.Background(), graphMsgID, starred)
+	} else {
+		uid, folderPath, acc, ierr := h.db.GetMessageIMAPInfo(messageID, userID)
+		if ierr == nil && uid != 0 && acc != nil {
+			val := "0"
+			if starred { val = "1" }
+			h.db.EnqueueIMAPOp(&db.PendingIMAPOp{
+				AccountID: acc.ID, OpType: "flag_star",
+				RemoteUID: uid, FolderPath: folderPath, Extra: val,
+			})
+			h.syncer.TriggerAccountSync(acc.ID)
 		}
-		h.db.EnqueueIMAPOp(&db.PendingIMAPOp{
-			AccountID: account.ID, OpType: "flag_star",
-			RemoteUID: uid, FolderPath: folderPath, Extra: val,
-		})
-		h.syncer.TriggerAccountSync(account.ID)
 	}
 	h.writeJSON(w, map[string]bool{"ok": true, "starred": starred})
 }
@@ -684,8 +705,11 @@ func (h *APIHandler) MoveMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Enqueue IMAP move
-	if imapErr == nil && uid != 0 && account != nil && destFolder != nil {
+	// Route to Graph or IMAP
+	if graphMsgID, _, graphAcc, gerr := h.db.GetMessageGraphInfo(messageID, userID); gerr == nil && graphAcc != nil &&
+		graphAcc.Provider == models.ProviderOutlookPersonal && destFolder != nil {
+		go graphpkg.New(graphAcc).MoveMessage(context.Background(), graphMsgID, destFolder.FullPath)
+	} else if imapErr == nil && uid != 0 && account != nil && destFolder != nil {
 		h.db.EnqueueIMAPOp(&db.PendingIMAPOp{
 			AccountID: account.ID, OpType: "move",
 			RemoteUID: uid, FolderPath: srcPath, Extra: destFolder.FullPath,
@@ -699,17 +723,18 @@ func (h *APIHandler) DeleteMessage(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.GetUserID(r)
 	messageID := pathInt64(r, "id")
 
-	// Get IMAP info before deleting from DB
+	// Get message info before deleting from DB
+	graphMsgID, _, graphAcc, graphErr := h.db.GetMessageGraphInfo(messageID, userID)
 	uid, folderPath, account, imapErr := h.db.GetMessageIMAPInfo(messageID, userID)
 
-	// Delete from local DB
 	if err := h.db.DeleteMessage(messageID, userID); err != nil {
 		h.writeError(w, http.StatusInternalServerError, "delete failed")
 		return
 	}
 
-	// Enqueue IMAP delete
-	if imapErr == nil && uid != 0 && account != nil {
+	if graphErr == nil && graphAcc != nil && graphAcc.Provider == models.ProviderOutlookPersonal {
+		go graphpkg.New(graphAcc).DeleteMessage(context.Background(), graphMsgID)
+	} else if imapErr == nil && uid != 0 && account != nil {
 		h.db.EnqueueIMAPOp(&db.PendingIMAPOp{
 			AccountID: account.ID, OpType: "delete",
 			RemoteUID: uid, FolderPath: folderPath,
@@ -811,6 +836,18 @@ func (h *APIHandler) handleSend(w http.ResponseWriter, r *http.Request, mode str
 	}
 
 	account = h.ensureAccountTokenFresh(account)
+
+	// Graph accounts (personal outlook.com) send via Graph API, not SMTP
+	if account.Provider == models.ProviderOutlookPersonal {
+		if err := graphpkg.New(account).SendMail(context.Background(), &req); err != nil {
+			log.Printf("Graph send failed account=%d user=%d: %v", req.AccountID, userID, err)
+			h.writeError(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		h.writeJSON(w, map[string]bool{"ok": true})
+		return
+	}
+
 	if err := email.SendMessageFull(context.Background(), account, &req); err != nil {
 		log.Printf("SMTP send failed account=%d user=%d: %v", req.AccountID, userID, err)
 		h.db.WriteAudit(&userID, models.AuditAppError,
@@ -1396,7 +1433,7 @@ func (h *APIHandler) SaveDraft(w http.ResponseWriter, r *http.Request) {
 // account if it is near expiry. Returns a pointer to the (possibly updated)
 // account, or the original if no refresh was needed / possible.
 func (h *APIHandler) ensureAccountTokenFresh(account *models.EmailAccount) *models.EmailAccount {
-	if account.Provider != models.ProviderGmail && account.Provider != models.ProviderOutlook {
+	if account.Provider != models.ProviderGmail && account.Provider != models.ProviderOutlook && account.Provider != models.ProviderOutlookPersonal {
 		return account
 	}
 	if !auth.IsTokenExpired(account.TokenExpiry) {

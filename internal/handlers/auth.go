@@ -4,8 +4,12 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"html"
+	"log"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/ghostersk/gowebmail/config"
@@ -24,6 +28,7 @@ type AuthHandler struct {
 	db       *db.DB
 	cfg      *config.Config
 	renderer *Renderer
+	syncer   interface{ TriggerReconcile() }
 }
 
 // ---- Login ----
@@ -322,6 +327,9 @@ func (h *AuthHandler) GmailCallback(w http.ResponseWriter, r *http.Request) {
 		action = "gmail-reconnect:" + userInfo.Email
 	}
 	h.db.WriteAudit(&uid, models.AuditAccountAdd, action, middleware.ClientIP(r), r.UserAgent())
+	if h.syncer != nil {
+		h.syncer.TriggerReconcile()
+	}
 	http.Redirect(w, r, "/?connected=gmail", http.StatusFound)
 }
 
@@ -336,8 +344,9 @@ func (h *AuthHandler) OutlookConnect(w http.ResponseWriter, r *http.Request) {
 	state := encodeOAuthState(userID, "outlook")
 	cfg := goauth.NewOutlookConfig(h.cfg.MicrosoftClientID, h.cfg.MicrosoftClientSecret,
 		h.cfg.MicrosoftTenantID, h.cfg.MicrosoftRedirectURL)
-	// ApprovalForce + prompt=consent ensures Microsoft always returns a refresh_token,
-	// even when the user has previously authorized the app.
+	log.Printf("[oauth:outlook] starting auth flow tenant=%s redirectURL=%s",
+		h.cfg.MicrosoftTenantID, h.cfg.MicrosoftRedirectURL)
+	// ApprovalForce + prompt=consent ensures Microsoft always returns a refresh_token.
 	url := cfg.AuthCodeURL(state, oauth2.AccessTypeOffline, oauth2.ApprovalForce,
 		oauth2.SetAuthURLParam("prompt", "consent"))
 	http.Redirect(w, r, url, http.StatusFound)
@@ -346,6 +355,40 @@ func (h *AuthHandler) OutlookConnect(w http.ResponseWriter, r *http.Request) {
 func (h *AuthHandler) OutlookCallback(w http.ResponseWriter, r *http.Request) {
 	state := r.URL.Query().Get("state")
 	code := r.URL.Query().Get("code")
+
+	// Microsoft returns ?error=...&error_description=... instead of ?code=...
+	// when the user denies consent or the app has misconfigured permissions.
+	if msErr := r.URL.Query().Get("error"); msErr != "" {
+		msDesc := r.URL.Query().Get("error_description")
+		log.Printf("[oauth:outlook] Microsoft returned error: %s — %s", msErr, msDesc)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusBadGateway)
+		fmt.Fprintf(w, `<!DOCTYPE html><html><head><title>Outlook OAuth Error</title>
+<style>body{font-family:monospace;background:#111;color:#eee;padding:40px;max-width:900px;margin:auto}
+pre{background:#1e1e1e;padding:20px;border-radius:8px;white-space:pre-wrap;word-break:break-all;color:#f87171}
+h2{color:#f87171}a{color:#6b8afd}li{margin:6px 0}</style></head><body>
+<h2>Microsoft returned: %s</h2>
+<pre>%s</pre>
+<hr><p><strong>Most likely cause:</strong> the Azure app is missing the correct API permissions.</p>
+<ul>
+<li>In Azure portal → API Permissions → Add a permission</li>
+<li>Click <strong>"APIs my organization uses"</strong> tab</li>
+<li>Search: <strong>Office 365 Exchange Online</strong></li>
+<li>Delegated permissions → add <code>IMAP.AccessAsUser.All</code> and <code>SMTP.Send</code></li>
+<li>Then click <strong>Grant admin consent</strong></li>
+<li>Do NOT use Microsoft Graph versions of these scopes</li>
+</ul>
+<p><a href="/">← Back to GoWebMail</a></p>
+</body></html>`, html.EscapeString(msErr), html.EscapeString(msDesc))
+		return
+	}
+
+	if code == "" {
+		log.Printf("[oauth:outlook] callback received with no code and no error — possible state mismatch")
+		http.Redirect(w, r, "/?error=oauth_no_code", http.StatusFound)
+		return
+	}
+
 	userID, provider := decodeOAuthState(state)
 	if userID == 0 || provider != "outlook" {
 		http.Redirect(w, r, "/?error=oauth_state_mismatch", http.StatusFound)
@@ -355,22 +398,65 @@ func (h *AuthHandler) OutlookCallback(w http.ResponseWriter, r *http.Request) {
 		h.cfg.MicrosoftTenantID, h.cfg.MicrosoftRedirectURL)
 	token, err := oauthCfg.Exchange(r.Context(), code)
 	if err != nil {
-		http.Redirect(w, r, "/?error=oauth_exchange_failed", http.StatusFound)
+		log.Printf("[oauth:outlook] token exchange failed (tenant=%s clientID=%s redirectURL=%s): %v",
+			h.cfg.MicrosoftTenantID, h.cfg.MicrosoftClientID, h.cfg.MicrosoftRedirectURL, err)
+		// Show the raw error in the browser so the user can diagnose the problem
+		// (redirect URI mismatch, wrong secret, wrong tenant, missing permissions, etc.)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusBadGateway)
+		fmt.Fprintf(w, `<!DOCTYPE html><html><head><title>Outlook OAuth Error</title>
+<style>body{font-family:monospace;background:#111;color:#eee;padding:40px;max-width:900px;margin:auto}
+pre{background:#1e1e1e;padding:20px;border-radius:8px;overflow-x:auto;white-space:pre-wrap;word-break:break-all;color:#f87171}
+h2{color:#f87171} a{color:#6b8afd}</style></head><body>
+<h2>Outlook OAuth Token Exchange Failed</h2>
+<p>Microsoft returned an error when exchanging the auth code for a token.</p>
+<pre>%s</pre>
+<hr>
+<p><strong>Things to check:</strong></p>
+<ul>
+<li>Redirect URI in Azure must exactly match: <code>%s</code></li>
+<li>Tenant ID in config: <code>%s</code> — must match your app's "Supported account types"</li>
+<li>MICROSOFT_CLIENT_SECRET must be the <strong>Value</strong> column, not the Secret ID</li>
+<li>In Azure API Permissions, IMAP/SMTP scopes must be from <strong>Office 365 Exchange Online</strong> (under "APIs my organization uses"), not Microsoft Graph</li>
+<li>Admin consent must be granted (green checkmarks in API Permissions)</li>
+</ul>
+<p><a href="/">← Back to GoWebMail</a></p>
+</body></html>`, html.EscapeString(err.Error()), h.cfg.MicrosoftRedirectURL, h.cfg.MicrosoftTenantID)
 		return
 	}
 	userInfo, err := goauth.GetMicrosoftUserInfo(r.Context(), token, oauthCfg)
 	if err != nil {
+		log.Printf("[oauth:outlook] userinfo fetch failed: %v", err)
 		http.Redirect(w, r, "/?error=userinfo_failed", http.StatusFound)
 		return
 	}
+	log.Printf("[oauth:outlook] auth successful for %s, getting IMAP token...", userInfo.Email())
+
+	// Exchange initial token for one scoped to https://outlook.office.com
+	// so IMAP auth succeeds (aud must be outlook.office.com not graph/live)
+	imapToken, err := goauth.ExchangeForIMAPToken(
+		r.Context(),
+		h.cfg.MicrosoftClientID, h.cfg.MicrosoftClientSecret,
+		h.cfg.MicrosoftTenantID, token.RefreshToken,
+	)
+	if err != nil {
+		log.Printf("[oauth:outlook] IMAP token exchange failed: %v — falling back to initial token", err)
+		imapToken = token
+	} else {
+		log.Printf("[oauth:outlook] IMAP token obtained, aud should be https://outlook.office.com")
+		if imapToken.RefreshToken == "" {
+			imapToken.RefreshToken = token.RefreshToken
+		}
+	}
+
 	accounts, _ := h.db.ListAccountsByUser(userID)
 	colors := []string{"#0078D4", "#EA4335", "#34A853", "#FBBC04", "#FF6D00", "#9C27B0"}
 	color := colors[len(accounts)%len(colors)]
 	account := &models.EmailAccount{
 		UserID: userID, Provider: models.ProviderOutlook,
-		EmailAddress: userInfo.Email(), DisplayName: userInfo.DisplayName,
-		AccessToken: token.AccessToken, RefreshToken: token.RefreshToken,
-		TokenExpiry: token.Expiry, Color: color, IsActive: true,
+		EmailAddress: userInfo.Email(), DisplayName: userInfo.BestName(),
+		AccessToken: imapToken.AccessToken, RefreshToken: imapToken.RefreshToken,
+		TokenExpiry: imapToken.Expiry, Color: color, IsActive: true,
 	}
 	created, err := h.db.UpsertOAuthAccount(account)
 	if err != nil {
@@ -383,6 +469,9 @@ func (h *AuthHandler) OutlookCallback(w http.ResponseWriter, r *http.Request) {
 		action = "outlook-reconnect:" + userInfo.Email()
 	}
 	h.db.WriteAudit(&uid, models.AuditAccountAdd, action, middleware.ClientIP(r), r.UserAgent())
+	if h.syncer != nil {
+		h.syncer.TriggerReconcile()
+	}
 	http.Redirect(w, r, "/?connected=outlook", http.StatusFound)
 }
 
@@ -543,4 +632,102 @@ func (h *AuthHandler) SetUserIPRule(w http.ResponseWriter, r *http.Request) {
 	h.db.WriteAudit(&userID, models.AuditUserUpdate, "IP rule updated: "+req.Mode, ip, r.UserAgent())
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+}
+
+// ---- Outlook Personal (Graph API) OAuth2 ----
+
+func (h *AuthHandler) OutlookPersonalConnect(w http.ResponseWriter, r *http.Request) {
+	if h.cfg.MicrosoftClientID == "" {
+		writeJSONError(w, http.StatusServiceUnavailable, "Microsoft OAuth2 not configured.")
+		return
+	}
+	redirectURL := h.cfg.BaseURL + "/auth/outlook-personal/callback"
+	userID := middleware.GetUserID(r)
+	state := encodeOAuthState(userID, "outlook_personal")
+	cfg := goauth.NewOutlookPersonalConfig(h.cfg.MicrosoftClientID, h.cfg.MicrosoftClientSecret,
+		h.cfg.MicrosoftTenantID, redirectURL)
+	authURL := cfg.AuthCodeURL(state, oauth2.AccessTypeOffline, oauth2.ApprovalForce,
+		oauth2.SetAuthURLParam("prompt", "consent"))
+	log.Printf("[oauth:outlook-personal] starting auth flow tenant=%s redirect=%s",
+		h.cfg.MicrosoftTenantID, redirectURL)
+	http.Redirect(w, r, authURL, http.StatusFound)
+}
+
+func (h *AuthHandler) OutlookPersonalCallback(w http.ResponseWriter, r *http.Request) {
+	state := r.URL.Query().Get("state")
+	code := r.URL.Query().Get("code")
+
+	if msErr := r.URL.Query().Get("error"); msErr != "" {
+		msDesc := r.URL.Query().Get("error_description")
+		log.Printf("[oauth:outlook-personal] error: %s — %s", msErr, msDesc)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusBadGateway)
+		fmt.Fprintf(w, `<!DOCTYPE html><html><head><title>Outlook OAuth Error</title>
+<style>body{font-family:monospace;background:#111;color:#eee;padding:40px;max-width:900px;margin:auto}
+pre{background:#1e1e1e;padding:20px;border-radius:8px;white-space:pre-wrap;color:#f87171}
+h2{color:#f87171}a{color:#6b8afd}</style></head><body>
+<h2>Microsoft returned: %s</h2><pre>%s</pre>
+<p>Make sure your Azure app has these Microsoft Graph permissions:<br>
+Mail.ReadWrite, Mail.Send, User.Read, openid, email, offline_access</p>
+<p><a href="/">← Back</a></p></body></html>`,
+			html.EscapeString(msErr), html.EscapeString(msDesc))
+		return
+	}
+	if code == "" {
+		http.Redirect(w, r, "/?error=oauth_no_code", http.StatusFound)
+		return
+	}
+
+	userID, provider := decodeOAuthState(state)
+	if userID == 0 || provider != "outlook_personal" {
+		http.Redirect(w, r, "/?error=oauth_state_mismatch", http.StatusFound)
+		return
+	}
+
+	oauthCfg := goauth.NewOutlookPersonalConfig(h.cfg.MicrosoftClientID, h.cfg.MicrosoftClientSecret,
+		h.cfg.MicrosoftTenantID, h.cfg.BaseURL+"/auth/outlook-personal/callback")
+	token, err := oauthCfg.Exchange(r.Context(), code)
+	if err != nil {
+		log.Printf("[oauth:outlook-personal] token exchange failed: %v", err)
+		http.Redirect(w, r, "/?error=oauth_exchange_failed", http.StatusFound)
+		return
+	}
+
+	// Get user info from ID token
+	userInfo, err := goauth.GetMicrosoftUserInfo(r.Context(), token, oauthCfg)
+	if err != nil {
+		log.Printf("[oauth:outlook-personal] userinfo failed: %v", err)
+		http.Redirect(w, r, "/?error=userinfo_failed", http.StatusFound)
+		return
+	}
+
+	// Verify it's a JWT (Graph token for personal accounts should be a JWT)
+	tokenParts := len(strings.Split(token.AccessToken, "."))
+	log.Printf("[oauth:outlook-personal] auth successful for %s, token parts: %d",
+		userInfo.Email(), tokenParts)
+
+	accounts, _ := h.db.ListAccountsByUser(userID)
+	colors := []string{"#0078D4", "#EA4335", "#34A853", "#FBBC04", "#FF6D00", "#9C27B0"}
+	color := colors[len(accounts)%len(colors)]
+	account := &models.EmailAccount{
+		UserID: userID, Provider: models.ProviderOutlookPersonal,
+		EmailAddress: userInfo.Email(), DisplayName: userInfo.BestName(),
+		AccessToken: token.AccessToken, RefreshToken: token.RefreshToken,
+		TokenExpiry: token.Expiry, Color: color, IsActive: true,
+	}
+	created, err := h.db.UpsertOAuthAccount(account)
+	if err != nil {
+		http.Redirect(w, r, "/?error=account_save_failed", http.StatusFound)
+		return
+	}
+	uid := userID
+	action := "outlook-personal:" + userInfo.Email()
+	if !created {
+		action = "outlook-personal-reconnect:" + userInfo.Email()
+	}
+	h.db.WriteAudit(&uid, models.AuditAccountAdd, action, middleware.ClientIP(r), r.UserAgent())
+	if h.syncer != nil {
+		h.syncer.TriggerReconcile()
+	}
+	http.Redirect(w, r, "/?connected=outlook_personal", http.StatusFound)
 }

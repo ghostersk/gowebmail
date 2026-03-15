@@ -146,6 +146,8 @@ func main() {
 	oauthR.HandleFunc("/gmail/callback", h.Auth.GmailCallback).Methods("GET")
 	oauthR.HandleFunc("/outlook/connect", h.Auth.OutlookConnect).Methods("GET")
 	oauthR.HandleFunc("/outlook/callback", h.Auth.OutlookCallback).Methods("GET")
+	oauthR.HandleFunc("/outlook-personal/connect", h.Auth.OutlookPersonalConnect).Methods("GET")
+	oauthR.HandleFunc("/outlook-personal/callback", h.Auth.OutlookPersonalCallback).Methods("GET")
 
 	// App
 	app := r.PathPrefix("").Subrouter()
