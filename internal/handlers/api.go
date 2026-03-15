@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/ghostersk/gowebmail/config"
+	"github.com/ghostersk/gowebmail/internal/auth"
 	"github.com/ghostersk/gowebmail/internal/db"
 	"github.com/ghostersk/gowebmail/internal/email"
 	"github.com/ghostersk/gowebmail/internal/middleware"
@@ -60,9 +61,12 @@ type safeAccount struct {
 	IMAPPort     int                    `json:"imap_port,omitempty"`
 	SMTPHost     string                 `json:"smtp_host,omitempty"`
 	SMTPPort     int                    `json:"smtp_port,omitempty"`
+	SyncDays     int                    `json:"sync_days"`
+	SyncMode     string                 `json:"sync_mode"`
 	LastError    string                 `json:"last_error,omitempty"`
 	Color        string                 `json:"color"`
 	LastSync     string                 `json:"last_sync"`
+	TokenExpired bool                   `json:"token_expired,omitempty"`
 }
 
 func toSafeAccount(a *models.EmailAccount) safeAccount {
@@ -70,11 +74,17 @@ func toSafeAccount(a *models.EmailAccount) safeAccount {
 	if !a.LastSync.IsZero() {
 		lastSync = a.LastSync.Format("2006-01-02T15:04:05Z")
 	}
+	tokenExpired := false
+	if (a.Provider == models.ProviderGmail || a.Provider == models.ProviderOutlook) && auth.IsTokenExpired(a.TokenExpiry) {
+		tokenExpired = true
+	}
 	return safeAccount{
 		ID: a.ID, Provider: a.Provider, EmailAddress: a.EmailAddress,
 		DisplayName: a.DisplayName, IMAPHost: a.IMAPHost, IMAPPort: a.IMAPPort,
 		SMTPHost: a.SMTPHost, SMTPPort: a.SMTPPort,
+		SyncDays: a.SyncDays, SyncMode: a.SyncMode,
 		LastError: a.LastError, Color: a.Color, LastSync: lastSync,
+		TokenExpired: tokenExpired,
 	}
 }
 
@@ -753,6 +763,7 @@ func (h *APIHandler) handleSend(w http.ResponseWriter, r *http.Request, mode str
 		}
 	}
 
+	account = h.ensureAccountTokenFresh(account)
 	if err := email.SendMessageFull(context.Background(), account, &req); err != nil {
 		log.Printf("SMTP send failed account=%d user=%d: %v", req.AccountID, userID, err)
 		h.db.WriteAudit(&userID, models.AuditAppError,
@@ -1332,4 +1343,45 @@ func (h *APIHandler) SaveDraft(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	h.writeJSON(w, map[string]bool{"ok": true})
+}
+
+// ensureAccountTokenFresh refreshes the OAuth access token for a Gmail/Outlook
+// account if it is near expiry. Returns a pointer to the (possibly updated)
+// account, or the original if no refresh was needed / possible.
+func (h *APIHandler) ensureAccountTokenFresh(account *models.EmailAccount) *models.EmailAccount {
+	if account.Provider != models.ProviderGmail && account.Provider != models.ProviderOutlook {
+		return account
+	}
+	if !auth.IsTokenExpired(account.TokenExpiry) {
+		return account
+	}
+	if account.RefreshToken == "" {
+		log.Printf("[oauth:%s] token expired, no refresh token stored", account.EmailAddress)
+		return account
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	accessTok, refreshTok, expiry, err := auth.RefreshAccountToken(
+		ctx,
+		string(account.Provider),
+		account.RefreshToken,
+		h.cfg.BaseURL,
+		h.cfg.GoogleClientID, h.cfg.GoogleClientSecret,
+		h.cfg.MicrosoftClientID, h.cfg.MicrosoftClientSecret, h.cfg.MicrosoftTenantID,
+	)
+	if err != nil {
+		log.Printf("[oauth:%s] token refresh failed: %v", account.EmailAddress, err)
+		return account
+	}
+	if err := h.db.UpdateAccountTokens(account.ID, accessTok, refreshTok, expiry); err != nil {
+		log.Printf("[oauth:%s] failed to persist refreshed token: %v", account.EmailAddress, err)
+		return account
+	}
+	refreshed, err := h.db.GetAccount(account.ID)
+	if err != nil || refreshed == nil {
+		return account
+	}
+	log.Printf("[oauth:%s] access token refreshed for send (expires %s)", account.EmailAddress, expiry.Format("2006-01-02 15:04 UTC"))
+	return refreshed
 }

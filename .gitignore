@@ -6,3 +6,4 @@ data/gowebmail.conf
 data/*.txt
 gowebmail-devplan.md
 testrun/
+webmail.code-workspace

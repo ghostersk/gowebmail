@@ -83,7 +83,7 @@ func main() {
 		log.Fatalf("migrations: %v", err)
 	}
 
-	sc := syncer.New(database)
+	sc := syncer.New(database, cfg)
 	sc.Start()
 	defer sc.Stop()
 
@@ -107,6 +107,15 @@ func main() {
 	r.PathPrefix("/static/").Handler(
 		http.StripPrefix("/static/", http.FileServer(http.FS(staticFS))),
 	)
+	// Legacy /app path redirect — some browsers bookmark this; redirect to root
+	// which RequireAuth will then forward to login if not signed in.
+	r.HandleFunc("/app", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/", http.StatusFound)
+	}).Methods("GET")
+	r.HandleFunc("/app/", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/", http.StatusFound)
+	}).Methods("GET")
+
 	r.HandleFunc("/favicon.ico", func(w http.ResponseWriter, r *http.Request) {
 		data, err := gowebmail.WebFS.ReadFile("web/static/img/favicon.png")
 		if err != nil {

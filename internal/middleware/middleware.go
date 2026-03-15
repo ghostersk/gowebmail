@@ -292,20 +292,17 @@ func renderErrorPage(w http.ResponseWriter, r *http.Request, status int, title, 
 		fmt.Fprintf(w, `{"error":%q}`, message)
 		return
 	}
-	// Decide back-button destination: if the user has a session cookie they're
-	// likely logged in, so send them home. Otherwise send to login.
-	backHref := "/auth/login"
-	backLabel := "← Back to Login"
-	if _, err := r.Cookie("gomail_session"); err == nil {
-		backHref = "/"
-		backLabel = "← Go to Home"
-	}
+	// Back-button destination: always send to "/" which RequireAuth will
+	// transparently forward to /auth/login if the session is absent or invalid.
+	// This avoids a stale-cookie loop where cookie presence ≠ valid session.
+	backHref := "/"
+	backLabel := "← Go Back"
 
 	data := struct {
-		Status   int
-		Title    string
-		Message  string
-		BackHref string
+		Status    int
+		Title     string
+		Message   string
+		BackHref  string
 		BackLabel string
 	}{status, title, message, backHref, backLabel}
 

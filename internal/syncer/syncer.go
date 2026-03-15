@@ -12,6 +12,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ghostersk/gowebmail/config"
+	"github.com/ghostersk/gowebmail/internal/auth"
 	"github.com/ghostersk/gowebmail/internal/db"
 	"github.com/ghostersk/gowebmail/internal/email"
 	"github.com/ghostersk/gowebmail/internal/models"
@@ -20,6 +22,7 @@ import (
 // Scheduler coordinates all background sync activity.
 type Scheduler struct {
 	db   *db.DB
+	cfg  *config.Config
 	stop chan struct{}
 	wg   sync.WaitGroup
 
@@ -29,9 +32,10 @@ type Scheduler struct {
 }
 
 // New creates a new Scheduler.
-func New(database *db.DB) *Scheduler {
+func New(database *db.DB, cfg *config.Config) *Scheduler {
 	return &Scheduler{
 		db:     database,
+		cfg:    cfg,
 		stop:   make(chan struct{}),
 		pushCh: make(map[int64]chan struct{}),
 	}
@@ -258,6 +262,7 @@ func (s *Scheduler) idleWatcher(account *models.EmailAccount, stop chan struct{}
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		account = s.ensureFreshToken(account)
 		c, err := email.Connect(ctx, account)
 		cancel()
 		if err != nil {
@@ -338,6 +343,7 @@ func (s *Scheduler) deltaSync(account *models.EmailAccount) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
+	account = s.ensureFreshToken(account)
 	c, err := email.Connect(ctx, account)
 	if err != nil {
 		log.Printf("[sync:%s] connect: %v", account.EmailAddress, err)
@@ -389,6 +395,7 @@ func (s *Scheduler) syncInbox(account *models.EmailAccount) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
+	account = s.ensureFreshToken(account)
 	c, err := email.Connect(ctx, account)
 	if err != nil {
 		return
@@ -496,6 +503,7 @@ func (s *Scheduler) drainPendingOps(account *models.EmailAccount) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
+	account = s.ensureFreshToken(account)
 	c, err := email.Connect(ctx, account)
 	if err != nil {
 		log.Printf("[ops:%s] connect for drain: %v", account.EmailAddress, err)
@@ -540,6 +548,54 @@ func (s *Scheduler) drainPendingOps(account *models.EmailAccount) {
 	}
 }
 
+// ---- OAuth token refresh ----
+
+// ensureFreshToken checks whether an OAuth account's access token is near
+// expiry and, if so, exchanges the refresh token for a new one, persists it
+// to the database, and returns a refreshed account pointer.
+// For non-OAuth accounts (imap_smtp) it is a no-op.
+func (s *Scheduler) ensureFreshToken(account *models.EmailAccount) *models.EmailAccount {
+	if account.Provider != models.ProviderGmail && account.Provider != models.ProviderOutlook {
+		return account
+	}
+	if !auth.IsTokenExpired(account.TokenExpiry) {
+		return account
+	}
+	if account.RefreshToken == "" {
+		log.Printf("[oauth:%s] token expired but no refresh token stored — re-authorisation required", account.EmailAddress)
+		return account
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	accessTok, refreshTok, expiry, err := auth.RefreshAccountToken(
+		ctx,
+		string(account.Provider),
+		account.RefreshToken,
+		s.cfg.BaseURL,
+		s.cfg.GoogleClientID, s.cfg.GoogleClientSecret,
+		s.cfg.MicrosoftClientID, s.cfg.MicrosoftClientSecret, s.cfg.MicrosoftTenantID,
+	)
+	if err != nil {
+		log.Printf("[oauth:%s] token refresh failed: %v", account.EmailAddress, err)
+		s.db.SetAccountError(account.ID, "OAuth token refresh failed: "+err.Error())
+		return account // return original; connect will fail and log the error
+	}
+	if err := s.db.UpdateAccountTokens(account.ID, accessTok, refreshTok, expiry); err != nil {
+		log.Printf("[oauth:%s] failed to persist refreshed token: %v", account.EmailAddress, err)
+		return account
+	}
+
+	// Re-fetch so the caller gets the updated access token from the DB.
+	refreshed, fetchErr := s.db.GetAccount(account.ID)
+	if fetchErr != nil || refreshed == nil {
+		return account
+	}
+	log.Printf("[oauth:%s] access token refreshed (expires %s)", account.EmailAddress, expiry.Format("2006-01-02 15:04 UTC"))
+	return refreshed
+}
+
 // ---- Public API (called by HTTP handlers) ----
 
 // SyncAccountNow performs an immediate delta sync of one account.
@@ -566,6 +622,7 @@ func (s *Scheduler) SyncFolderNow(accountID, folderID int64) (int, error) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
+	account = s.ensureFreshToken(account)
 	c, err := email.Connect(ctx, account)
 	if err != nil {
 		return 0, err

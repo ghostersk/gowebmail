@@ -79,12 +79,16 @@ function renderAccountsPopup() {
     el.innerHTML = '<div style="font-size:12px;color:var(--muted);padding:8px 0">No accounts connected.</div>';
     return;
   }
-  el.innerHTML = S.accounts.map(a => `
-    <div class="acct-popup-item" title="${esc(a.email_address)}${a.last_error?' ⚠ '+esc(a.last_error):''}">
+  el.innerHTML = S.accounts.map(a => {
+    const hasWarning = a.last_error || a.token_expired;
+    const warningTitle = a.token_expired ? 'OAuth token expired — click Settings to reconnect' : (a.last_error ? '⚠ '+a.last_error : '');
+    return `
+    <div class="acct-popup-item" title="${esc(a.email_address)}${hasWarning?' — '+warningTitle:''}">
       <div style="display:flex;align-items:center;gap:8px;flex:1;min-width:0">
         <span class="account-dot" style="background:${a.color};flex-shrink:0"></span>
         <span style="font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(a.display_name||a.email_address)}</span>
-        ${a.last_error?'<span style="color:var(--danger);font-size:11px">⚠</span>':''}
+        ${a.token_expired?'<span style="color:var(--danger);font-size:11px" title="OAuth token expired">🔑</span>':
+          a.last_error?'<span style="color:var(--danger);font-size:11px">⚠</span>':''}
       </div>
       <div style="display:flex;gap:4px;flex-shrink:0">
         <button class="icon-btn" title="Sync now" onclick="syncNow(${a.id},event)">
@@ -97,7 +101,8 @@ function renderAccountsPopup() {
           <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
         </button>
       </div>
-    </div>`).join('');
+    </div>`;
+  }).join('');
 }
 
 // ── Accounts ───────────────────────────────────────────────────────────────
@@ -184,13 +189,38 @@ async function openEditAccount(id) {
   document.getElementById('edit-account-id').value=id;
   document.getElementById('edit-account-email').textContent=r.email_address;
   document.getElementById('edit-name').value=r.display_name||'';
-  document.getElementById('edit-password').value='';
-  document.getElementById('edit-imap-host').value=r.imap_host||'';
-  document.getElementById('edit-imap-port').value=r.imap_port||993;
-  document.getElementById('edit-smtp-host').value=r.smtp_host||'';
-  document.getElementById('edit-smtp-port').value=r.smtp_port||587;
+
+  const isOAuth = r.provider==='gmail' || r.provider==='outlook';
+
+  // Show/hide credential section and test button based on provider type
+  document.getElementById('edit-creds-section').style.display = isOAuth ? 'none' : '';
+  document.getElementById('edit-test-btn').style.display = isOAuth ? 'none' : '';
+  const oauthSection = document.getElementById('edit-oauth-section');
+  if (oauthSection) oauthSection.style.display = isOAuth ? '' : 'none';
+  if (isOAuth) {
+    const providerLabel = r.provider==='gmail' ? 'Google' : 'Microsoft';
+    const lbl = document.getElementById('edit-oauth-provider-label');
+    const lblBtn = document.getElementById('edit-oauth-provider-label-btn');
+    const expWarn = document.getElementById('edit-oauth-expired-warning');
+    if (lbl) lbl.textContent = providerLabel;
+    if (lblBtn) lblBtn.textContent = providerLabel;
+    if (expWarn) expWarn.style.display = r.token_expired ? '' : 'none';
+    const reconnectBtn = document.getElementById('edit-oauth-reconnect-btn');
+    if (reconnectBtn) reconnectBtn.onclick = () => {
+      closeModal('edit-account-modal');
+      connectOAuth(r.provider);
+    };
+  }
+
+  if (!isOAuth) {
+    document.getElementById('edit-password').value='';
+    document.getElementById('edit-imap-host').value=r.imap_host||'';
+    document.getElementById('edit-imap-port').value=r.imap_port||993;
+    document.getElementById('edit-smtp-host').value=r.smtp_host||'';
+    document.getElementById('edit-smtp-port').value=r.smtp_port||587;
+  }
+
   document.getElementById('edit-sync-days').value=r.sync_days||30;
-  // Restore sync mode select: map stored days/mode back to a preset option
   const sel = document.getElementById('edit-sync-mode');
   if (r.sync_mode==='all' || !r.sync_days) {
     sel.value='all';
@@ -199,12 +229,12 @@ async function openEditAccount(id) {
     sel.value = presetMap[r.sync_days] || 'days';
   }
   toggleSyncDaysField();
+
   const errEl=document.getElementById('edit-last-error'), connEl=document.getElementById('edit-conn-result');
   connEl.style.display='none';
   errEl.style.display=r.last_error?'block':'none';
   if (r.last_error) errEl.textContent='Last sync error: '+r.last_error;
 
-  // Load hidden folders for this account
   const hiddenEl = document.getElementById('edit-hidden-folders');
   const hidden = S.folders.filter(f=>f.account_id===id && f.is_hidden);
   if (!hidden.length) {
@@ -249,6 +279,10 @@ function toggleSyncDaysField() {
 }
 
 async function testEditConnection() {
+  // Only relevant for IMAP/SMTP accounts — OAuth accounts reconnect via the button
+  if (document.getElementById('edit-creds-section').style.display === 'none') {
+    return;
+  }
   const btn=document.getElementById('edit-test-btn'), connEl=document.getElementById('edit-conn-result');
   const pw=document.getElementById('edit-password').value, email=document.getElementById('edit-account-email').textContent.trim();
   if (!pw){connEl.textContent='Enter new password to test.';connEl.className='test-result err';connEl.style.display='block';return;}
@@ -263,11 +297,16 @@ async function testEditConnection() {
 
 async function saveAccountEdit() {
   const id=document.getElementById('edit-account-id').value;
-  const body={display_name:document.getElementById('edit-name').value.trim(),
-    imap_host:document.getElementById('edit-imap-host').value.trim(),imap_port:parseInt(document.getElementById('edit-imap-port').value)||993,
-    smtp_host:document.getElementById('edit-smtp-host').value.trim(),smtp_port:parseInt(document.getElementById('edit-smtp-port').value)||587};
-  const pw=document.getElementById('edit-password').value;
-  if (pw) body.password=pw;
+  const isOAuth = document.getElementById('edit-creds-section').style.display === 'none';
+  const body={display_name:document.getElementById('edit-name').value.trim()};
+  if (!isOAuth) {
+    body.imap_host=document.getElementById('edit-imap-host').value.trim();
+    body.imap_port=parseInt(document.getElementById('edit-imap-port').value)||993;
+    body.smtp_host=document.getElementById('edit-smtp-host').value.trim();
+    body.smtp_port=parseInt(document.getElementById('edit-smtp-port').value)||587;
+    const pw=document.getElementById('edit-password').value;
+    if (pw) body.password=pw;
+  }
   const modeVal = document.getElementById('edit-sync-mode').value;
   let syncMode='all', syncDays=0;
   if (modeVal==='days') {

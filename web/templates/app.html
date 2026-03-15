@@ -224,15 +224,31 @@
     <p id="edit-account-email" style="font-weight:500;color:var(--text);margin-bottom:16px"></p>
     <input type="hidden" id="edit-account-id">
     <div class="modal-field"><label>Display Name</label><input type="text" id="edit-name"></div>
-    <div class="modal-field"><label>New Password (leave blank to keep current)</label><input type="password" id="edit-password"></div>
-    <div class="modal-row">
-      <div class="modal-field"><label>IMAP Host</label><input type="text" id="edit-imap-host"></div>
-      <div class="modal-field"><label>IMAP Port</label><input type="number" id="edit-imap-port"></div>
+
+    <!-- OAuth reconnect — shown only for gmail/outlook accounts -->
+    <div id="edit-oauth-section" style="display:none">
+      <div id="edit-oauth-expired-warning" style="display:none;background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.35);border-radius:8px;padding:10px 14px;margin-bottom:10px;font-size:13px;color:#f87171">
+        ⚠️ Access token has expired — sync and send will fail until you reconnect.
+      </div>
+      <div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:14px 16px;margin-bottom:4px">
+        <div style="font-size:13px;color:var(--muted);margin-bottom:10px">This account connects via <strong id="edit-oauth-provider-label"></strong> OAuth. To update permissions or fix an expired token, reconnect below.</div>
+        <button class="btn-secondary" id="edit-oauth-reconnect-btn" style="width:100%">🔗 Reconnect with <span id="edit-oauth-provider-label-btn"></span></button>
+      </div>
     </div>
-    <div class="modal-row">
-      <div class="modal-field"><label>SMTP Host</label><input type="text" id="edit-smtp-host"></div>
-      <div class="modal-field"><label>SMTP Port</label><input type="number" id="edit-smtp-port"></div>
+
+    <!-- IMAP/SMTP credentials (hidden for OAuth accounts) -->
+    <div id="edit-creds-section">
+      <div class="modal-field"><label>New Password (leave blank to keep current)</label><input type="password" id="edit-password"></div>
+      <div class="modal-row">
+        <div class="modal-field"><label>IMAP Host</label><input type="text" id="edit-imap-host"></div>
+        <div class="modal-field"><label>IMAP Port</label><input type="number" id="edit-imap-port"></div>
+      </div>
+      <div class="modal-row">
+        <div class="modal-field"><label>SMTP Host</label><input type="text" id="edit-smtp-host"></div>
+        <div class="modal-field"><label>SMTP Port</label><input type="number" id="edit-smtp-port"></div>
+      </div>
     </div>
+
     <div class="settings-group-title" style="margin:16px 0 8px">Sync Settings</div>
     <div class="modal-field">
       <label>Email history to sync</label>
@@ -352,5 +368,5 @@
 {{end}}
 
 {{define "scripts"}}
-<script src="/static/js/app.js?v=23"></script>
+<script src="/static/js/app.js?v=24"></script>
 {{end}}

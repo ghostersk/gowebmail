@@ -130,3 +130,29 @@ func RefreshToken(ctx context.Context, cfg *oauth2.Config, refreshToken string) 
 	ts := cfg.TokenSource(ctx, &oauth2.Token{RefreshToken: refreshToken})
 	return ts.Token()
 }
+
+// RefreshAccountToken refreshes the OAuth token for a Gmail or Outlook account.
+// Pass the credentials for both providers; the correct ones are selected based
+// on provider ("gmail" or "outlook").
+func RefreshAccountToken(ctx context.Context,
+	provider, refreshToken, baseURL,
+	googleClientID, googleClientSecret,
+	msClientID, msClientSecret, msTenantID string,
+) (accessToken, newRefresh string, expiry time.Time, err error) {
+
+	var cfg *oauth2.Config
+	switch provider {
+	case "gmail":
+		cfg = NewGmailConfig(googleClientID, googleClientSecret, baseURL+"/auth/gmail/callback")
+	case "outlook":
+		cfg = NewOutlookConfig(msClientID, msClientSecret, msTenantID, baseURL+"/auth/outlook/callback")
+	default:
+		return "", "", time.Time{}, fmt.Errorf("not an OAuth provider: %s", provider)
+	}
+
+	tok, err := RefreshToken(ctx, cfg, refreshToken)
+	if err != nil {
+		return "", "", time.Time{}, err
+	}
+	return tok.AccessToken, tok.RefreshToken, tok.Expiry, nil
+}
