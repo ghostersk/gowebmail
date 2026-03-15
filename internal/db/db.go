@@ -170,7 +170,6 @@ func (d *DB) Migrate() error {
 		`ALTER TABLE users ADD COLUMN compose_popup INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE messages ADD COLUMN folder_path TEXT NOT NULL DEFAULT ''`,
 		// Folder visibility: is_hidden hides from sidebar; sync_enabled controls auto-sync.
-		// Default: primary folder types sync by default, others don't.
 		`ALTER TABLE folders ADD COLUMN is_hidden INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE folders ADD COLUMN sync_enabled INTEGER NOT NULL DEFAULT 1`,
 		// Plaintext search index column — stores decrypted subject+from+preview for LIKE search.
@@ -178,6 +177,10 @@ func (d *DB) Migrate() error {
 		// Per-folder IMAP sync state for incremental/delta sync.
 		`ALTER TABLE folders ADD COLUMN uid_validity INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE folders ADD COLUMN last_seen_uid INTEGER NOT NULL DEFAULT 0`,
+		// Account display order for sidebar drag-and-drop reordering.
+		`ALTER TABLE email_accounts ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0`,
+		// UI preferences (JSON): collapsed accounts/folders, etc. Synced across devices.
+		`ALTER TABLE users ADD COLUMN ui_prefs TEXT NOT NULL DEFAULT '{}'`,
 	}
 	for _, stmt := range alterStmts {
 		d.sql.Exec(stmt) // ignore "duplicate column" errors intentionally
@@ -623,14 +626,14 @@ func (d *DB) GetAccount(accountID int64) (*models.EmailAccount, error) {
 		       access_token, refresh_token, token_expiry,
 		       imap_host, imap_port, smtp_host, smtp_port,
 		       last_error, color, is_active, last_sync, created_at,
-		       COALESCE(sync_days,30), COALESCE(sync_mode,'days')
+		       COALESCE(sync_days,30), COALESCE(sync_mode,'days'), COALESCE(sort_order,0)
 		FROM email_accounts WHERE id=?`, accountID,
 	).Scan(
 		&a.ID, &a.UserID, &a.Provider, &a.EmailAddress, &a.DisplayName,
 		&accessEnc, &refreshEnc, &a.TokenExpiry,
 		&imapHostEnc, &a.IMAPPort, &smtpHostEnc, &a.SMTPPort,
 		&a.LastError, &a.Color, &a.IsActive, &lastSync, &a.CreatedAt,
-		&a.SyncDays, &a.SyncMode,
+		&a.SyncDays, &a.SyncMode, &a.SortOrder,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -763,8 +766,10 @@ func (d *DB) ListAccountsByUser(userID int64) ([]*models.EmailAccount, error) {
 		SELECT id, user_id, provider, email_address, display_name,
 		       access_token, refresh_token, token_expiry,
 		       imap_host, imap_port, smtp_host, smtp_port,
-		       last_error, color, is_active, last_sync, created_at
-		FROM email_accounts WHERE user_id=? AND is_active=1 ORDER BY created_at`, userID)
+		       last_error, color, is_active, last_sync, created_at,
+		       COALESCE(sort_order,0)
+		FROM email_accounts WHERE user_id=? AND is_active=1
+		ORDER BY COALESCE(sort_order,0), created_at`, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -783,6 +788,7 @@ func (d *DB) scanAccounts(rows *sql.Rows) ([]*models.EmailAccount, error) {
 			&accessEnc, &refreshEnc, &a.TokenExpiry,
 			&imapHostEnc, &a.IMAPPort, &smtpHostEnc, &a.SMTPPort,
 			&a.LastError, &a.Color, &a.IsActive, &lastSync, &a.CreatedAt,
+			&a.SortOrder,
 		); err != nil {
 			return nil, err
 		}
@@ -805,6 +811,104 @@ func (d *DB) DeleteAccount(accountID, userID int64) error {
 	return err
 }
 
+// UpsertOAuthAccount inserts a new OAuth account or updates tokens/display name
+// if an account with the same (user_id, provider, email_address) already exists.
+// Used by OAuth callbacks so that re-connecting updates rather than duplicates.
+func (d *DB) UpsertOAuthAccount(a *models.EmailAccount) (created bool, err error) {
+	accessEnc, _ := d.enc.Encrypt(a.AccessToken)
+	refreshEnc, _ := d.enc.Encrypt(a.RefreshToken)
+
+	// Check for existing account with same user + provider + email
+	var existingID int64
+	row := d.sql.QueryRow(
+		`SELECT id FROM email_accounts WHERE user_id=? AND provider=? AND email_address=?`,
+		a.UserID, a.Provider, a.EmailAddress,
+	)
+	scanErr := row.Scan(&existingID)
+
+	if scanErr == sql.ErrNoRows {
+		// New account — insert with next sort_order
+		var maxOrder int
+		d.sql.QueryRow(`SELECT COALESCE(MAX(sort_order),0) FROM email_accounts WHERE user_id=?`, a.UserID).Scan(&maxOrder)
+		res, insertErr := d.sql.Exec(`
+			INSERT INTO email_accounts
+				(user_id, provider, email_address, display_name, access_token, refresh_token,
+				 token_expiry, imap_host, imap_port, smtp_host, smtp_port, color, sort_order)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			a.UserID, a.Provider, a.EmailAddress, a.DisplayName,
+			accessEnc, refreshEnc, a.TokenExpiry,
+			"", a.IMAPPort, "", a.SMTPPort,
+			a.Color, maxOrder+1,
+		)
+		if insertErr != nil {
+			return false, insertErr
+		}
+		id, _ := res.LastInsertId()
+		a.ID = id
+		return true, nil
+	}
+	if scanErr != nil {
+		return false, scanErr
+	}
+
+	// Existing account — update tokens and display name only.
+	// If refresh token is empty (Microsoft omits it after first auth),
+	// keep the existing one to avoid losing the ability to auto-refresh.
+	if a.RefreshToken != "" {
+		_, err = d.sql.Exec(`
+			UPDATE email_accounts SET
+				display_name=?, access_token=?, refresh_token=?, token_expiry=?, last_error=''
+			WHERE id=?`,
+			a.DisplayName, accessEnc, refreshEnc, a.TokenExpiry, existingID,
+		)
+	} else {
+		_, err = d.sql.Exec(`
+			UPDATE email_accounts SET
+				display_name=?, access_token=?, token_expiry=?, last_error=''
+			WHERE id=?`,
+			a.DisplayName, accessEnc, a.TokenExpiry, existingID,
+		)
+	}
+	a.ID = existingID
+	return false, err
+}
+
+// UpdateAccountSortOrder sets sort_order for a batch of accounts for a user.
+// accountIDs is ordered from first to last in the desired display order.
+func (d *DB) UpdateAccountSortOrder(userID int64, accountIDs []int64) error {
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return err
+	}
+	for i, id := range accountIDs {
+		if _, err := tx.Exec(
+			`UPDATE email_accounts SET sort_order=? WHERE id=? AND user_id=?`,
+			i, id, userID,
+		); err != nil {
+			tx.Rollback()
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// GetUIPrefs returns the JSON ui_prefs string for a user.
+func (d *DB) GetUIPrefs(userID int64) (string, error) {
+	var prefs string
+	err := d.sql.QueryRow(`SELECT COALESCE(ui_prefs,'{}') FROM users WHERE id=?`, userID).Scan(&prefs)
+	if err != nil {
+		return "{}", err
+	}
+	return prefs, nil
+}
+
+// SetUIPrefs stores the JSON ui_prefs string for a user.
+func (d *DB) SetUIPrefs(userID int64, prefs string) error {
+	_, err := d.sql.Exec(`UPDATE users SET ui_prefs=? WHERE id=?`, prefs, userID)
+	return err
+}
+
+// UpdateFolderCounts refreshes the unread/total counts for a folder.
 func (d *DB) UpdateFolderCounts(folderID int64) {
 	d.sql.Exec(`
 		UPDATE folders SET

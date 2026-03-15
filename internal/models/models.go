@@ -113,6 +113,7 @@ type EmailAccount struct {
 	// Display
 	Color     string    `json:"color"`
 	IsActive  bool      `json:"is_active"`
+	SortOrder int       `json:"sort_order"`
 	LastSync  time.Time `json:"last_sync"`
 	CreatedAt time.Time `json:"created_at"`
 }

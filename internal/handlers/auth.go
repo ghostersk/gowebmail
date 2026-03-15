@@ -311,12 +311,17 @@ func (h *AuthHandler) GmailCallback(w http.ResponseWriter, r *http.Request) {
 		AccessToken: token.AccessToken, RefreshToken: token.RefreshToken,
 		TokenExpiry: token.Expiry, Color: color, IsActive: true,
 	}
-	if err := h.db.CreateAccount(account); err != nil {
+	created, err := h.db.UpsertOAuthAccount(account)
+	if err != nil {
 		http.Redirect(w, r, "/?error=account_save_failed", http.StatusFound)
 		return
 	}
 	uid := userID
-	h.db.WriteAudit(&uid, models.AuditAccountAdd, "gmail:"+userInfo.Email, middleware.ClientIP(r), r.UserAgent())
+	action := "gmail:" + userInfo.Email
+	if !created {
+		action = "gmail-reconnect:" + userInfo.Email
+	}
+	h.db.WriteAudit(&uid, models.AuditAccountAdd, action, middleware.ClientIP(r), r.UserAgent())
 	http.Redirect(w, r, "/?connected=gmail", http.StatusFound)
 }
 
@@ -331,7 +336,10 @@ func (h *AuthHandler) OutlookConnect(w http.ResponseWriter, r *http.Request) {
 	state := encodeOAuthState(userID, "outlook")
 	cfg := goauth.NewOutlookConfig(h.cfg.MicrosoftClientID, h.cfg.MicrosoftClientSecret,
 		h.cfg.MicrosoftTenantID, h.cfg.MicrosoftRedirectURL)
-	url := cfg.AuthCodeURL(state, oauth2.AccessTypeOffline)
+	// ApprovalForce + prompt=consent ensures Microsoft always returns a refresh_token,
+	// even when the user has previously authorized the app.
+	url := cfg.AuthCodeURL(state, oauth2.AccessTypeOffline, oauth2.ApprovalForce,
+		oauth2.SetAuthURLParam("prompt", "consent"))
 	http.Redirect(w, r, url, http.StatusFound)
 }
 
@@ -364,12 +372,17 @@ func (h *AuthHandler) OutlookCallback(w http.ResponseWriter, r *http.Request) {
 		AccessToken: token.AccessToken, RefreshToken: token.RefreshToken,
 		TokenExpiry: token.Expiry, Color: color, IsActive: true,
 	}
-	if err := h.db.CreateAccount(account); err != nil {
+	created, err := h.db.UpsertOAuthAccount(account)
+	if err != nil {
 		http.Redirect(w, r, "/?error=account_save_failed", http.StatusFound)
 		return
 	}
 	uid := userID
-	h.db.WriteAudit(&uid, models.AuditAccountAdd, "outlook:"+userInfo.Email(), middleware.ClientIP(r), r.UserAgent())
+	action := "outlook:" + userInfo.Email()
+	if !created {
+		action = "outlook-reconnect:" + userInfo.Email()
+	}
+	h.db.WriteAudit(&uid, models.AuditAccountAdd, action, middleware.ClientIP(r), r.UserAgent())
 	http.Redirect(w, r, "/?connected=outlook", http.StatusFound)
 }
 

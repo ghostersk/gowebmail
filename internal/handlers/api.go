@@ -63,6 +63,7 @@ type safeAccount struct {
 	SMTPPort     int                    `json:"smtp_port,omitempty"`
 	SyncDays     int                    `json:"sync_days"`
 	SyncMode     string                 `json:"sync_mode"`
+	SortOrder    int                    `json:"sort_order"`
 	LastError    string                 `json:"last_error,omitempty"`
 	Color        string                 `json:"color"`
 	LastSync     string                 `json:"last_sync"`
@@ -82,7 +83,7 @@ func toSafeAccount(a *models.EmailAccount) safeAccount {
 		ID: a.ID, Provider: a.Provider, EmailAddress: a.EmailAddress,
 		DisplayName: a.DisplayName, IMAPHost: a.IMAPHost, IMAPPort: a.IMAPPort,
 		SMTPHost: a.SMTPHost, SMTPPort: a.SMTPPort,
-		SyncDays: a.SyncDays, SyncMode: a.SyncMode,
+		SyncDays: a.SyncDays, SyncMode: a.SyncMode, SortOrder: a.SortOrder,
 		LastError: a.LastError, Color: a.Color, LastSync: lastSync,
 		TokenExpired: tokenExpired,
 	}
@@ -480,6 +481,52 @@ func (h *APIHandler) SetComposePopup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.db.SetComposePopup(userID, req.Popup); err != nil {
+		h.writeError(w, http.StatusInternalServerError, "failed to save")
+		return
+	}
+	h.writeJSON(w, map[string]bool{"ok": true})
+}
+
+func (h *APIHandler) SetAccountSortOrder(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.GetUserID(r)
+	var req struct {
+		Order []int64 `json:"order"` // account IDs in desired display order
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.Order) == 0 {
+		h.writeError(w, http.StatusBadRequest, "invalid request")
+		return
+	}
+	if err := h.db.UpdateAccountSortOrder(userID, req.Order); err != nil {
+		h.writeError(w, http.StatusInternalServerError, "failed to save order")
+		return
+	}
+	h.writeJSON(w, map[string]bool{"ok": true})
+}
+
+func (h *APIHandler) GetUIPrefs(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.GetUserID(r)
+	prefs, err := h.db.GetUIPrefs(userID)
+	if err != nil {
+		prefs = "{}"
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Write([]byte(prefs))
+}
+
+func (h *APIHandler) SetUIPrefs(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.GetUserID(r)
+	body, err := io.ReadAll(io.LimitReader(r.Body, 64*1024))
+	if err != nil || len(body) == 0 {
+		h.writeError(w, http.StatusBadRequest, "invalid request")
+		return
+	}
+	// Validate it's valid JSON before storing
+	var check map[string]interface{}
+	if err := json.Unmarshal(body, &check); err != nil {
+		h.writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	if err := h.db.SetUIPrefs(userID, string(body)); err != nil {
 		h.writeError(w, http.StatusInternalServerError, "failed to save")
 		return
 	}

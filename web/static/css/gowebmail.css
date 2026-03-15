@@ -165,7 +165,15 @@ body.app-page{overflow:hidden}
 .unread-badge{margin-left:auto;background:var(--accent);color:white;font-size:10px;
   font-weight:600;padding:1px 6px;border-radius:10px;min-width:18px;text-align:center}
 .nav-folder-header{font-size:10px;font-weight:500;text-transform:uppercase;letter-spacing:1px;
-  color:var(--muted);padding:10px 8px 3px;display:flex;align-items:center;gap:6px}
+  color:var(--muted);padding:10px 8px 3px;display:flex;align-items:center;gap:6px;
+  cursor:pointer;user-select:none;border-radius:6px;transition:background .15s}
+.nav-folder-header:hover{background:var(--surface3)}
+.acc-drag-handle{cursor:grab;color:var(--muted);font-size:13px;opacity:.5;flex-shrink:0;line-height:1}
+.acc-drag-handle:hover{opacity:1}
+.acc-chevron{flex-shrink:0;color:var(--muted);display:flex;align-items:center}
+.nav-account-group{border-radius:6px;transition:background .15s}
+.nav-account-group.acc-drag-target{background:rgba(74,144,226,.12);outline:1px dashed var(--accent)}
+.nav-account-group.acc-dragging{opacity:.4}
 .sidebar-footer{padding:10px 14px;border-top:1px solid var(--border);display:flex;
   align-items:center;justify-content:space-between;flex-shrink:0}
 .user-info{display:flex;flex-direction:column;gap:2px;min-width:0}

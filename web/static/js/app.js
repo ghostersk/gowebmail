@@ -9,12 +9,27 @@ const S = {
   searchQuery: '', composeMode: 'new', composeReplyToId: null, composeForwardFromId: null,
   filterUnread: false, filterAttachment: false,
   sortOrder: 'date-desc', // 'date-desc' | 'date-asc' | 'size-desc'
+  uiPrefs: {}, // server-persisted UI preferences (collapsed accounts/folders etc.)
 };
+
+// ── UI Preferences (server-persisted, cross-device) ─────────────────────────
+let _uiPrefsSaveTimer = null;
+function uiPrefsGet(key, def) { return (key in S.uiPrefs) ? S.uiPrefs[key] : def; }
+function uiPrefsSet(key, val) {
+  S.uiPrefs[key] = val;
+  clearTimeout(_uiPrefsSaveTimer);
+  _uiPrefsSaveTimer = setTimeout(() => {
+    api('PUT', '/ui-prefs', S.uiPrefs);
+  }, 600); // debounce 600ms
+}
+function isAccountCollapsed(accId) { return uiPrefsGet('ac_'+accId, false); }
+function setAccountCollapsed(accId, v) { uiPrefsSet('ac_'+accId, v); }
 
 // ── Boot ───────────────────────────────────────────────────────────────────
 async function init() {
-  const [me, providers, wl] = await Promise.all([
+  const [me, providers, wl, uiPrefsRaw] = await Promise.all([
     api('GET','/me'), api('GET','/providers'), api('GET','/remote-content-whitelist'),
+    api('GET','/ui-prefs'),
   ]);
   if (me) {
     S.me = me;
@@ -23,6 +38,7 @@ async function init() {
   }
   if (providers) { S.providers = providers; updateProviderButtons(); }
   if (wl?.whitelist) S.remoteWhitelist = new Set(wl.whitelist);
+  if (uiPrefsRaw && typeof uiPrefsRaw === 'object') S.uiPrefs = uiPrefsRaw;
 
   await loadAccounts();
   await loadFolders();
@@ -33,8 +49,23 @@ async function init() {
   }
 
   const p = new URLSearchParams(location.search);
-  if (p.get('connected')) { toast('Account connected!', 'success'); history.replaceState({},'','/'); }
-  if (p.get('error'))     { toast('Connection failed: '+p.get('error'), 'error'); history.replaceState({},'','/'); }
+  if (p.get('connected')) {
+    toast('Account connected! Loading…', 'success');
+    history.replaceState({},'','/');
+    // Poll until the new account appears (syncer needs a moment to start)
+    let tries = 0;
+    const prevCount = S.accounts.length;
+    const poll = setInterval(async () => {
+      tries++;
+      await loadAccounts();
+      await loadFolders();
+      if (S.accounts.length > prevCount || tries >= 12) {
+        clearInterval(poll);
+        if (S.accounts.length > prevCount) toast('Account ready!', 'success');
+      }
+    }, 2500);
+  }
+  if (p.get('error')) { toast('Connection failed: '+p.get('error'), 'error'); history.replaceState({},'','/'); }
 
   document.addEventListener('keydown', e => {
     if (['INPUT','TEXTAREA','SELECT'].includes(e.target.tagName)) return;
@@ -370,32 +401,116 @@ const FOLDER_ICONS = {
 };
 
 function renderFolders() {
-  const el=document.getElementById('folders-by-account');
-  const accMap={}; S.accounts.forEach(a=>accMap[a.id]=a);
-  const byAcc={};
-  S.folders.filter(f=>!f.is_hidden).forEach(f=>{(byAcc[f.account_id]=byAcc[f.account_id]||[]).push(f);});
-  const prio=['inbox','sent','drafts','trash','spam','archive'];
-  el.innerHTML=Object.entries(byAcc).map(([accId,folders])=>{
-    const acc=accMap[parseInt(accId)];
-    const accColor = acc?.color || '#888';
-    const accEmail = acc?.email_address || 'Account '+accId;
-    if(!folders?.length) return '';
-    const sorted=[...prio.map(t=>folders.find(f=>f.folder_type===t)).filter(Boolean),...folders.filter(f=>f.folder_type==='custom')];
-    return `<div class="nav-folder-header">
-        <span style="width:6px;height:6px;border-radius:50%;background:${accColor};display:inline-block;flex-shrink:0"></span>
-        <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(accEmail)}</span>
-        <button class="icon-sync-btn" title="Sync account" onclick="syncNow(${parseInt(accId)},event)" style="margin-left:4px">
-          <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg>
-        </button>
-      </div>`+sorted.map(f=>`
-      <div class="nav-item${f.sync_enabled?'':' folder-nosync'}" id="nav-f${f.id}" data-fid="${f.id}" onclick="selectFolder(${f.id},'${esc(f.name)}')"
+  const el = document.getElementById('folders-by-account');
+  const accMap = {}; S.accounts.forEach(a => accMap[a.id] = a);
+  const byAcc = {};
+  S.folders.filter(f => !f.is_hidden).forEach(f => {
+    (byAcc[f.account_id] = byAcc[f.account_id] || []).push(f);
+  });
+  const prio = ['inbox','sent','drafts','trash','spam','archive'];
+  const orderedAccounts = [...S.accounts].sort((a,b) => (a.sort_order||0) - (b.sort_order||0));
+
+  el.innerHTML = orderedAccounts.map(acc => {
+    const folders = byAcc[acc.id];
+    if (!folders?.length) return '';
+    const accId = acc.id;
+    const collapsed = isAccountCollapsed(accId);
+    const sorted = [
+      ...prio.map(t => folders.find(f => f.folder_type===t)).filter(Boolean),
+      ...folders.filter(f => f.folder_type==='custom')
+    ];
+    const totalUnread = folders.reduce((s,f) => s+(f.unread_count||0), 0);
+    const chevron = collapsed
+      ? '<svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>'
+      : '<svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><path d="M7 10l5 5 5-5z"/></svg>';
+
+    const folderRows = collapsed ? '' : sorted.map(f => `
+      <div class="nav-item${f.sync_enabled?'':' folder-nosync'}" id="nav-f${f.id}"
+           data-fid="${f.id}" onclick="selectFolder(${f.id},'${esc(f.name)}')"
            oncontextmenu="showFolderMenu(event,${f.id})">
         <svg viewBox="0 0 24 24" fill="currentColor">${FOLDER_ICONS[f.folder_type]||FOLDER_ICONS.custom}</svg>
         ${esc(f.name)}
         ${f.unread_count>0?`<span class="unread-badge">${f.unread_count}</span>`:''}
-        ${!f.sync_enabled?'<span style="font-size:9px;color:var(--muted);margin-left:auto" title="Sync disabled">⊘</span>':''}
+        ${!f.sync_enabled?'<span style="font-size:9px;color:var(--muted);margin-left:auto" title="Sync disabled">\u29b8</span>':''}
       </div>`).join('');
+
+    return `<div class="nav-account-group" data-acc-id="${accId}"
+                 draggable="true"
+                 ondragstart="accDragStart(event,${accId})"
+                 ondragover="accDragOver(event)"
+                 ondragleave="accDragLeave(event)"
+                 ondrop="accDrop(event,${accId})">
+      <div class="nav-folder-header" onclick="toggleAccountCollapse(${accId})">
+        <span class="acc-drag-handle" title="Drag to reorder" onclick="event.stopPropagation()">&#8942;</span>
+        <span style="width:7px;height:7px;border-radius:50%;background:${acc.color};display:inline-block;flex-shrink:0"></span>
+        <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+              title="${esc(acc.email_address)}">${esc(acc.display_name||acc.email_address)}</span>
+        ${totalUnread>0&&collapsed?`<span class="unread-badge" style="margin-left:auto">${totalUnread}</span>`:''}
+        <button class="icon-sync-btn" title="Sync account" onclick="syncNow(${accId},event)" style="flex-shrink:0">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg>
+        </button>
+        <span class="acc-chevron">${chevron}</span>
+      </div>
+      ${folderRows}
+    </div>`;
   }).join('');
+
+  // Re-wire drag-drop onto folder rows for message-to-folder moves
+  el.querySelectorAll('.nav-item[data-fid]').forEach(item => {
+    item.ondragover = e => { e.preventDefault(); item.classList.add('drag-over'); };
+    item.ondragleave = () => item.classList.remove('drag-over');
+    item.ondrop = e => {
+      e.preventDefault(); item.classList.remove('drag-over');
+      const fid = parseInt(item.dataset.fid);
+      const mid = parseInt(e.dataTransfer.getData('text/plain'));
+      if (mid && fid) moveMessage(mid, fid);
+    };
+  });
+}
+
+function toggleAccountCollapse(accId) {
+  setAccountCollapsed(accId, !isAccountCollapsed(accId));
+  renderFolders();
+}
+
+// ── Account drag-to-reorder ─────────────────────────────────────────────────
+let _dragSrcAccId = null;
+
+function accDragStart(e, accId) {
+  _dragSrcAccId = accId;
+  e.dataTransfer.effectAllowed = 'move';
+  e.dataTransfer.setData('text/plain', String(accId));
+  setTimeout(() => e.currentTarget?.classList.add('acc-dragging'), 0);
+}
+
+function accDragOver(e) {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  const g = e.currentTarget;
+  if (g && parseInt(g.dataset.accId) !== _dragSrcAccId) g.classList.add('acc-drag-target');
+}
+
+function accDragLeave(e) { e.currentTarget?.classList.remove('acc-drag-target'); }
+
+async function accDrop(e, targetAccId) {
+  e.preventDefault();
+  e.currentTarget?.classList.remove('acc-drag-target');
+  document.querySelectorAll('.acc-dragging').forEach(el => el.classList.remove('acc-dragging'));
+  if (_dragSrcAccId === null || _dragSrcAccId === targetAccId) { _dragSrcAccId = null; return; }
+
+  const ordered = [...S.accounts].sort((a,b) => (a.sort_order||0)-(b.sort_order||0));
+  const srcIdx = ordered.findIndex(a => a.id === _dragSrcAccId);
+  const dstIdx = ordered.findIndex(a => a.id === targetAccId);
+  if (srcIdx === -1 || dstIdx === -1) { _dragSrcAccId = null; return; }
+
+  const [moved] = ordered.splice(srcIdx, 1);
+  ordered.splice(dstIdx, 0, moved);
+  ordered.forEach((a, i) => { a.sort_order = i; });
+  S.accounts = ordered;
+  _dragSrcAccId = null;
+
+  renderFolders();
+  await api('PUT', '/accounts/sort-order', { order: ordered.map(a => a.id) });
 }
 
 function showFolderMenu(e, folderId) {
