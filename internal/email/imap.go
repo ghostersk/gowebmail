@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ghostersk/gowebmail/internal/logger"
 	"github.com/emersion/go-imap"
 	"github.com/emersion/go-imap/client"
 
@@ -64,9 +65,9 @@ func (x *xoauth2Client) Next(challenge []byte) ([]byte, error) {
 	if len(challenge) > 0 {
 		// Decode and log the error from Microsoft so it appears in server logs
 		if dec, err := base64.StdEncoding.DecodeString(string(challenge)); err == nil {
-			log.Printf("[imap:xoauth2] server error for %s: %s", x.user, string(dec))
+			logger.Debug("[imap:xoauth2] server error for %s: %s", x.user, string(dec))
 		} else {
-			log.Printf("[imap:xoauth2] server challenge for %s: %s", x.user, string(challenge))
+			logger.Debug("[imap:xoauth2] server challenge for %s: %s", x.user, string(challenge))
 		}
 		// Send empty response to let the server send the final error
 		return []byte("\x01"), nil
@@ -142,18 +143,18 @@ func Connect(ctx context.Context, account *gomailModels.EmailAccount) (*Client, 
 					Upn string      `json:"upn"`
 				}
 				if json.Unmarshal(payload, &claims) == nil {
-					log.Printf("[imap:connect] %s aud=%v scp=%q token=%s",
+					logger.Debug("[imap:connect] %s aud=%v scp=%q token=%s",
 						account.EmailAddress, claims.Aud, claims.Scp, tokenPreview)
 				} else {
-					log.Printf("[imap:connect] %s raw claims: %s token=%s",
+					logger.Debug("[imap:connect] %s raw claims: %s token=%s",
 						account.EmailAddress, string(payload), tokenPreview)
 				}
 			} else {
-				log.Printf("[imap:connect] %s opaque token (not JWT): %s",
+				logger.Debug("[imap:connect] %s opaque token (not JWT): %s",
 					account.EmailAddress, tokenPreview)
 			}
 		} else {
-			log.Printf("[imap:connect] %s token has %d parts (not JWT): %s",
+			logger.Debug("[imap:connect] %s token has %d parts (not JWT): %s",
 				account.EmailAddress, len(strings.Split(account.AccessToken, ".")), tokenPreview)
 		}
 		sasl := &xoauth2Client{user: account.EmailAddress, token: account.AccessToken}
@@ -900,7 +901,7 @@ func SendMessageFull(ctx context.Context, account *gomailModels.EmailAccount, re
 	rawMsg := buf.Bytes()
 
 	addr := fmt.Sprintf("%s:%d", host, port)
-	log.Printf("[SMTP] dialing %s for account %s", addr, account.EmailAddress)
+	logger.Debug("[SMTP] dialing %s for account %s", addr, account.EmailAddress)
 
 	var c *smtp.Client
 	var err error
@@ -941,7 +942,7 @@ func SendMessageFull(ctx context.Context, account *gomailModels.EmailAccount, re
 	if err := authSMTP(c, account, host); err != nil {
 		return fmt.Errorf("SMTP auth failed for %s: %w", account.EmailAddress, err)
 	}
-	log.Printf("[SMTP] auth OK")
+	logger.Debug("[SMTP] auth OK")
 
 	if err := c.Mail(account.EmailAddress); err != nil {
 		return fmt.Errorf("SMTP MAIL FROM <%s>: %w", account.EmailAddress, err)
@@ -971,7 +972,7 @@ func SendMessageFull(ctx context.Context, account *gomailModels.EmailAccount, re
 		// DATA close is where the server accepts or rejects the message
 		return fmt.Errorf("SMTP server rejected message: %w", err)
 	}
-	log.Printf("[SMTP] message accepted by server")
+	logger.Debug("[SMTP] message accepted by server")
 	_ = c.Quit()
 
 	// Append to Sent folder via IMAP (best-effort, don't fail the send)

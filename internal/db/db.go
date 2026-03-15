@@ -1235,6 +1235,14 @@ func (d *DB) UpdateMessageBody(messageID int64, bodyText, bodyHTML string) {
 		bodyTextEnc, bodyHTMLEnc, messageID)
 }
 
+// GetNewestMessageDate returns the date of the most recent message in a folder.
+// Returns zero time if the folder is empty.
+func (d *DB) GetNewestMessageDate(folderID int64) time.Time {
+	var t time.Time
+	d.sql.QueryRow(`SELECT MAX(date) FROM messages WHERE folder_id=?`, folderID).Scan(&t)
+	return t
+}
+
 func (d *DB) ToggleMessageStar(messageID, userID int64) (bool, error) {
 	var current bool
 	err := d.sql.QueryRow(`

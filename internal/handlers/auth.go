@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ghostersk/gowebmail/internal/logger"
 	"github.com/ghostersk/gowebmail/config"
 	goauth "github.com/ghostersk/gowebmail/internal/auth"
 	"github.com/ghostersk/gowebmail/internal/crypto"
@@ -430,7 +431,7 @@ h2{color:#f87171} a{color:#6b8afd}</style></head><body>
 		http.Redirect(w, r, "/?error=userinfo_failed", http.StatusFound)
 		return
 	}
-	log.Printf("[oauth:outlook] auth successful for %s, getting IMAP token...", userInfo.Email())
+	logger.Debug("[oauth:outlook] auth successful for %s, getting IMAP token...", userInfo.Email())
 
 	// Exchange initial token for one scoped to https://outlook.office.com
 	// so IMAP auth succeeds (aud must be outlook.office.com not graph/live)
@@ -440,10 +441,10 @@ h2{color:#f87171} a{color:#6b8afd}</style></head><body>
 		h.cfg.MicrosoftTenantID, token.RefreshToken,
 	)
 	if err != nil {
-		log.Printf("[oauth:outlook] IMAP token exchange failed: %v — falling back to initial token", err)
+		logger.Debug("[oauth:outlook] IMAP token exchange failed: %v — falling back to initial token", err)
 		imapToken = token
 	} else {
-		log.Printf("[oauth:outlook] IMAP token obtained, aud should be https://outlook.office.com")
+		logger.Debug("[oauth:outlook] IMAP token obtained, aud should be https://outlook.office.com")
 		if imapToken.RefreshToken == "" {
 			imapToken.RefreshToken = token.RefreshToken
 		}
@@ -703,7 +704,7 @@ Mail.ReadWrite, Mail.Send, User.Read, openid, email, offline_access</p>
 
 	// Verify it's a JWT (Graph token for personal accounts should be a JWT)
 	tokenParts := len(strings.Split(token.AccessToken, "."))
-	log.Printf("[oauth:outlook-personal] auth successful for %s, token parts: %d",
+	logger.Debug("[oauth:outlook-personal] auth successful for %s, token parts: %d",
 		userInfo.Email(), tokenParts)
 
 	accounts, _ := h.db.ListAccountsByUser(userID)

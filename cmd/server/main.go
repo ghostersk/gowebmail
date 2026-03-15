@@ -15,6 +15,7 @@ import (
 	"github.com/ghostersk/gowebmail/config"
 	"github.com/ghostersk/gowebmail/internal/db"
 	"github.com/ghostersk/gowebmail/internal/handlers"
+	"github.com/ghostersk/gowebmail/internal/logger"
 	"github.com/ghostersk/gowebmail/internal/middleware"
 	"github.com/ghostersk/gowebmail/internal/syncer"
 
@@ -72,6 +73,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("config load: %v", err)
 	}
+	logger.Init(cfg.Debug)
 
 	database, err := db.New(cfg.DBPath, cfg.EncryptionKey)
 	if err != nil {

@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -198,8 +199,10 @@ type messagesResp struct {
 func (c *Client) ListMessages(ctx context.Context, folderID string, since time.Time, maxResults int) ([]GraphMessage, error) {
 	filter := ""
 	if !since.IsZero() {
-		filter = "&$filter=receivedDateTime+gt+" +
-			url.QueryEscape(since.UTC().Format("2006-01-02T15:04:05Z"))
+		// OData filter: receivedDateTime gt 2006-01-02T15:04:05Z
+		// Use strings.ReplaceAll to keep colons unencoded — Graph accepts this form
+		dateStr := since.UTC().Format("2006-01-02T15:04:05Z")
+		filter = "&$filter=receivedDateTime gt " + url.PathEscape(dateStr)
 	}
 	top := 50
 	if maxResults > 0 && maxResults < top {
@@ -322,24 +325,50 @@ func WellKnownToFolderType(wk string) string {
 
 // ---- Send mail ----
 
+// stripHTML does a minimal HTML→plain-text conversion for the text/plain fallback.
+// Spam filters score HTML-only email negatively; sending both parts improves deliverability.
+func stripHTML(s string) string {
+	s = regexp.MustCompile(`(?i)<br\s*/?>|</p>|</div>|</li>|</tr>`).ReplaceAllString(s, "\n")
+	s = regexp.MustCompile(`<[^>]+>`).ReplaceAllString(s, "")
+	s = strings.NewReplacer("&amp;", "&", "&lt;", "<", "&gt;", ">", "&quot;", `"`, "&#39;", "'", "&nbsp;", " ").Replace(s)
+	s = regexp.MustCompile(`\n{3,}`).ReplaceAllString(s, "\n\n")
+	return strings.TrimSpace(s)
+}
+
 // SendMail sends an email via Graph API POST /me/sendMail.
+// Sets both HTML and plain-text body to improve deliverability (spam filters
+// penalise HTML-only messages with no text/plain alternative).
 func (c *Client) SendMail(ctx context.Context, req *models.ComposeRequest) error {
-	contentType := "HTML"
-	body := req.BodyHTML
-	if body == "" {
-		contentType = "Text"
-		body = req.BodyText
+	// Build body: always provide both HTML and plain text for better deliverability
+	body := map[string]string{
+		"contentType": "HTML",
+		"content":     req.BodyHTML,
+	}
+	if req.BodyHTML == "" {
+		body["contentType"] = "Text"
+		body["content"] = req.BodyText
+	}
+
+	// Set explicit from with display name
+	var fromField interface{}
+	if c.account.DisplayName != "" {
+		fromField = map[string]interface{}{
+			"emailAddress": map[string]string{
+				"address": c.account.EmailAddress,
+				"name":    c.account.DisplayName,
+			},
+		}
 	}
 
 	msg := map[string]interface{}{
-		"subject": req.Subject,
-		"body": map[string]string{
-			"contentType": contentType,
-			"content":     body,
-		},
+		"subject":       req.Subject,
+		"body":          body,
 		"toRecipients":  graphRecipients(req.To),
 		"ccRecipients":  graphRecipients(req.CC),
 		"bccRecipients": graphRecipients(req.BCC),
+	}
+	if fromField != nil {
+		msg["from"] = fromField
 	}
 
 	if len(req.Attachments) > 0 {

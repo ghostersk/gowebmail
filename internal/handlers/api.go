@@ -844,6 +844,11 @@ func (h *APIHandler) handleSend(w http.ResponseWriter, r *http.Request, mode str
 			h.writeError(w, http.StatusBadGateway, err.Error())
 			return
 		}
+		// Delay slightly so Microsoft has time to save to Sent Items before we sync
+		go func() {
+			time.Sleep(3 * time.Second)
+			h.syncer.TriggerAccountSync(account.ID)
+		}()
 		h.writeJSON(w, map[string]bool{"ok": true})
 		return
 	}
@@ -856,6 +861,8 @@ func (h *APIHandler) handleSend(w http.ResponseWriter, r *http.Request, mode str
 		h.writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
+	// Trigger immediate sync so the sent message appears in Sent Items
+	h.syncer.TriggerAccountSync(account.ID)
 	h.writeJSON(w, map[string]bool{"ok": true})
 }
 

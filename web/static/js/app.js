@@ -1484,7 +1484,13 @@ async function sendMessage() {
   }
 
   btn.disabled=false; btn.textContent='Send';
-  if(r?.ok){ toast('Message sent!','success'); clearDraftAutosave(); _closeCompose(); }
+  if(r?.ok){
+    toast('Message sent!','success');
+    clearDraftAutosave();
+    _closeCompose();
+    // Refresh after a short delay so the syncer has time to pick up the sent message
+    setTimeout(async () => { await loadFolders(); await loadMessages(); }, 2500);
+  }
   else toast(r?.error||'Send failed','error');
 }
 
@@ -1757,7 +1763,7 @@ async function startPoller() {
 
 function schedulePoll() {
   if (!POLLER.active) return;
-  POLLER.timer = setTimeout(runPoll, 20000); // 20 second interval
+  POLLER.timer = setTimeout(runPoll, 10000); // 10 second interval
 }
 
 async function runPoll() {
@@ -1783,15 +1789,9 @@ async function runPoll() {
         sendOSNotification(newMsgs);
       }
 
-      // Refresh current view if we're looking at inbox/unified
-      const isInboxView = S.currentFolder === 'unified' ||
-        S.folders.find(f => f.id === S.currentFolder && f.folder_type === 'inbox');
-      if (isInboxView) {
-        await loadMessages();
-        await loadFolders();
-      } else {
-        await loadFolders(); // update counts in sidebar
-      }
+      // Always refresh the message list and folder counts when new mail arrives
+      await loadFolders();
+      await loadMessages();
     }
   } catch(e) {
     // Network error — silent, retry next cycle

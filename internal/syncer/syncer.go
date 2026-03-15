@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ghostersk/gowebmail/internal/logger"
 	"github.com/ghostersk/gowebmail/config"
 	"github.com/ghostersk/gowebmail/internal/auth"
 	"github.com/ghostersk/gowebmail/internal/db"
@@ -427,7 +428,7 @@ func (s *Scheduler) deltaSync(account *models.EmailAccount) {
 
 	s.db.UpdateAccountLastSync(account.ID)
 	if totalNew > 0 {
-		log.Printf("[sync:%s] %d new messages", account.EmailAddress, totalNew)
+		logger.Debug("[sync:%s] %d new messages", account.EmailAddress, totalNew)
 	}
 }
 
@@ -453,7 +454,7 @@ func (s *Scheduler) syncInbox(account *models.EmailAccount) {
 		return
 	}
 	if n > 0 {
-		log.Printf("[idle:%s] %d new messages in INBOX", account.EmailAddress, n)
+		logger.Debug("[idle:%s] %d new messages in INBOX", account.EmailAddress, n)
 	}
 }
 
@@ -536,6 +537,10 @@ func (s *Scheduler) syncFolder(c *email.Client, account *models.EmailAccount, db
 // Applies queued IMAP write operations (delete/move/flag) with retry logic.
 
 func (s *Scheduler) drainPendingOps(account *models.EmailAccount) {
+	// Graph accounts don't use the IMAP ops queue
+	if account.Provider == models.ProviderOutlookPersonal {
+		return
+	}
 	ops, err := s.db.DequeuePendingOps(account.ID, 50)
 	if err != nil || len(ops) == 0 {
 		return
@@ -608,10 +613,10 @@ func (s *Scheduler) ensureFreshToken(account *models.EmailAccount) *models.Email
 		return account
 	}
 	if isOpaque {
-		log.Printf("[oauth:%s] opaque v1 token detected — forcing refresh to get JWT", account.EmailAddress)
+		logger.Debug("[oauth:%s] opaque v1 token detected — forcing refresh to get JWT", account.EmailAddress)
 	}
 	if account.RefreshToken == "" {
-		log.Printf("[oauth:%s] token expired but no refresh token stored — re-authorisation required", account.EmailAddress)
+		logger.Debug("[oauth:%s] token expired but no refresh token stored — re-authorisation required", account.EmailAddress)
 		return account
 	}
 
@@ -627,12 +632,12 @@ func (s *Scheduler) ensureFreshToken(account *models.EmailAccount) *models.Email
 		s.cfg.MicrosoftClientID, s.cfg.MicrosoftClientSecret, s.cfg.MicrosoftTenantID,
 	)
 	if err != nil {
-		log.Printf("[oauth:%s] token refresh failed: %v", account.EmailAddress, err)
+		logger.Debug("[oauth:%s] token refresh failed: %v", account.EmailAddress, err)
 		s.db.SetAccountError(account.ID, "OAuth token refresh failed: "+err.Error())
 		return account // return original; connect will fail and log the error
 	}
 	if err := s.db.UpdateAccountTokens(account.ID, accessTok, refreshTok, expiry); err != nil {
-		log.Printf("[oauth:%s] failed to persist refreshed token: %v", account.EmailAddress, err)
+		logger.Debug("[oauth:%s] failed to persist refreshed token: %v", account.EmailAddress, err)
 		return account
 	}
 
@@ -641,7 +646,7 @@ func (s *Scheduler) ensureFreshToken(account *models.EmailAccount) *models.Email
 	if fetchErr != nil || refreshed == nil {
 		return account
 	}
-	log.Printf("[oauth:%s] access token refreshed (expires %s)", account.EmailAddress, expiry.Format("2006-01-02 15:04 UTC"))
+	logger.Debug("[oauth:%s] access token refreshed (expires %s)", account.EmailAddress, expiry.Format("2006-01-02 15:04 UTC"))
 	return refreshed
 }
 
@@ -669,6 +674,42 @@ func (s *Scheduler) SyncFolderNow(accountID, folderID int64) (int, error) {
 		return 0, fmt.Errorf("folder %d not found", folderID)
 	}
 
+	// Graph accounts use the Graph sync path, not IMAP
+	if account.Provider == models.ProviderOutlookPersonal {
+		account = s.ensureFreshToken(account)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		gc := graph.New(account)
+		// Force full resync of this folder by ignoring the since filter
+		msgs, err := gc.ListMessages(ctx, folder.FullPath, time.Time{}, 100)
+		if err != nil {
+			return 0, fmt.Errorf("graph list messages: %w", err)
+		}
+		n := 0
+		for _, gm := range msgs {
+			msg := &models.Message{
+				AccountID:     account.ID,
+				FolderID:      folder.ID,
+				RemoteUID:     gm.ID,
+				MessageID:     gm.InternetMessageID,
+				Subject:       gm.Subject,
+				FromName:      gm.FromName(),
+				FromEmail:     gm.FromEmail(),
+				ToList:        gm.ToList(),
+				Date:          gm.ReceivedDateTime,
+				IsRead:        gm.IsRead,
+				IsStarred:     gm.IsFlagged(),
+				HasAttachment: gm.HasAttachments,
+			}
+			if dbErr := s.db.UpsertMessage(msg); dbErr == nil {
+				n++
+			}
+		}
+		// Update folder counts
+		s.db.UpdateFolderCountsDirect(folder.ID, len(msgs), 0)
+		return n, nil
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	account = s.ensureFreshToken(account)
@@ -686,7 +727,7 @@ func (s *Scheduler) SyncFolderNow(accountID, folderID int64) (int, error) {
 // graphWorker is the accountWorker equivalent for ProviderOutlookPersonal accounts.
 // It polls Graph API instead of using IMAP.
 func (s *Scheduler) graphWorker(account *models.EmailAccount, stop chan struct{}, push chan struct{}) {
-	log.Printf("[graph] worker started for %s", account.EmailAddress)
+	logger.Debug("[graph] worker started for %s", account.EmailAddress)
 
 	getAccount := func() *models.EmailAccount {
 		a, _ := s.db.GetAccount(account.ID)
@@ -705,7 +746,7 @@ func (s *Scheduler) graphWorker(account *models.EmailAccount, stop chan struct{}
 	for {
 		select {
 		case <-stop:
-			log.Printf("[graph] worker stopped for %s", account.EmailAddress)
+			logger.Debug("[graph] worker stopped for %s", account.EmailAddress)
 			return
 		case <-push:
 			acc := getAccount()
@@ -766,13 +807,11 @@ func (s *Scheduler) graphDeltaSync(account *models.EmailAccount) {
 			continue
 		}
 
-		// Determine how far back to fetch
-		var since time.Time
-		if account.SyncMode == "days" && account.SyncDays > 0 {
-			since = time.Now().AddDate(0, 0, -account.SyncDays)
-		}
-
-		msgs, err := gc.ListMessages(ctx, gf.ID, since, 500)
+		// Fetch latest messages — no since filter, rely on upsert idempotency.
+		// Graph uses sentDateTime for sent items which differs from receivedDateTime,
+		// making date-based filters unreliable across folder types.
+		// Fetching top 100 newest per folder per sync is efficient enough.
+		msgs, err := gc.ListMessages(ctx, gf.ID, time.Time{}, 100)
 		if err != nil {
 			log.Printf("[graph:%s] list messages in %s: %v", account.EmailAddress, gf.DisplayName, err)
 			continue
@@ -805,6 +844,6 @@ func (s *Scheduler) graphDeltaSync(account *models.EmailAccount) {
 
 	s.db.UpdateAccountLastSync(account.ID)
 	if totalNew > 0 {
-		log.Printf("[graph:%s] %d new messages", account.EmailAddress, totalNew)
+		logger.Debug("[graph:%s] %d new messages", account.EmailAddress, totalNew)
 	}
 }

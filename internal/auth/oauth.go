@@ -6,12 +6,12 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
+	"github.com/ghostersk/gowebmail/internal/logger"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 	"golang.org/x/oauth2/microsoft"
@@ -21,7 +21,7 @@ import (
 
 // GmailScopes are the OAuth2 scopes required for full Gmail access.
 var GmailScopes = []string{
-	"https://mail.google.com/",       // Full IMAP+SMTP access
+	"https://mail.google.com/", // Full IMAP+SMTP access
 	"https://www.googleapis.com/auth/userinfo.email",
 	"https://www.googleapis.com/auth/userinfo.profile",
 }
@@ -148,7 +148,7 @@ func ExchangeForIMAPToken(ctx context.Context, clientID, clientSecret, tenantID,
 		preview = preview[:30] + "..."
 	}
 	parts := strings.Count(result.AccessToken, ".") + 1
-	log.Printf("[oauth:outlook:exchange] got token with %d parts: %s (scope=%s)",
+	logger.Debug("[oauth:outlook:exchange] got token with %d parts: %s (scope=%s)",
 		parts, preview, params.Get("scope"))
 
 	expiry := time.Now().Add(time.Duration(result.ExpiresIn) * time.Second)
@@ -162,10 +162,10 @@ func ExchangeForIMAPToken(ctx context.Context, clientID, clientSecret, tenantID,
 // MicrosoftUserInfo holds user info extracted from the Microsoft ID token.
 type MicrosoftUserInfo struct {
 	ID                string `json:"id"`
-	DisplayName       string `json:"displayName"`   // Graph field
-	Name              string `json:"name"`           // ID token claim
+	DisplayName       string `json:"displayName"` // Graph field
+	Name              string `json:"name"`        // ID token claim
 	Mail              string `json:"mail"`
-	EmailClaim        string `json:"email"`          // ID token claim
+	EmailClaim        string `json:"email"` // ID token claim
 	UserPrincipalName string `json:"userPrincipalName"`
 	PreferredUsername string `json:"preferred_username"` // ID token claim
 }

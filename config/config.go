@@ -21,6 +21,9 @@ type Config struct {
 	Hostname   string // e.g. "mail.example.com" — used for BASE_URL and host checks
 	BaseURL    string // auto-built from Hostname + ListenPort, or overridden explicitly
 
+	// Debug
+	Debug bool // set DEBUG=true in config to enable verbose logging
+
 	// Security
 	EncryptionKey  []byte // 32 bytes / AES-256
 	SessionSecret  []byte
@@ -431,6 +434,7 @@ func Load() (*Config, error) {
 		Hostname:       hostname,
 		BaseURL:        baseURL,
 		DBPath:         get("DB_PATH"),
+		Debug:          atobool(get("DEBUG"), false),
 		EncryptionKey:  encKey,
 		SessionSecret:  []byte(sessSecret),
 		SecureCookie:   atobool(get("SECURE_COOKIE"), false),
