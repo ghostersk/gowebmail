@@ -14,6 +14,7 @@
     </button>
     <span class="mob-title" id="mob-title">GoWebMail</span>
     <button class="compose-btn" onclick="openCompose()" style="margin-left:auto;padding:5px 10px;font-size:11px">+ New</button>
+    <button class="compose-btn" onclick="window.open('/compose','_blank')" style="padding:5px 8px;font-size:11px" title="Compose in new tab">↗</button>
   </div>
 
   <!-- Sidebar -->
@@ -23,7 +24,16 @@
         <div class="logo-icon"><svg viewBox="0 0 24 24"><path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"/></svg></div>
         <span class="logo-text"><a href="/">GoWebMail</a></span>
       </div>
-      <button class="compose-btn" onclick="openCompose()">+ New</button>
+      <div style="position:relative;display:inline-flex">
+        <button class="compose-btn" onclick="openCompose()" style="border-radius:6px 0 0 6px">+ New</button>
+        <button class="compose-btn" onclick="toggleComposeDropdown(event)" style="border-radius:0 6px 6px 0;border-left:1px solid rgba(255,255,255,.25);padding:6px 7px" title="More options">
+          <svg viewBox="0 0 24 24" width="10" height="10" fill="white"><path d="M7 10l5 5 5-5z"/></svg>
+        </button>
+        <div id="compose-dropdown" style="display:none;position:absolute;top:100%;left:0;margin-top:4px;background:var(--surface);border:1px solid var(--border2);border-radius:7px;box-shadow:0 4px 16px rgba(0,0,0,.2);z-index:200;min-width:200px;overflow:hidden">
+          <div class="ctx-item" onclick="openCompose();closeComposeDropdown()">✉ New message</div>
+          <div class="ctx-item" onclick="window.open('/compose','_blank');closeComposeDropdown()">↗ New message in new tab</div>
+        </div>
+      </div>
     </div>
 
     <div class="nav-section">
@@ -35,6 +45,14 @@
       <div class="nav-item" id="nav-starred" onclick="selectFolder('starred','Starred')">
         <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>
         Starred
+      </div>
+      <div class="nav-item" id="nav-contacts" onclick="showContacts()">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M20 0H4v2h16V0zM0 4v18h24V4H0zm22 16H2V6h20v14zM12 11c1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3 1.34 3 3 3zm-6 6c0-2.21 2.69-4 6-4s6 1.79 6 4H6z"/></svg>
+        Contacts
+      </div>
+      <div class="nav-item" id="nav-calendar" onclick="showCalendar()">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M20 3h-1V1h-2v2H7V1H5v2H4c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 18H4V8h16v13z"/></svg>
+        Calendar
       </div>
       <div id="folders-by-account"></div>
     </div>
@@ -103,6 +121,105 @@
       <p>Choose a message from the list to read it</p>
     </div>
   </main>
+
+  <!-- ── Contacts panel ──────────────────────────────────────────────────── -->
+  <div id="contacts-panel" style="display:none;flex:1;flex-direction:column;overflow:hidden;background:var(--bg)">
+    <div class="panel-header" style="padding:14px 18px 10px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;flex-shrink:0">
+      <span style="font-family:'DM Serif Display',serif;font-size:17px;flex:1">Contacts</span>
+      <input id="contacts-search" type="search" placeholder="Search contacts…" oninput="filterContacts(this.value)"
+        style="padding:5px 10px;border:1px solid var(--border2);border-radius:6px;background:var(--surface3);color:var(--text);font-size:13px;width:200px">
+      <button class="btn-secondary" onclick="openContactForm()" style="font-size:12px">+ New Contact</button>
+    </div>
+    <div id="contacts-list" style="flex:1;overflow-y:auto;padding:12px"></div>
+  </div>
+
+  <!-- ── Calendar panel ──────────────────────────────────────────────────── -->
+  <div id="calendar-panel" style="display:none;flex:1;flex-direction:column;overflow:hidden;background:var(--bg)">
+    <div style="padding:12px 18px 10px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;flex-shrink:0">
+      <button class="icon-btn" onclick="calNav(-1)" title="Previous">&#8249;</button>
+      <span id="cal-title" style="font-family:'DM Serif Display',serif;font-size:17px;min-width:200px;text-align:center"></span>
+      <button class="icon-btn" onclick="calNav(1)" title="Next">&#8250;</button>
+      <button class="btn-secondary" onclick="calGoToday()" style="font-size:12px;margin-left:4px">Today</button>
+      <div style="margin-left:auto;display:flex;gap:4px">
+        <button class="btn-secondary" id="cal-btn-month" onclick="calSetView('month')" style="font-size:12px">Month</button>
+        <button class="btn-secondary" id="cal-btn-week" onclick="calSetView('week')" style="font-size:12px">Week</button>
+        <button class="btn-secondary" onclick="openEventForm()" style="font-size:12px;background:var(--accent);color:white;border-color:var(--accent)">+ Event</button>
+        <button class="icon-btn" onclick="showCalDAVSettings()" title="CalDAV / sharing">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z"/></svg>
+        </button>
+      </div>
+    </div>
+    <div id="cal-grid" style="flex:1;overflow-y:auto"></div>
+  </div>
+
+</div>
+
+<!-- ── Contact form modal ──────────────────────────────────────────────────── -->
+<div class="modal-overlay" id="contact-modal">
+  <div class="modal" style="max-width:480px">
+    <h2 id="contact-modal-title">New Contact</h2>
+    <div class="modal-field"><label>Name</label><input id="cf-name" type="text" placeholder="Full name"></div>
+    <div class="modal-field"><label>Email</label><input id="cf-email" type="email" placeholder="email@example.com"></div>
+    <div class="modal-field"><label>Phone</label><input id="cf-phone" type="tel" placeholder="+1 555 000 0000"></div>
+    <div class="modal-field"><label>Company</label><input id="cf-company" type="text" placeholder="Company name"></div>
+    <div class="modal-field"><label>Notes</label><textarea id="cf-notes" rows="3" style="width:100%;resize:vertical;padding:8px;background:var(--surface3);border:1px solid var(--border2);border-radius:6px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px"></textarea></div>
+    <div class="modal-actions">
+      <button class="modal-cancel" onclick="closeModal('contact-modal')">Cancel</button>
+      <button id="cf-delete-btn" class="btn-secondary" style="color:var(--danger);display:none" onclick="deleteContact()">Delete</button>
+      <button class="modal-submit" onclick="saveContact()">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Event form modal ──────────────────────────────────────────────────── -->
+<div class="modal-overlay" id="event-modal">
+  <div class="modal" style="max-width:520px">
+    <h2 id="event-modal-title">New Event</h2>
+    <div class="modal-field"><label>Title</label><input id="ev-title" type="text" placeholder="Event title"></div>
+    <div class="modal-row">
+      <div class="modal-field"><label>Start</label><input id="ev-start" type="datetime-local"></div>
+      <div class="modal-field"><label>End</label><input id="ev-end" type="datetime-local"></div>
+    </div>
+    <div class="modal-field" style="flex-direction:row;align-items:center;gap:8px">
+      <input id="ev-allday" type="checkbox" style="width:auto">
+      <label for="ev-allday" style="font-weight:normal;color:var(--text2)">All day</label>
+    </div>
+    <div class="modal-field"><label>Location</label><input id="ev-location" type="text" placeholder="Location or video link"></div>
+    <div class="modal-field"><label>Description</label><textarea id="ev-desc" rows="3" style="width:100%;resize:vertical;padding:8px;background:var(--surface3);border:1px solid var(--border2);border-radius:6px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px"></textarea></div>
+    <div class="modal-field"><label>Color</label>
+      <div style="display:flex;gap:6px" id="ev-colors">
+        <span data-color="#0078D4" onclick="selectEvColor(this)" style="width:22px;height:22px;border-radius:50%;background:#0078D4;cursor:pointer;border:2px solid transparent"></span>
+        <span data-color="#EA4335" onclick="selectEvColor(this)" style="width:22px;height:22px;border-radius:50%;background:#EA4335;cursor:pointer;border:2px solid transparent"></span>
+        <span data-color="#34A853" onclick="selectEvColor(this)" style="width:22px;height:22px;border-radius:50%;background:#34A853;cursor:pointer;border:2px solid transparent"></span>
+        <span data-color="#FBBC04" onclick="selectEvColor(this)" style="width:22px;height:22px;border-radius:50%;background:#FBBC04;cursor:pointer;border:2px solid transparent"></span>
+        <span data-color="#9C27B0" onclick="selectEvColor(this)" style="width:22px;height:22px;border-radius:50%;background:#9C27B0;cursor:pointer;border:2px solid transparent"></span>
+        <span data-color="#FF6D00" onclick="selectEvColor(this)" style="width:22px;height:22px;border-radius:50%;background:#FF6D00;cursor:pointer;border:2px solid transparent"></span>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="modal-cancel" onclick="closeModal('event-modal')">Cancel</button>
+      <button id="ev-delete-btn" class="btn-secondary" style="color:var(--danger);display:none" onclick="deleteEvent()">Delete</button>
+      <button class="modal-submit" onclick="saveEvent()">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── CalDAV settings modal ──────────────────────────────────────────────── -->
+<div class="modal-overlay" id="caldav-modal">
+  <div class="modal" style="max-width:560px">
+    <h2>CalDAV / Calendar Sharing</h2>
+    <p style="font-size:13px;color:var(--text2);margin-bottom:14px">
+      Subscribe to your GoWebMail calendar from any CalDAV client (Apple Calendar, Thunderbird, etc.) using a token URL. Tokens give read-only calendar access — no password needed.
+    </p>
+    <div id="caldav-tokens-list" style="margin-bottom:14px"></div>
+    <div style="display:flex;gap:8px;align-items:center">
+      <input id="caldav-label" type="text" placeholder="Token label (e.g. iPhone)" style="flex:1;padding:7px 10px;background:var(--surface3);border:1px solid var(--border2);border-radius:6px;color:var(--text);font-size:13px">
+      <button class="btn-secondary" onclick="createCalDAVToken()" style="white-space:nowrap">Generate Token</button>
+    </div>
+    <div class="modal-actions" style="margin-top:16px">
+      <button class="modal-cancel" onclick="closeModal('caldav-modal')">Close</button>
+    </div>
+  </div>
 </div>
 
 <!-- ── Accounts submenu popup ──────────────────────────────────────────────── -->
@@ -397,5 +514,6 @@
 {{end}}
 
 {{define "scripts"}}
-<script src="/static/js/app.js?v=54"></script>
+<script src="/static/js/app.js?v=58"></script>
+<script src="/static/js/contacts_calendar.js?v=58"></script>
 {{end}}

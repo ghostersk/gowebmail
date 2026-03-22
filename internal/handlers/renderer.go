@@ -26,6 +26,8 @@ func NewRenderer() (*Renderer, error) {
 		"login.html",
 		"mfa.html",
 		"admin.html",
+		"message.html",
+		"compose.html",
 	}
 	templateFS, err := fs.Sub(gowebmail.WebFS, "web/templates")
 	if err != nil {

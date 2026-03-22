@@ -569,3 +569,52 @@ body.admin-page{overflow:auto;background:var(--bg)}
   /* Hide floating minimised bar on mobile, use back button instead */
   .compose-minimised{display:none!important}
 }
+
+/* ── Contacts ──────────────────────────────────────────────────────────── */
+.contact-card{display:flex;align-items:center;gap:12px;padding:10px 14px;border-radius:8px;
+  cursor:pointer;transition:background .1s;border-bottom:1px solid var(--border)}
+.contact-card:hover{background:var(--surface3)}
+.contact-avatar{width:36px;height:36px;border-radius:50%;display:flex;align-items:center;
+  justify-content:center;font-size:15px;font-weight:600;color:white;flex-shrink:0}
+.contact-info{flex:1;min-width:0}
+.contact-name{font-size:14px;font-weight:500;color:var(--text)}
+.contact-meta{font-size:12px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* ── Calendar ──────────────────────────────────────────────────────────── */
+.cal-grid-month{display:grid;grid-template-columns:repeat(7,1fr);border-left:1px solid var(--border);border-top:1px solid var(--border)}
+.cal-day-header{text-align:center;font-size:11px;font-weight:600;text-transform:uppercase;
+  letter-spacing:.5px;color:var(--muted);padding:6px 0;background:var(--surface);
+  border-right:1px solid var(--border);border-bottom:1px solid var(--border)}
+.cal-day{min-height:90px;padding:4px;border-right:1px solid var(--border);border-bottom:1px solid var(--border);
+  vertical-align:top;background:var(--surface);transition:background .1s;position:relative}
+.cal-day:hover{background:var(--surface3)}
+.cal-day.today{background:var(--accent-dim)}
+.cal-day.other-month{opacity:.45}
+.cal-day-num{font-size:12px;font-weight:500;color:var(--text2);margin-bottom:2px;cursor:pointer;
+  width:22px;height:22px;display:flex;align-items:center;justify-content:center;border-radius:50%}
+.cal-day-num:hover{background:var(--border2)}
+.cal-day.today .cal-day-num{background:var(--accent);color:white}
+.cal-event{font-size:11px;padding:2px 5px;border-radius:3px;margin-bottom:2px;
+  cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:white;
+  transition:opacity .1s}
+.cal-event:hover{opacity:.85}
+.cal-more{font-size:10px;color:var(--muted);cursor:pointer;padding:1px 4px}
+.cal-more:hover{color:var(--accent)}
+
+/* Week view */
+.cal-week-grid{display:grid;grid-template-columns:52px repeat(7,1fr);border-left:1px solid var(--border)}
+.cal-week-header{text-align:center;padding:6px 2px;font-size:12px;border-right:1px solid var(--border);
+  border-bottom:1px solid var(--border);background:var(--surface)}
+.cal-week-header.today-col{color:var(--accent);font-weight:600}
+.cal-time-col{font-size:10px;color:var(--muted);text-align:right;padding-right:4px;
+  border-right:1px solid var(--border);border-bottom:1px solid var(--border);height:40px;
+  display:flex;align-items:flex-start;justify-content:flex-end;padding-top:2px}
+.cal-week-cell{border-right:1px solid var(--border);border-bottom:1px solid var(--border);
+  height:40px;position:relative;transition:background .1s}
+.cal-week-cell:hover{background:var(--surface3)}
+
+/* CalDAV token row */
+.caldav-token-row{display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border)}
+.caldav-token-url{font-size:11px;font-family:monospace;color:var(--muted);overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap;flex:1;cursor:pointer}
+.caldav-token-url:hover{color:var(--text)}

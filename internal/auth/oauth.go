@@ -21,7 +21,7 @@ import (
 
 // GmailScopes are the OAuth2 scopes required for full Gmail access.
 var GmailScopes = []string{
-	"https://mail.google.com/", // Full IMAP+SMTP access
+	"https://mail.google.com/",       // Full IMAP+SMTP access
 	"https://www.googleapis.com/auth/userinfo.email",
 	"https://www.googleapis.com/auth/userinfo.profile",
 }
@@ -162,10 +162,10 @@ func ExchangeForIMAPToken(ctx context.Context, clientID, clientSecret, tenantID,
 // MicrosoftUserInfo holds user info extracted from the Microsoft ID token.
 type MicrosoftUserInfo struct {
 	ID                string `json:"id"`
-	DisplayName       string `json:"displayName"` // Graph field
-	Name              string `json:"name"`        // ID token claim
+	DisplayName       string `json:"displayName"`   // Graph field
+	Name              string `json:"name"`           // ID token claim
 	Mail              string `json:"mail"`
-	EmailClaim        string `json:"email"` // ID token claim
+	EmailClaim        string `json:"email"`          // ID token claim
 	UserPrincipalName string `json:"userPrincipalName"`
 	PreferredUsername string `json:"preferred_username"` // ID token claim
 }

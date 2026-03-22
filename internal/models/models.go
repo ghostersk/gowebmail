@@ -243,3 +243,49 @@ type PagedMessages struct {
 	PageSize int              `json:"page_size"`
 	HasMore  bool             `json:"has_more"`
 }
+
+// ---- Contacts ----
+
+type Contact struct {
+	ID          int64  `json:"id"`
+	UserID      int64  `json:"user_id"`
+	DisplayName string `json:"display_name"`
+	Email       string `json:"email"`
+	Phone       string `json:"phone"`
+	Company     string `json:"company"`
+	Notes       string `json:"notes"`
+	AvatarColor string `json:"avatar_color"`
+	CreatedAt   string `json:"created_at"`
+	UpdatedAt   string `json:"updated_at"`
+}
+
+// ---- Calendar ----
+
+type CalendarEvent struct {
+	ID             int64   `json:"id"`
+	UserID         int64   `json:"user_id"`
+	AccountID      *int64  `json:"account_id,omitempty"`
+	UID            string  `json:"uid"`
+	Title          string  `json:"title"`
+	Description    string  `json:"description"`
+	Location       string  `json:"location"`
+	StartTime      string  `json:"start_time"`
+	EndTime        string  `json:"end_time"`
+	AllDay         bool    `json:"all_day"`
+	RecurrenceRule string  `json:"recurrence_rule"`
+	Color          string  `json:"color"`
+	Status         string  `json:"status"`
+	OrganizerEmail string  `json:"organizer_email"`
+	Attendees      string  `json:"attendees"`
+	AccountColor   string  `json:"account_color,omitempty"`
+	AccountEmail   string  `json:"account_email,omitempty"`
+}
+
+type CalDAVToken struct {
+	ID        int64  `json:"id"`
+	UserID    int64  `json:"user_id"`
+	Token     string `json:"token"`
+	Label     string `json:"label"`
+	CreatedAt string `json:"created_at"`
+	LastUsed  string `json:"last_used,omitempty"`
+}

@@ -71,6 +71,25 @@ async function init() {
   }
   if (p.get('error')) { toast('Connection failed: '+p.get('error'), 'error'); history.replaceState({},'','/'); }
 
+  // Handle actions from full-page message/compose views
+  if (p.get('action') === 'reply' && p.get('id')) {
+    history.replaceState({},'','/');
+    const id = parseInt(p.get('id'));
+    // Load the message then open reply
+    setTimeout(async () => {
+      const msg = await api('GET', '/messages/'+id);
+      if (msg) { S.currentMessage = msg; openReplyTo(id); }
+    }, 500);
+  }
+  if (p.get('action') === 'forward' && p.get('id')) {
+    history.replaceState({},'','/');
+    const id = parseInt(p.get('id'));
+    setTimeout(async () => {
+      const msg = await api('GET', '/messages/'+id);
+      if (msg) { S.currentMessage = msg; openForward(); }
+    }, 500);
+  }
+
   document.addEventListener('keydown', e => {
     if (['INPUT','TEXTAREA','SELECT'].includes(e.target.tagName)) return;
     if (e.target.contentEditable === 'true') return;
@@ -1128,6 +1147,8 @@ function showMessageMenu(e, id) {
       <div class="ctx-submenu">${moveItems}</div>
     </div>` : '';
   showCtxMenu(e,`
+    <div class="ctx-item" onclick="window.open('/message/${id}','_blank');closeMenu()">↗ Open in new tab</div>
+    <div class="ctx-sep"></div>
     <div class="ctx-item" onclick="openReplyTo(${id});closeMenu()">↩ Reply</div>
     <div class="ctx-item" onclick="toggleStar(${id});closeMenu()">${msg?.is_starred?'★ Unstar':'☆ Star'}</div>
     <div class="ctx-item" onclick="markRead(${id},${msg?.is_read?'false':'true'});closeMenu()">${msg?.is_read?'Mark unread':'Mark read'}</div>
@@ -1949,3 +1970,21 @@ window.addEventListener('resize', () => {
     document.getElementById('mob-sidebar-backdrop')?.classList.remove('mob-open');
   }
 });
+
+// ── Compose dropdown ────────────────────────────────────────────────────────
+function toggleComposeDropdown(e) {
+  e.stopPropagation();
+  const dd = document.getElementById('compose-dropdown');
+  if (!dd) return;
+  const isOpen = dd.style.display !== 'none';
+  dd.style.display = isOpen ? 'none' : 'block';
+  if (!isOpen) {
+    // Close on next outside click
+    setTimeout(() => document.addEventListener('click', closeComposeDropdown, { once: true }), 0);
+  }
+}
+
+function closeComposeDropdown() {
+  const dd = document.getElementById('compose-dropdown');
+  if (dd) dd.style.display = 'none';
+}

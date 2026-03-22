@@ -1,0 +1,95 @@
+{{template "base" .}}
+{{define "title"}}Message — GoWebMail{{end}}
+{{define "body_class"}}app-page{{end}}
+
+{{define "body"}}
+<div id="msg-page" style="max-width:860px;margin:0 auto;padding:20px 16px;min-height:100vh">
+  <div style="display:flex;align-items:center;gap:12px;margin-bottom:18px;padding-bottom:14px;border-bottom:1px solid var(--border)">
+    <a href="/" style="color:var(--accent);text-decoration:none;font-size:13px;display:flex;align-items:center;gap:4px">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
+      Back to GoWebMail
+    </a>
+    <span style="color:var(--border);font-size:16px">|</span>
+    <div id="msg-actions" style="display:flex;gap:8px"></div>
+    <div style="margin-left:auto;display:flex;gap:6px">
+      <button class="btn-secondary" id="btn-reply" style="font-size:12px" onclick="replyFromPage()">↩ Reply</button>
+      <button class="btn-secondary" id="btn-forward" style="font-size:12px" onclick="forwardFromPage()">↪ Forward</button>
+    </div>
+  </div>
+  <div id="msg-content">
+    <div class="spinner" style="margin-top:80px"></div>
+  </div>
+</div>
+{{end}}
+
+{{define "scripts"}}
+<script>
+const msgId = parseInt(location.pathname.split('/').pop());
+
+async function api(method, path, body) {
+  const opts = { method, headers: {} };
+  if (body) { opts.body = JSON.stringify(body); opts.headers['Content-Type'] = 'application/json'; }
+  const r = await fetch('/api' + path, opts);
+  return r.ok ? r.json() : null;
+}
+
+function esc(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+async function load() {
+  const msg = await api('GET', '/messages/' + msgId);
+  if (!msg) { document.getElementById('msg-content').innerHTML = '<p style="color:var(--danger)">Message not found or not accessible.</p>'; return; }
+
+  // Mark read
+  await api('PUT', '/messages/' + msgId + '/read', { read: true });
+
+  document.title = (msg.subject || '(no subject)') + ' — GoWebMail';
+
+  const atts = msg.attachments || [];
+  const attHtml = atts.length ? `
+    <div style="padding:12px 0;border-top:1px solid var(--border);display:flex;flex-wrap:wrap;gap:8px">
+      ${atts.map(a => `<a href="/api/messages/${msgId}/attachments/${a.id}" download="${esc(a.filename)}"
+        style="display:inline-flex;align-items:center;gap:6px;padding:5px 10px;background:var(--surface3);
+        border:1px solid var(--border2);border-radius:6px;font-size:12px;color:var(--text);text-decoration:none">
+        📎 ${esc(a.filename)} <span style="color:var(--muted)">(${(a.size/1024).toFixed(0)}KB)</span></a>`).join('')}
+    </div>` : '';
+
+  document.getElementById('msg-content').innerHTML = `
+    <h1 style="font-size:22px;font-weight:600;margin-bottom:16px;line-height:1.3">${esc(msg.subject || '(no subject)')}</h1>
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px;flex-wrap:wrap;gap:8px">
+      <div>
+        <span style="font-size:14px;font-weight:500">${esc(msg.from_name || msg.from_email)}</span>
+        ${msg.from_name ? `<span style="font-size:13px;color:var(--muted)">&lt;${esc(msg.from_email)}&gt;</span>` : ''}
+        <div style="font-size:12px;color:var(--muted);margin-top:2px">To: ${esc(msg.to_list || '')}</div>
+      </div>
+      <span style="font-size:12px;color:var(--muted);white-space:nowrap">${esc(msg.date ? new Date(msg.date).toLocaleString() : '')}</span>
+    </div>
+    <div style="border:1px solid var(--border);border-radius:8px;overflow:hidden;margin-bottom:12px">
+      <iframe id="msg-iframe" sandbox="allow-same-origin" style="width:100%;border:none;min-height:400px;background:white"></iframe>
+    </div>
+    ${attHtml}`;
+
+  // Write body into sandboxed iframe
+  const iframe = document.getElementById('msg-iframe');
+  const doc = iframe.contentDocument || iframe.contentWindow.document;
+  doc.open();
+  doc.write(`<!DOCTYPE html><html><head><style>
+    body{font-family:sans-serif;font-size:14px;line-height:1.6;padding:16px;margin:0;color:#111;word-break:break-word}
+    img{max-width:100%;height:auto}a{color:#0078D4}
+  </style></head><body>${msg.body_html || '<pre style="white-space:pre-wrap">' + (msg.body_text||'') + '</pre>'}</body></html>`);
+  doc.close();
+  // Auto-resize iframe
+  setTimeout(() => {
+    try { iframe.style.height = (doc.documentElement.scrollHeight + 20) + 'px'; } catch(e) {}
+  }, 200);
+}
+
+function replyFromPage() {
+  window.location = '/?action=reply&id=' + msgId;
+}
+function forwardFromPage() {
+  window.location = '/?action=forward&id=' + msgId;
+}
+
+load();
+</script>
+{{end}}

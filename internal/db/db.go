@@ -2,7 +2,9 @@
 package db
 
 import (
+	"crypto/rand"
 	"database/sql"
+	"encoding/base64"
 	"fmt"
 	"strings"
 	"time"
@@ -246,6 +248,62 @@ func (d *DB) Migrate() error {
 		UNIQUE(user_id)
 	)`); err != nil {
 		return fmt.Errorf("create user_ip_rules: %w", err)
+	}
+
+	if _, err := d.sql.Exec(`CREATE TABLE IF NOT EXISTS contacts (
+		id           INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		display_name TEXT    NOT NULL DEFAULT '',
+		email        TEXT    NOT NULL DEFAULT '',
+		phone        TEXT    NOT NULL DEFAULT '',
+		company      TEXT    NOT NULL DEFAULT '',
+		notes        TEXT    NOT NULL DEFAULT '',
+		avatar_color TEXT    NOT NULL DEFAULT '#6b7280',
+		created_at   DATETIME DEFAULT (datetime('now')),
+		updated_at   DATETIME DEFAULT (datetime('now'))
+	)`); err != nil {
+		return fmt.Errorf("create contacts: %w", err)
+	}
+	if _, err := d.sql.Exec(`CREATE INDEX IF NOT EXISTS idx_contacts_user ON contacts(user_id)`); err != nil {
+		return fmt.Errorf("index contacts_user: %w", err)
+	}
+
+	if _, err := d.sql.Exec(`CREATE TABLE IF NOT EXISTS calendar_events (
+		id              INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		account_id      INTEGER REFERENCES email_accounts(id) ON DELETE SET NULL,
+		uid             TEXT    NOT NULL DEFAULT '',
+		title           TEXT    NOT NULL DEFAULT '',
+		description     TEXT    NOT NULL DEFAULT '',
+		location        TEXT    NOT NULL DEFAULT '',
+		start_time      DATETIME NOT NULL,
+		end_time        DATETIME NOT NULL,
+		all_day         INTEGER NOT NULL DEFAULT 0,
+		recurrence_rule TEXT    NOT NULL DEFAULT '',
+		color           TEXT    NOT NULL DEFAULT '',
+		status          TEXT    NOT NULL DEFAULT 'confirmed',
+		organizer_email TEXT    NOT NULL DEFAULT '',
+		attendees       TEXT    NOT NULL DEFAULT '',
+		ical_source     TEXT    NOT NULL DEFAULT '',
+		created_at      DATETIME DEFAULT (datetime('now')),
+		updated_at      DATETIME DEFAULT (datetime('now')),
+		UNIQUE(user_id, uid)
+	)`); err != nil {
+		return fmt.Errorf("create calendar_events: %w", err)
+	}
+	if _, err := d.sql.Exec(`CREATE INDEX IF NOT EXISTS idx_calendar_user_time ON calendar_events(user_id, start_time)`); err != nil {
+		return fmt.Errorf("index calendar_user_time: %w", err)
+	}
+
+	if _, err := d.sql.Exec(`CREATE TABLE IF NOT EXISTS caldav_tokens (
+		id         INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		token      TEXT    NOT NULL UNIQUE,
+		label      TEXT    NOT NULL DEFAULT 'CalDAV token',
+		created_at DATETIME DEFAULT (datetime('now')),
+		last_used  DATETIME
+	)`); err != nil {
+		return fmt.Errorf("create caldav_tokens: %w", err)
 	}
 
 	// Bootstrap admin account if no users exist
@@ -2184,4 +2242,268 @@ func (d *DB) ListIPBlocksWithUsername() ([]IPBlockWithUsername, error) {
 		result = append(result, b)
 	}
 	return result, rows.Err()
+}
+
+// ======== Contacts ========
+
+func (d *DB) ListContacts(userID int64) ([]*models.Contact, error) {
+	rows, err := d.sql.Query(`
+		SELECT id, user_id, display_name, email, phone, company, notes, avatar_color, created_at, updated_at
+		FROM contacts WHERE user_id=? ORDER BY display_name COLLATE NOCASE`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*models.Contact
+	for rows.Next() {
+		var c models.Contact
+		var dn, em, ph, co, no, av []byte
+		rows.Scan(&c.ID, &c.UserID, &dn, &em, &ph, &co, &no, &av, &c.CreatedAt, &c.UpdatedAt)
+		c.DisplayName, _ = d.enc.Decrypt(string(dn))
+		c.Email, _ = d.enc.Decrypt(string(em))
+		c.Phone, _ = d.enc.Decrypt(string(ph))
+		c.Company, _ = d.enc.Decrypt(string(co))
+		c.Notes, _ = d.enc.Decrypt(string(no))
+		c.AvatarColor, _ = d.enc.Decrypt(string(av))
+		out = append(out, &c)
+	}
+	return out, nil
+}
+
+func (d *DB) GetContact(id, userID int64) (*models.Contact, error) {
+	var c models.Contact
+	var dn, em, ph, co, no, av []byte
+	err := d.sql.QueryRow(`
+		SELECT id, user_id, display_name, email, phone, company, notes, avatar_color, created_at, updated_at
+		FROM contacts WHERE id=? AND user_id=?`, id, userID).
+		Scan(&c.ID, &c.UserID, &dn, &em, &ph, &co, &no, &av, &c.CreatedAt, &c.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	c.DisplayName, _ = d.enc.Decrypt(string(dn))
+	c.Email, _ = d.enc.Decrypt(string(em))
+	c.Phone, _ = d.enc.Decrypt(string(ph))
+	c.Company, _ = d.enc.Decrypt(string(co))
+	c.Notes, _ = d.enc.Decrypt(string(no))
+	c.AvatarColor, _ = d.enc.Decrypt(string(av))
+	return &c, nil
+}
+
+func (d *DB) CreateContact(c *models.Contact) error {
+	dn, _ := d.enc.Encrypt(c.DisplayName)
+	em, _ := d.enc.Encrypt(c.Email)
+	ph, _ := d.enc.Encrypt(c.Phone)
+	co, _ := d.enc.Encrypt(c.Company)
+	no, _ := d.enc.Encrypt(c.Notes)
+	av, _ := d.enc.Encrypt(c.AvatarColor)
+	res, err := d.sql.Exec(`
+		INSERT INTO contacts (user_id, display_name, email, phone, company, notes, avatar_color)
+		VALUES (?,?,?,?,?,?,?)`, c.UserID, dn, em, ph, co, no, av)
+	if err != nil {
+		return err
+	}
+	c.ID, _ = res.LastInsertId()
+	return nil
+}
+
+func (d *DB) UpdateContact(c *models.Contact, userID int64) error {
+	dn, _ := d.enc.Encrypt(c.DisplayName)
+	em, _ := d.enc.Encrypt(c.Email)
+	ph, _ := d.enc.Encrypt(c.Phone)
+	co, _ := d.enc.Encrypt(c.Company)
+	no, _ := d.enc.Encrypt(c.Notes)
+	av, _ := d.enc.Encrypt(c.AvatarColor)
+	_, err := d.sql.Exec(`
+		UPDATE contacts SET display_name=?, email=?, phone=?, company=?, notes=?, avatar_color=?,
+		updated_at=datetime('now') WHERE id=? AND user_id=?`,
+		dn, em, ph, co, no, av, c.ID, userID)
+	return err
+}
+
+func (d *DB) DeleteContact(id, userID int64) error {
+	_, err := d.sql.Exec(`DELETE FROM contacts WHERE id=? AND user_id=?`, id, userID)
+	return err
+}
+
+func (d *DB) SearchContacts(userID int64, q string) ([]*models.Contact, error) {
+	all, err := d.ListContacts(userID)
+	if err != nil {
+		return nil, err
+	}
+	q = strings.ToLower(q)
+	var out []*models.Contact
+	for _, c := range all {
+		if strings.Contains(strings.ToLower(c.DisplayName), q) ||
+			strings.Contains(strings.ToLower(c.Email), q) ||
+			strings.Contains(strings.ToLower(c.Company), q) {
+			out = append(out, c)
+		}
+	}
+	return out, nil
+}
+
+// ======== Calendar Events ========
+
+func (d *DB) ListCalendarEvents(userID int64, from, to string) ([]*models.CalendarEvent, error) {
+	rows, err := d.sql.Query(`
+		SELECT e.id, e.user_id, e.account_id, e.uid, e.title, e.description, e.location,
+		       e.start_time, e.end_time, e.all_day, e.recurrence_rule, e.color,
+		       e.status, e.organizer_email, e.attendees,
+		       COALESCE(a.color,''), COALESCE(a.email_address,'')
+		FROM calendar_events e
+		LEFT JOIN email_accounts a ON a.id = e.account_id
+		WHERE e.user_id=? AND e.start_time >= ? AND e.start_time <= ?
+		ORDER BY e.start_time`, userID, from, to)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanCalendarEvents(d, rows)
+}
+
+func (d *DB) GetCalendarEvent(id, userID int64) (*models.CalendarEvent, error) {
+	rows, err := d.sql.Query(`
+		SELECT e.id, e.user_id, e.account_id, e.uid, e.title, e.description, e.location,
+		       e.start_time, e.end_time, e.all_day, e.recurrence_rule, e.color,
+		       e.status, e.organizer_email, e.attendees,
+		       COALESCE(a.color,''), COALESCE(a.email_address,'')
+		FROM calendar_events e
+		LEFT JOIN email_accounts a ON a.id = e.account_id
+		WHERE e.id=? AND e.user_id=?`, id, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	evs, err := scanCalendarEvents(d, rows)
+	if err != nil || len(evs) == 0 {
+		return nil, err
+	}
+	return evs[0], nil
+}
+
+func scanCalendarEvents(d *DB, rows interface{ Next() bool; Scan(...interface{}) error }) ([]*models.CalendarEvent, error) {
+	var out []*models.CalendarEvent
+	for rows.Next() {
+		var e models.CalendarEvent
+		var accountID *int64
+		var ti, de, lo, rc, co, st, oe, at []byte
+		err := rows.Scan(
+			&e.ID, &e.UserID, &accountID, &e.UID,
+			&ti, &de, &lo,
+			&e.StartTime, &e.EndTime, &e.AllDay, &rc, &co,
+			&st, &oe, &at,
+			&e.AccountColor, &e.AccountEmail,
+		)
+		if err != nil {
+			return nil, err
+		}
+		e.AccountID = accountID
+		e.Title, _ = d.enc.Decrypt(string(ti))
+		e.Description, _ = d.enc.Decrypt(string(de))
+		e.Location, _ = d.enc.Decrypt(string(lo))
+		e.RecurrenceRule, _ = d.enc.Decrypt(string(rc))
+		e.Color, _ = d.enc.Decrypt(string(co))
+		e.Status, _ = d.enc.Decrypt(string(st))
+		e.OrganizerEmail, _ = d.enc.Decrypt(string(oe))
+		e.Attendees, _ = d.enc.Decrypt(string(at))
+		if e.Color == "" && e.AccountColor != "" {
+			e.Color = e.AccountColor
+		}
+		out = append(out, &e)
+	}
+	return out, nil
+}
+
+func (d *DB) UpsertCalendarEvent(e *models.CalendarEvent) error {
+	ti, _ := d.enc.Encrypt(e.Title)
+	de, _ := d.enc.Encrypt(e.Description)
+	lo, _ := d.enc.Encrypt(e.Location)
+	rc, _ := d.enc.Encrypt(e.RecurrenceRule)
+	co, _ := d.enc.Encrypt(e.Color)
+	st, _ := d.enc.Encrypt(e.Status)
+	oe, _ := d.enc.Encrypt(e.OrganizerEmail)
+	at, _ := d.enc.Encrypt(e.Attendees)
+	allDay := 0
+	if e.AllDay {
+		allDay = 1
+	}
+	if e.UID == "" {
+		e.UID = fmt.Sprintf("gwm-%d-%d", e.UserID, time.Now().UnixNano())
+	}
+	res, err := d.sql.Exec(`
+		INSERT INTO calendar_events
+			(user_id, account_id, uid, title, description, location,
+			 start_time, end_time, all_day, recurrence_rule, color,
+			 status, organizer_email, attendees)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		ON CONFLICT(user_id, uid) DO UPDATE SET
+			title=excluded.title, description=excluded.description,
+			location=excluded.location, start_time=excluded.start_time,
+			end_time=excluded.end_time, all_day=excluded.all_day,
+			recurrence_rule=excluded.recurrence_rule, color=excluded.color,
+			status=excluded.status, organizer_email=excluded.organizer_email,
+			attendees=excluded.attendees,
+			updated_at=datetime('now')`,
+		e.UserID, e.AccountID, e.UID, ti, de, lo,
+		e.StartTime, e.EndTime, allDay, rc, co, st, oe, at)
+	if err != nil {
+		return err
+	}
+	if e.ID == 0 {
+		e.ID, _ = res.LastInsertId()
+	}
+	return nil
+}
+
+func (d *DB) DeleteCalendarEvent(id, userID int64) error {
+	_, err := d.sql.Exec(`DELETE FROM calendar_events WHERE id=? AND user_id=?`, id, userID)
+	return err
+}
+
+// ======== CalDAV Tokens ========
+
+func (d *DB) CreateCalDAVToken(userID int64, label string) (*models.CalDAVToken, error) {
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return nil, err
+	}
+	token := base64.URLEncoding.EncodeToString(raw)
+	_, err := d.sql.Exec(`INSERT INTO caldav_tokens (user_id, token, label) VALUES (?,?,?)`,
+		userID, token, label)
+	if err != nil {
+		return nil, err
+	}
+	return &models.CalDAVToken{UserID: userID, Token: token, Label: label}, nil
+}
+
+func (d *DB) ListCalDAVTokens(userID int64) ([]*models.CalDAVToken, error) {
+	rows, err := d.sql.Query(`
+		SELECT id, user_id, token, label, created_at, COALESCE(last_used,'')
+		FROM caldav_tokens WHERE user_id=? ORDER BY created_at DESC`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*models.CalDAVToken
+	for rows.Next() {
+		var t models.CalDAVToken
+		rows.Scan(&t.ID, &t.UserID, &t.Token, &t.Label, &t.CreatedAt, &t.LastUsed)
+		out = append(out, &t)
+	}
+	return out, nil
+}
+
+func (d *DB) DeleteCalDAVToken(id, userID int64) error {
+	_, err := d.sql.Exec(`DELETE FROM caldav_tokens WHERE id=? AND user_id=?`, id, userID)
+	return err
+}
+
+func (d *DB) GetUserByCalDAVToken(token string) (int64, error) {
+	var userID int64
+	err := d.sql.QueryRow(`SELECT user_id FROM caldav_tokens WHERE token=?`, token).Scan(&userID)
+	if err != nil {
+		return 0, err
+	}
+	d.sql.Exec(`UPDATE caldav_tokens SET last_used=datetime('now') WHERE token=?`, token)
+	return userID, nil
 }

@@ -1,0 +1,220 @@
+{{template "base" .}}
+{{define "title"}}Compose — GoWebMail{{end}}
+{{define "body_class"}}app-page{{end}}
+
+{{define "body"}}
+<div id="compose-page" style="max-width:860px;margin:0 auto;padding:20px 16px;min-height:100vh">
+  <div style="display:flex;align-items:center;gap:12px;margin-bottom:18px;padding-bottom:14px;border-bottom:1px solid var(--border)">
+    <a href="/" style="color:var(--accent);text-decoration:none;font-size:13px;display:flex;align-items:center;gap:4px">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
+      Back to GoWebMail
+    </a>
+    <span style="color:var(--border);font-size:16px">|</span>
+    <span id="compose-page-title" style="font-size:14px;color:var(--text2)">New Message</span>
+    <div style="margin-left:auto;display:flex;gap:6px">
+      <button class="btn-secondary" id="save-draft-btn" onclick="saveDraft()" style="font-size:12px">Save Draft</button>
+      <button class="modal-submit" id="send-page-btn" onclick="sendFromPage()" style="font-size:13px;padding:7px 18px">Send</button>
+    </div>
+  </div>
+
+  <div id="compose-page-form">
+    <!-- From -->
+    <div style="display:flex;align-items:center;border-bottom:1px solid var(--border);padding:8px 0;gap:8px">
+      <span style="font-size:12px;color:var(--muted);width:48px;flex-shrink:0">From</span>
+      <select id="cp-from" style="flex:1;background:transparent;border:none;color:var(--text);font-size:13px;outline:none;cursor:pointer"></select>
+    </div>
+    <!-- To -->
+    <div style="display:flex;align-items:flex-start;border-bottom:1px solid var(--border);padding:8px 0;gap:8px">
+      <span style="font-size:12px;color:var(--muted);width:48px;flex-shrink:0;padding-top:6px">To</span>
+      <div id="cp-to-tags" class="tag-field" style="flex:1;min-height:30px"></div>
+    </div>
+    <!-- CC -->
+    <div style="display:flex;align-items:flex-start;border-bottom:1px solid var(--border);padding:8px 0;gap:8px">
+      <span style="font-size:12px;color:var(--muted);width:48px;flex-shrink:0;padding-top:6px">CC</span>
+      <div id="cp-cc-tags" class="tag-field" style="flex:1;min-height:30px"></div>
+    </div>
+    <!-- Subject -->
+    <div style="display:flex;align-items:center;border-bottom:1px solid var(--border);padding:8px 0;gap:8px">
+      <span style="font-size:12px;color:var(--muted);width:48px;flex-shrink:0">Subject</span>
+      <input id="cp-subject" type="text" placeholder="Subject" style="flex:1;background:transparent;border:none;color:var(--text);font-size:14px;outline:none;font-family:'DM Sans',sans-serif">
+    </div>
+    <!-- Body -->
+    <div id="cp-editor" contenteditable="true" style="min-height:400px;padding:16px 0;outline:none;font-size:14px;line-height:1.6;color:var(--text)" data-placeholder="Write your message…"></div>
+    <!-- Attachments -->
+    <div style="border-top:1px solid var(--border);padding:10px 0;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+      <label style="cursor:pointer;font-size:12px;color:var(--muted);display:flex;align-items:center;gap:4px">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><path d="M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5c0-1.38 1.12-2.5 2.5-2.5s2.5 1.12 2.5 2.5v10.5c0 .55-.45 1-1 1s-1-.45-1-1V6H10v9.5c0 1.38 1.12 2.5 2.5 2.5s2.5-1.12 2.5-2.5V5c0-2.21-1.79-4-4-4S7 2.79 7 5v12.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5V6h-1.5z"/></svg>
+        Attach file
+        <input type="file" multiple style="display:none" onchange="addPageAttachments(this.files)">
+      </label>
+      <div id="cp-att-list" style="display:flex;flex-wrap:wrap;gap:6px"></div>
+    </div>
+  </div>
+  <div id="cp-status" style="font-size:13px;color:var(--muted);margin-top:8px"></div>
+</div>
+{{end}}
+
+{{define "scripts"}}
+<script>
+// Parse URL params
+const params = new URLSearchParams(location.search);
+const replyId = parseInt(params.get('reply_id') || '0');
+const forwardId = parseInt(params.get('forward_id') || '0');
+const cpAttachments = [];
+
+async function apiCall(method, path, body) {
+  const opts = { method, headers: {} };
+  if (body instanceof FormData) { opts.body = body; }
+  else if (body) { opts.body = JSON.stringify(body); opts.headers['Content-Type'] = 'application/json'; }
+  const r = await fetch('/api' + path, opts);
+  return r.ok ? r.json() : null;
+}
+
+function esc(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+// Tag field (simple comma/enter separated)
+function initTagField(id) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.innerHTML = '<input class="tag-input" type="email" multiple style="border:none;background:transparent;outline:none;color:var(--text);font-size:13px;min-width:180px;font-family:\'DM Sans\',sans-serif">';
+  const inp = el.querySelector('input');
+  inp.addEventListener('keydown', e => {
+    if (e.key === 'Enter' || e.key === ',' || e.key === 'Tab') {
+      e.preventDefault();
+      const v = inp.value.trim().replace(/,$/, '');
+      if (v) addTagTo(id, v);
+      inp.value = '';
+    } else if (e.key === 'Backspace' && !inp.value) {
+      const tags = el.querySelectorAll('.tag-chip');
+      if (tags.length) tags[tags.length-1].remove();
+    }
+  });
+  inp.addEventListener('blur', () => {
+    const v = inp.value.trim().replace(/,$/, '');
+    if (v) { addTagTo(id, v); inp.value = ''; }
+  });
+}
+
+function addTagTo(fieldId, email) {
+  const el = document.getElementById(fieldId);
+  const inp = el.querySelector('input');
+  const chip = document.createElement('span');
+  chip.className = 'tag-chip';
+  chip.style.cssText = 'display:inline-flex;align-items:center;gap:4px;padding:2px 8px;background:var(--accent-dim);color:var(--accent);border-radius:12px;font-size:12px;margin:2px';
+  chip.innerHTML = `${esc(email)}<span style="cursor:pointer;margin-left:2px" onclick="this.parentNode.remove()">×</span>`;
+  el.insertBefore(chip, inp);
+}
+
+function getTagValues(fieldId) {
+  const el = document.getElementById(fieldId);
+  return Array.from(el.querySelectorAll('.tag-chip')).map(c => c.textContent.replace('×','').trim()).filter(Boolean);
+}
+
+function addPageAttachments(files) {
+  for (const f of files) {
+    cpAttachments.push(f);
+    const chip = document.createElement('span');
+    chip.style.cssText = 'font-size:11px;padding:3px 8px;background:var(--surface3);border:1px solid var(--border2);border-radius:4px;color:var(--text2)';
+    chip.textContent = f.name;
+    document.getElementById('cp-att-list').appendChild(chip);
+  }
+}
+
+async function loadAccounts() {
+  const accounts = await apiCall('GET', '/accounts') || [];
+  const sel = document.getElementById('cp-from');
+  accounts.forEach(a => {
+    const opt = document.createElement('option');
+    opt.value = a.id;
+    opt.textContent = `${a.display_name || a.email_address} <${a.email_address}>`;
+    sel.appendChild(opt);
+  });
+}
+
+async function prefillReply() {
+  if (!replyId) return;
+  document.getElementById('compose-page-title').textContent = 'Reply';
+  const msg = await apiCall('GET', '/messages/' + replyId);
+  if (!msg) return;
+  document.title = 'Reply: ' + (msg.subject || '') + ' — GoWebMail';
+  document.getElementById('cp-subject').value = msg.subject?.startsWith('Re:') ? msg.subject : 'Re: ' + (msg.subject || '');
+  addTagTo('cp-to-tags', msg.from_email || '');
+  const editor = document.getElementById('cp-editor');
+  editor.innerHTML = `<br><br><div style="border-left:3px solid #ccc;padding-left:12px;color:#666;margin-top:8px">
+    <div style="font-size:12px;margin-bottom:4px">On ${msg.date ? new Date(msg.date).toLocaleString() : ''}, ${esc(msg.from_email)} wrote:</div>
+    ${msg.body_html || '<pre>' + (msg.body_text||'') + '</pre>'}
+  </div>`;
+  // Set from to same account
+  if (msg.account_id) {
+    const sel = document.getElementById('cp-from');
+    for (const opt of sel.options) { if (parseInt(opt.value) === msg.account_id) { opt.selected = true; break; } }
+  }
+}
+
+async function prefillForward() {
+  if (!forwardId) return;
+  document.getElementById('compose-page-title').textContent = 'Forward';
+  const msg = await apiCall('GET', '/messages/' + forwardId);
+  if (!msg) return;
+  document.title = 'Forward: ' + (msg.subject || '') + ' — GoWebMail';
+  document.getElementById('cp-subject').value = 'Fwd: ' + (msg.subject || '');
+  const editor = document.getElementById('cp-editor');
+  editor.innerHTML = `<br><br><div style="border-left:3px solid #ccc;padding-left:12px;color:#666;margin-top:8px">
+    <div style="font-size:12px;margin-bottom:4px">---------- Forwarded message ----------<br>From: ${esc(msg.from_email)}<br>Subject: ${esc(msg.subject)}</div>
+    ${msg.body_html || '<pre>' + (msg.body_text||'') + '</pre>'}
+  </div>`;
+}
+
+async function sendFromPage() {
+  const btn = document.getElementById('send-page-btn');
+  const accountId = parseInt(document.getElementById('cp-from').value || '0');
+  const to = getTagValues('cp-to-tags');
+  if (!accountId || !to.length) { document.getElementById('cp-status').textContent = 'From account and To address required.'; return; }
+  btn.disabled = true; btn.textContent = 'Sending…';
+
+  const meta = {
+    account_id: accountId,
+    to,
+    cc: getTagValues('cp-cc-tags'),
+    bcc: [],
+    subject: document.getElementById('cp-subject').value,
+    body_html: document.getElementById('cp-editor').innerHTML,
+    body_text: document.getElementById('cp-editor').innerText,
+    in_reply_to_id: replyId || 0,
+    forward_from_id: forwardId || 0,
+  };
+
+  let r;
+  const endpoint = replyId ? '/reply' : forwardId ? '/forward' : '/send';
+  if (cpAttachments.length) {
+    const fd = new FormData();
+    fd.append('meta', JSON.stringify(meta));
+    cpAttachments.forEach(f => fd.append('file', f, f.name));
+    const resp = await fetch('/api' + endpoint, { method: 'POST', body: fd });
+    r = await resp.json().catch(() => null);
+  } else {
+    r = await apiCall('POST', endpoint, meta);
+  }
+
+  btn.disabled = false; btn.textContent = 'Send';
+  if (r?.ok) {
+    document.getElementById('cp-status').innerHTML = '✓ Message sent! <a href="/" style="color:var(--accent)">Back to inbox</a>';
+    document.getElementById('compose-page-form').style.opacity = '0.5';
+    document.getElementById('compose-page-form').style.pointerEvents = 'none';
+  } else {
+    document.getElementById('cp-status').textContent = r?.error || 'Send failed.';
+  }
+}
+
+async function saveDraft() {
+  document.getElementById('cp-status').textContent = 'Draft saving not yet supported in standalone view.';
+}
+
+// Init
+initTagField('cp-to-tags');
+initTagField('cp-cc-tags');
+loadAccounts();
+if (replyId) prefillReply();
+else if (forwardId) prefillForward();
+</script>
+{{end}}

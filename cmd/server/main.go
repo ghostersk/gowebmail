@@ -1,13 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -74,6 +77,17 @@ func main() {
 		log.Fatalf("config load: %v", err)
 	}
 	logger.Init(cfg.Debug)
+
+	// Install a filtered log writer that suppresses harmless go-imap v1 parser
+	// noise ("atom contains forbidden char", "bad brackets nesting") which appears
+	// on Gmail connections due to non-standard server responses. These don't affect
+	// functionality — go-imap recovers and continues syncing correctly.
+	log.SetOutput(&filteredWriter{w: os.Stderr, suppress: []string{
+		"imap/client:",
+		"atom contains forbidden",
+		"atom contains bad",
+		"bad brackets nesting",
+	}})
 
 	database, err := db.New(cfg.DBPath, cfg.EncryptionKey)
 	if err != nil {
@@ -155,6 +169,8 @@ func main() {
 	app := r.PathPrefix("").Subrouter()
 	app.Use(middleware.RequireAuth(database, cfg))
 	app.HandleFunc("/", h.App.Index).Methods("GET")
+	app.HandleFunc("/message/{id:[0-9]+}", h.App.ViewMessage).Methods("GET")
+	app.HandleFunc("/compose", h.App.ComposePage).Methods("GET")
 
 	// Admin UI
 	adminUI := r.PathPrefix("/admin").Subrouter()
@@ -243,6 +259,28 @@ func main() {
 
 	// Search
 	api.HandleFunc("/search", h.API.Search).Methods("GET")
+
+	// Contacts
+	api.HandleFunc("/contacts", h.API.ListContacts).Methods("GET")
+	api.HandleFunc("/contacts", h.API.CreateContact).Methods("POST")
+	api.HandleFunc("/contacts/{id:[0-9]+}", h.API.GetContact).Methods("GET")
+	api.HandleFunc("/contacts/{id:[0-9]+}", h.API.UpdateContact).Methods("PUT")
+	api.HandleFunc("/contacts/{id:[0-9]+}", h.API.DeleteContact).Methods("DELETE")
+
+	// Calendar events
+	api.HandleFunc("/calendar/events", h.API.ListCalendarEvents).Methods("GET")
+	api.HandleFunc("/calendar/events", h.API.CreateCalendarEvent).Methods("POST")
+	api.HandleFunc("/calendar/events/{id:[0-9]+}", h.API.GetCalendarEvent).Methods("GET")
+	api.HandleFunc("/calendar/events/{id:[0-9]+}", h.API.UpdateCalendarEvent).Methods("PUT")
+	api.HandleFunc("/calendar/events/{id:[0-9]+}", h.API.DeleteCalendarEvent).Methods("DELETE")
+
+	// CalDAV API tokens
+	api.HandleFunc("/caldav/tokens", h.API.ListCalDAVTokens).Methods("GET")
+	api.HandleFunc("/caldav/tokens", h.API.CreateCalDAVToken).Methods("POST")
+	api.HandleFunc("/caldav/tokens/{id:[0-9]+}", h.API.DeleteCalDAVToken).Methods("DELETE")
+
+	// CalDAV public feed — token-authenticated, no session needed
+	r.HandleFunc("/caldav/{token}/calendar.ics", h.API.ServeCalDAV).Methods("GET")
 
 	// Admin API
 	adminAPI := r.PathPrefix("/api/admin").Subrouter()
@@ -446,4 +484,21 @@ Note: --list-admin, --pw, and --mfa-off only work on admin accounts.
       Regular user management is done through the web UI.
       Requires the same environment variables as the server (DB_PATH, ENCRYPTION_KEY, etc).
 `)
+}
+
+// filteredWriter wraps an io.Writer and drops log lines containing any of the
+// suppress substrings. Used to silence harmless go-imap internal parser errors.
+type filteredWriter struct {
+	w        io.Writer
+	suppress []string
+}
+
+func (f *filteredWriter) Write(p []byte) (n int, err error) {
+	line := string(bytes.TrimSpace(p))
+	for _, s := range f.suppress {
+		if strings.Contains(line, s) {
+			return len(p), nil // silently drop
+		}
+	}
+	return f.w.Write(p)
 }
