@@ -424,6 +424,24 @@ func (d *DB) Migrate() error {
 		return fmt.Errorf("create pgp_contacts: %w", err)
 	}
 
+	if _, err := d.sql.Exec(`CREATE TABLE IF NOT EXISTS labels (
+		id         INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		name       TEXT    NOT NULL,
+		color      TEXT    NOT NULL,
+		created_at DATETIME DEFAULT (datetime('now')),
+		UNIQUE(user_id, name COLLATE NOCASE)
+	)`); err != nil {
+		return fmt.Errorf("create labels: %w", err)
+	}
+	if _, err := d.sql.Exec(`CREATE TABLE IF NOT EXISTS message_labels (
+		message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+		label_id   INTEGER NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+		PRIMARY KEY (message_id, label_id)
+	)`); err != nil {
+		return fmt.Errorf("create message_labels: %w", err)
+	}
+
 	if _, err := d.sql.Exec(`CREATE TABLE IF NOT EXISTS trusted_certs (
 		id               INTEGER PRIMARY KEY AUTOINCREMENT,
 		account_id       INTEGER NOT NULL REFERENCES email_accounts(id) ON DELETE CASCADE,
@@ -448,6 +466,7 @@ func (d *DB) Migrate() error {
 
 	d.backfillSearchIndex()
 	d.runOnce("sync_all_folders_by_default", d.backfillSyncAllFoldersDefault)
+	d.runOnce("seed_default_labels_existing_users", d.seedDefaultLabelsForExistingUsers)
 
 	// Bootstrap admin account if no users exist
 	return d.bootstrapAdmin()
@@ -533,8 +552,44 @@ func (d *DB) bootstrapAdmin() error {
 	if err != nil {
 		return fmt.Errorf("bootstrap admin: %w", err)
 	}
+	var adminID int64
+	d.sql.QueryRow(`SELECT id FROM users WHERE username='admin'`).Scan(&adminID)
+	d.seedDefaultLabels(adminID)
 	fmt.Println("WARNING: Default admin account created: username=admin password=admin — CHANGE THIS IMMEDIATELY")
 	return nil
+}
+
+// seedDefaultLabels gives a newly created user the starter label set, each a preset color.
+func (d *DB) seedDefaultLabels(userID int64) {
+	defaults := []struct{ name, color string }{
+		{"Important", "#e5484d"},
+		{"Personal", "#5b8def"},
+		{"Work", "#f5a623"},
+		{"ToDo", "#7c5cfc"},
+	}
+	for _, l := range defaults {
+		d.sql.Exec(`INSERT OR IGNORE INTO labels (user_id, name, color) VALUES (?,?,?)`, userID, l.name, l.color)
+	}
+}
+
+// seedDefaultLabelsForExistingUsers backfills the starter label set for users created
+// before the labels feature existed (bootstrapAdmin/CreateUser only seed new users).
+func (d *DB) seedDefaultLabelsForExistingUsers() {
+	rows, err := d.sql.Query(`SELECT id FROM users`)
+	if err != nil {
+		return
+	}
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if rows.Scan(&id) == nil {
+			ids = append(ids, id)
+		}
+	}
+	rows.Close()
+	for _, id := range ids {
+		d.seedDefaultLabels(id)
+	}
 }
 
 // ---- Users ----
@@ -555,6 +610,7 @@ func (d *DB) CreateUser(username, email, password string, role models.UserRole) 
 		return nil, err
 	}
 	id, _ := res.LastInsertId()
+	d.seedDefaultLabels(id)
 	return d.GetUserByID(id)
 }
 
@@ -1296,6 +1352,166 @@ func (d *DB) ListFoldersByAccount(accountID int64) ([]*models.Folder, error) {
 	return folders, rows.Err()
 }
 
+// ---- Labels ----
+
+func (d *DB) ListLabels(userID int64) ([]models.Label, error) {
+	rows, err := d.sql.Query(`SELECT id, user_id, name, color FROM labels WHERE user_id=? ORDER BY name COLLATE NOCASE`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var labels []models.Label
+	for rows.Next() {
+		var l models.Label
+		if err := rows.Scan(&l.ID, &l.UserID, &l.Name, &l.Color); err != nil {
+			return nil, err
+		}
+		labels = append(labels, l)
+	}
+	return labels, rows.Err()
+}
+
+func (d *DB) CreateLabel(userID int64, name, color string) (*models.Label, error) {
+	res, err := d.sql.Exec(`INSERT INTO labels (user_id, name, color) VALUES (?,?,?)`, userID, name, color)
+	if err != nil {
+		if strings.Contains(err.Error(), "UNIQUE") {
+			return nil, fmt.Errorf("a label named %q already exists", name)
+		}
+		return nil, err
+	}
+	id, _ := res.LastInsertId()
+	return &models.Label{ID: id, UserID: userID, Name: name, Color: color}, nil
+}
+
+func (d *DB) UpdateLabel(labelID, userID int64, name, color string) error {
+	_, err := d.sql.Exec(`UPDATE labels SET name=?, color=? WHERE id=? AND user_id=?`, name, color, labelID, userID)
+	if err != nil && strings.Contains(err.Error(), "UNIQUE") {
+		return fmt.Errorf("a label named %q already exists", name)
+	}
+	return err
+}
+
+func (d *DB) DeleteLabel(labelID, userID int64) error {
+	_, err := d.sql.Exec(`DELETE FROM labels WHERE id=? AND user_id=?`, labelID, userID)
+	return err
+}
+
+// AssignLabel attaches a label to a message. Both are scoped to userID so a user can't
+// label another user's message or use another user's label.
+func (d *DB) AssignLabel(messageID, labelID, userID int64) error {
+	_, err := d.sql.Exec(`
+		INSERT OR IGNORE INTO message_labels (message_id, label_id)
+		SELECT m.id, l.id FROM messages m, labels l
+		WHERE m.id=? AND l.id=?
+		  AND m.account_id IN (SELECT id FROM email_accounts WHERE user_id=?)
+		  AND l.user_id=?`,
+		messageID, labelID, userID, userID,
+	)
+	return err
+}
+
+func (d *DB) UnassignLabel(messageID, labelID, userID int64) error {
+	_, err := d.sql.Exec(`
+		DELETE FROM message_labels WHERE message_id=? AND label_id=?
+		AND message_id IN (SELECT m.id FROM messages m WHERE m.account_id IN (SELECT id FROM email_accounts WHERE user_id=?))`,
+		messageID, labelID, userID,
+	)
+	return err
+}
+
+// attachLabels batch-loads labels for a page of message summaries (one query instead of
+// one per row) and fills in each summary's Labels field in place.
+func (d *DB) attachLabels(msgs []models.MessageSummary) {
+	if len(msgs) == 0 {
+		return
+	}
+	idIdx := make(map[int64]int, len(msgs))
+	args := make([]interface{}, len(msgs))
+	for i, m := range msgs {
+		idIdx[m.ID] = i
+		args[i] = m.ID
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(args)), ",")
+	rows, err := d.sql.Query(`
+		SELECT ml.message_id, l.id, l.user_id, l.name, l.color
+		FROM message_labels ml JOIN labels l ON l.id = ml.label_id
+		WHERE ml.message_id IN (`+placeholders+`)`, args...)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var mid int64
+		var l models.Label
+		if rows.Scan(&mid, &l.ID, &l.UserID, &l.Name, &l.Color) == nil {
+			if i, ok := idIdx[mid]; ok {
+				msgs[i].Labels = append(msgs[i].Labels, l)
+			}
+		}
+	}
+}
+
+// ListMessagesByLabel returns all messages (across every account) tagged with labelID,
+// newest first — a virtual folder, same pattern as ListStarredMessages.
+func (d *DB) ListMessagesByLabel(labelID, userID int64, page, pageSize int) (*models.PagedMessages, error) {
+	offset := (page - 1) * pageSize
+	var total int
+	d.sql.QueryRow(`
+		SELECT COUNT(*) FROM message_labels ml
+		JOIN messages m ON m.id = ml.message_id
+		JOIN email_accounts a ON a.id = m.account_id
+		WHERE ml.label_id=? AND a.user_id=?`, labelID, userID).Scan(&total)
+
+	rows, err := d.sql.Query(`
+		SELECT m.id, m.account_id, a.email_address, a.color, m.folder_id, f.name,
+		       m.subject, m.from_name, m.from_email, m.body_text,
+		       m.date, m.is_read, m.is_starred, m.has_attachment
+		FROM message_labels ml
+		JOIN messages m ON m.id = ml.message_id
+		JOIN email_accounts a ON a.id = m.account_id
+		JOIN folders f ON f.id = m.folder_id
+		WHERE ml.label_id=? AND a.user_id=?
+		ORDER BY m.date DESC
+		LIMIT ? OFFSET ?`, labelID, userID, pageSize, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var summaries []models.MessageSummary
+	for rows.Next() {
+		s := models.MessageSummary{}
+		var subjectEnc, fromNameEnc, fromEmailEnc, bodyTextEnc string
+		if err := rows.Scan(
+			&s.ID, &s.AccountID, &s.AccountEmail, &s.AccountColor, &s.FolderID, &s.FolderName,
+			&subjectEnc, &fromNameEnc, &fromEmailEnc, &bodyTextEnc,
+			&s.Date, &s.IsRead, &s.IsStarred, &s.HasAttachment,
+		); err != nil {
+			return nil, err
+		}
+		s.Subject, _ = d.enc.Decrypt(subjectEnc)
+		s.FromName, _ = d.enc.Decrypt(fromNameEnc)
+		s.FromEmail, _ = d.enc.Decrypt(fromEmailEnc)
+		bodyText, _ := d.enc.Decrypt(bodyTextEnc)
+		if len(bodyText) > 120 {
+			bodyText = bodyText[:120] + "…"
+		}
+		s.Preview = bodyText
+		summaries = append(summaries, s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	d.attachLabels(summaries)
+
+	return &models.PagedMessages{
+		Messages: summaries,
+		Total:    total,
+		Page:     page,
+		PageSize: pageSize,
+		HasMore:  offset+len(summaries) < total,
+	}, nil
+}
+
 // ---- Messages ----
 
 func (d *DB) UpsertMessage(m *models.Message) error {
@@ -1401,6 +1617,10 @@ func (d *DB) GetMessage(messageID, userID int64) (*models.Message, error) {
 		m.Attachments = atts
 	}
 
+	summary := []models.MessageSummary{{ID: m.ID}}
+	d.attachLabels(summary)
+	m.Labels = summary[0].Labels
+
 	return m, nil
 }
 
@@ -1469,6 +1689,7 @@ func (d *DB) ListMessages(userID int64, folderIDs []int64, accountID int64, page
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	d.attachLabels(summaries)
 
 	return &models.PagedMessages{
 		Messages: summaries,
@@ -1597,6 +1818,7 @@ func (d *DB) SearchMessages(userID int64, q string, filters SearchFilters, page,
 		s.Preview = bodyText
 		summaries = append(summaries, s)
 	}
+	d.attachLabels(summaries)
 
 	return &models.PagedMessages{
 		Messages: summaries, Total: total, Page: page, PageSize: pageSize,
@@ -1894,6 +2116,7 @@ func (d *DB) ListStarredMessages(userID int64, page, pageSize int) (*models.Page
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	d.attachLabels(summaries)
 	return &models.PagedMessages{
 		Messages: summaries,
 		Total:    total,

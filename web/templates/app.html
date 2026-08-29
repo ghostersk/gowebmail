@@ -110,6 +110,13 @@
             <div class="filter-opt" id="vopt-sidebar-auto" onclick="setViewPref('sidebarMode','auto');event.stopPropagation()">○ Auto-hide (peek on hover)</div>
           </div>
         </div>
+        <div class="filter-dropdown" id="labels-dropdown">
+          <button class="filter-dropdown-btn" id="labels-dropdown-btn" title="Labels" onclick="toggleLabelsDropdown(event)">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M17.63 5.84C17.27 5.33 16.67 5 16 5L5 5.01C3.9 5.01 3 5.9 3 7v10c0 1.1.9 1.99 2 1.99L16 19c.67 0 1.27-.33 1.63-.84L22 12l-4.37-6.16z"/></svg>
+            <span>Labels</span>
+          </button>
+          <div class="filter-dropdown-menu" id="labels-dropdown-menu" style="display:none;min-width:210px"></div>
+        </div>
         <div class="filter-dropdown" id="filter-dropdown">
           <button class="filter-dropdown-btn" id="filter-dropdown-btn" title="Filter &amp; sort" onclick="var m=document.getElementById('filter-dropdown-menu');m.style.display=m.style.display==='block'?'none':'block';event.stopPropagation()">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M10 18h4v-2h-4v2zM3 6v2h18V6H3zm3 7h12v-2H6v2z"/></svg>
@@ -404,6 +411,24 @@
       <button class="modal-cancel" onclick="closeModal('add-account-modal')">Cancel</button>
       <button class="btn-secondary" onclick="testNewConnection()" id="test-btn">Test Connection</button>
       <button class="modal-submit" onclick="addIMAPAccount()" id="save-acct-btn">Connect</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Label Editor Modal (create/rename/recolor) ────────────────────────────── -->
+<div class="modal-overlay" id="label-editor-modal">
+  <div class="modal" style="max-width:360px">
+    <h2 id="label-editor-title">New Label</h2>
+    <input type="hidden" id="label-editor-id">
+    <div class="modal-field"><label>Name</label><input type="text" id="label-editor-name" maxlength="40"></div>
+    <div class="modal-field">
+      <label>Color</label>
+      <div class="label-swatches" id="label-editor-swatches"></div>
+      <input type="color" id="label-editor-custom-color" onchange="pickLabelColor(this.value)" style="width:40px;height:28px;padding:0;border:1px solid var(--border);border-radius:6px;background:none;cursor:pointer">
+    </div>
+    <div class="modal-actions">
+      <button class="modal-cancel" onclick="closeModal('label-editor-modal')">Cancel</button>
+      <button class="modal-submit" onclick="saveLabelEditor()">Save</button>
     </div>
   </div>
 </div>
@@ -755,6 +780,6 @@
 {{end}}
 
 {{define "scripts"}}
-<script src="/static/js/app.js?v=67"></script>
-<script src="/static/js/contacts_calendar.js?v=67"></script>
+<script src="/static/js/app.js?v=70"></script>
+<script src="/static/js/contacts_calendar.js?v=70"></script>
 {{end}}

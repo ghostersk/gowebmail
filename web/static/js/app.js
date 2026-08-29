@@ -3,7 +3,7 @@
 // ── State ──────────────────────────────────────────────────────────────────
 const S = {
   me: null, accounts: [], providers: {gmail:false,outlook:false}, signatures: [],
-  folders: [], messages: [], totalMessages: 0,
+  folders: [], messages: [], totalMessages: 0, labels: [],
   currentPage: 1, currentFolder: 'unified', currentFolderName: 'Unified Inbox',
   currentMessage: null, selectedMessageId: null,
   searchQuery: '', composeMode: 'new', composeReplyToId: null, composeForwardFromId: null,
@@ -139,6 +139,7 @@ async function init() {
 
   await loadAccounts();
   await loadFolders();
+  await loadLabels();
   await loadMessages();
   // Seed poller ID so we don't notify on initial load
   if (S.messages.length > 0) {
@@ -907,6 +908,136 @@ function updateUnreadBadge() {
   badge.textContent=total; badge.style.display=total>0?'':'none';
 }
 
+// ── Labels ─────────────────────────────────────────────────────────────────
+// Local to gowebmail only — not synced to Gmail/Outlook/IMAP (see server-side comment on
+// models.Label for why a reliable cross-provider equivalent doesn't exist).
+const LABEL_PALETTE = ['#e5484d','#f5a623','#f7ce46','#3dd68c','#12b886','#2bb3d6',
+  '#5b8def','#7c5cfc','#c25ee0','#ec4899','#8a8f98','#64748b'];
+
+async function loadLabels() {
+  const data = await api('GET','/labels');
+  S.labels = data || [];
+  renderLabelsDropdown();
+}
+
+// Renders the Labels dropdown (panel-header, next to Filter): click a label to view its
+// messages, or use the inline ✎/🗑 to rename/recolor or delete right from the list.
+function renderLabelsDropdown() {
+  const el = document.getElementById('labels-dropdown-menu');
+  if (!el) return;
+  const rows = S.labels.map(l => `
+    <div class="label-dropdown-row">
+      <span class="nav-label-dot" style="background:${l.color};cursor:pointer" onclick="selectLabel(${l.id},'${esc(l.name)}')"></span>
+      <span class="label-dropdown-name" onclick="selectLabel(${l.id},'${esc(l.name)}')">${esc(l.name)}</span>
+      <span class="label-dropdown-actions">
+        <button onclick="event.stopPropagation();closeLabelsDropdown();openLabelEditor(${l.id})" title="Rename / recolor">✎</button>
+        <button onclick="event.stopPropagation();closeLabelsDropdown();deleteLabelConfirm(${l.id})" title="Delete">🗑</button>
+      </span>
+    </div>`).join('');
+  el.innerHTML = rows + `
+    <div class="filter-sep-line"></div>
+    <div class="label-dropdown-new" onclick="closeLabelsDropdown();openLabelEditor()">+ New label</div>`;
+}
+
+function toggleLabelsDropdown(e) {
+  e.stopPropagation();
+  const menu = document.getElementById('labels-dropdown-menu');
+  if (!menu) return;
+  const isOpen = menu.style.display !== 'none';
+  menu.style.display = isOpen ? 'none' : 'block';
+  if (!isOpen) setTimeout(() => document.addEventListener('click', closeLabelsDropdown, { once: true }), 0);
+}
+function closeLabelsDropdown() {
+  const menu = document.getElementById('labels-dropdown-menu');
+  if (menu) menu.style.display = 'none';
+}
+
+function selectLabel(labelId, name) {
+  closeLabelsDropdown();
+  selectFolder('label:'+labelId, name);
+}
+
+function openLabelEditor(labelId) {
+  const label = labelId ? S.labels.find(l=>l.id===labelId) : null;
+  document.getElementById('label-editor-title').textContent = label ? 'Edit Label' : 'New Label';
+  document.getElementById('label-editor-id').value = labelId || '';
+  document.getElementById('label-editor-name').value = label ? label.name : '';
+  const chosen = label ? label.color : LABEL_PALETTE[0];
+  document.getElementById('label-editor-swatches').innerHTML = LABEL_PALETTE.map(c =>
+    `<span class="label-swatch${c===chosen?' selected':''}" style="background:${c}" data-color="${c}" onclick="pickLabelColor('${c}')"></span>`
+  ).join('');
+  document.getElementById('label-editor-custom-color').value = chosen;
+  openModal('label-editor-modal');
+  setTimeout(()=>document.getElementById('label-editor-name').focus(), 50);
+}
+
+function pickLabelColor(color) {
+  document.getElementById('label-editor-custom-color').value = color;
+  document.querySelectorAll('#label-editor-swatches .label-swatch').forEach(s =>
+    s.classList.toggle('selected', s.dataset.color.toLowerCase() === color.toLowerCase()));
+}
+
+async function saveLabelEditor() {
+  const id = document.getElementById('label-editor-id').value;
+  const name = document.getElementById('label-editor-name').value.trim();
+  const color = document.getElementById('label-editor-custom-color').value;
+  if (!name) { toast('Label name required','error'); return; }
+  const r = id
+    ? await api('PUT','/labels/'+id,{name,color})
+    : await api('POST','/labels',{name,color});
+  if (r?.ok || r?.id) {
+    closeModal('label-editor-modal');
+    toast(id?'Label updated':'Label created','success');
+    await loadLabels();
+    await loadMessages(); // refresh label chips/dots on visible messages
+  } else toast(r?.error || 'Failed to save label','error');
+}
+
+function deleteLabelConfirm(labelId) {
+  const label = S.labels.find(l=>l.id===labelId);
+  inlineConfirm(`Delete label "${label?.name||''}"? It will be removed from all messages.`, async () => {
+    const r = await api('DELETE','/labels/'+labelId);
+    if (r?.ok) {
+      toast('Label deleted','success');
+      if (S.currentFolder === 'label:'+labelId) selectFolder('unified','Unified Inbox');
+      await loadLabels();
+      await loadMessages();
+    } else toast('Delete failed','error');
+  });
+}
+
+// Assigns/unassigns a label on a message and updates local state (list row + open detail)
+// without a full reload.
+async function toggleMessageLabel(msgId, labelId) {
+  const msg = S.messages.find(m=>m.id===msgId) || (S.currentMessage?.id===msgId ? S.currentMessage : null);
+  const has = msg?.labels?.some(l=>l.id===labelId);
+  const r = has
+    ? await api('DELETE','/messages/'+msgId+'/labels/'+labelId)
+    : await api('POST','/messages/'+msgId+'/labels/'+labelId);
+  if (!r?.ok) { toast('Failed to update label','error'); return; }
+  const label = S.labels.find(l=>l.id===labelId);
+  [S.messages.find(m=>m.id===msgId), S.currentMessage?.id===msgId?S.currentMessage:null].forEach(m => {
+    if (!m) return;
+    m.labels = m.labels || [];
+    if (has) m.labels = m.labels.filter(l=>l.id!==labelId);
+    else if (label) m.labels.push(label);
+  });
+  renderMessageList();
+  if (S.currentMessage?.id===msgId) renderMessageDetail(S.currentMessage,false);
+}
+
+function toggleLabelPicker(e, msgId) {
+  e.stopPropagation();
+  const msg = S.currentMessage?.id===msgId ? S.currentMessage : S.messages.find(m=>m.id===msgId);
+  const items = S.labels.map(l => {
+    const on = msg?.labels?.some(x=>x.id===l.id);
+    return `<div class="ctx-item label-picker-item" onclick="toggleMessageLabel(${msgId},${l.id});closeMenu()">
+      <span class="nav-label-dot" style="background:${l.color}"></span>${on?'✓ ':'○ '}${esc(l.name)}
+    </div>`;
+  }).join('') || '<div class="ctx-item" style="color:var(--muted)">No labels yet</div>';
+  showCtxMenu(e, items);
+}
+
 // ── Messages ───────────────────────────────────────────────────────────────
 function selectFolder(folderId, folderName) {
   S.currentFolder=folderId; S.currentFolderName=folderName||S.currentFolderName;
@@ -1029,6 +1160,7 @@ async function loadMessages(append) {
   }
   else if (S.currentFolder==='unified') result=await api('GET',`/messages/unified?page=${S.currentPage}&page_size=50`);
   else if (S.currentFolder==='starred') result=await api('GET',`/messages/starred?page=${S.currentPage}&page_size=50`);
+  else if (String(S.currentFolder).startsWith('label:')) result=await api('GET',`/messages/by-label/${String(S.currentFolder).slice(6)}?page=${S.currentPage}&page_size=50`);
   else result=await api('GET',`/messages?folder_id=${S.currentFolder}&page=${S.currentPage}&page_size=50`);
   if (!result){list.innerHTML='<div class="empty-state"><p>Failed to load</p></div>';return;}
   S.totalMessages=result.total||(result.messages||[]).length;
@@ -1113,6 +1245,7 @@ function renderMessageList() {
         <span class="msg-icons">
           ${m.size?`<span class="msg-size">${formatSize(m.size)}</span>`:''}
           ${m.has_attachment?'<svg width="11" height="11" viewBox="0 0 24 24" fill="var(--muted)"><path d="M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5c0-1.38 1.12-2.5 2.5-2.5s2.5 1.12 2.5 2.5v10.5c0 .55-.45 1-1 1s-1-.45-1-1V6H10v9.5c0 1.38 1.12 2.5 2.5 2.5s2.5-1.12 2.5-2.5V5c0-2.21-1.79-4-4-4S7 2.79 7 5v12.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5V6h-1.5z"/></svg>':''}
+          ${m.labels?.length?`<span class="msg-label-dots">${m.labels.map(l=>`<span class="msg-label-dot" style="background:${l.color}" title="${esc(l.name)}"></span>`).join('')}</span>`:''}
           <span class="msg-star ${m.is_starred?'on':''}" onclick="toggleStar(${m.id},event)">${m.is_starred?'★':'☆'}</span>
         </span>
       </div>
@@ -1341,6 +1474,13 @@ function renderMessageDetail(msg, showRemoteContent) {
         </div>
         <div class="detail-date">${formatFullDate(msg.date)}</div>
       </div>
+      <div class="detail-labels">
+        ${(msg.labels||[]).map(l=>`<span class="label-chip" style="background:${l.color}22;color:${l.color};border-color:${l.color}55">
+          <span class="label-chip-dot" style="background:${l.color}"></span>${esc(l.name)}
+          <button onclick="toggleMessageLabel(${msg.id},${l.id})" title="Remove label">×</button>
+        </span>`).join('')}
+        <button class="label-add-btn" onclick="toggleLabelPicker(event,${msg.id})">+ Label</button>
+      </div>
     </div>
     <div class="detail-actions">
       <button class="action-btn" onclick="openReply()">↩ Reply</button>
@@ -1445,6 +1585,17 @@ function showMessageMenu(e, id) {
       <span class="ctx-sub-arrow">›</span>
       <div class="ctx-submenu">${moveItems}</div>
     </div>` : '';
+  const labelItems = S.labels.map(l => {
+    const on = msg?.labels?.some(x=>x.id===l.id);
+    return `<div class="ctx-item ctx-sub-item label-picker-item" onclick="toggleMessageLabel(${id},${l.id});closeMenu()">
+      <span class="nav-label-dot" style="background:${l.color}"></span>${on?'✓ ':'○ '}${esc(l.name)}
+    </div>`;
+  }).join('');
+  const labelSub = S.labels.length ? `
+    <div class="ctx-item ctx-has-sub">🏷 Label as
+      <span class="ctx-sub-arrow">›</span>
+      <div class="ctx-submenu">${labelItems}</div>
+    </div>` : '';
   showCtxMenu(e,`
     <div class="ctx-item" onclick="window.open('/message/${id}','_blank');closeMenu()">↗ Open in new tab</div>
     <div class="ctx-sep"></div>
@@ -1453,6 +1604,7 @@ function showMessageMenu(e, id) {
     <div class="ctx-item" onclick="markRead(${id},${msg?.is_read?'false':'true'});closeMenu()">${msg?.is_read?'Mark unread':'Mark read'}</div>
     <div class="ctx-sep"></div>
     ${moveSub}
+    ${labelSub}
     <div class="ctx-item" onclick="showMessageHeaders(${id});closeMenu()">⋮ View headers</div>
     <div class="ctx-item" onclick="downloadEML(${id});closeMenu()">⬇ Download .eml</div>
     <div class="ctx-sep"></div>
@@ -2387,6 +2539,20 @@ function showCtxMenu(e, html) {
   requestAnimationFrame(()=>{
     menu.style.left=Math.min(e.clientX,window.innerWidth-menu.offsetWidth-8)+'px';
     menu.style.top=Math.min(e.clientY,window.innerHeight-menu.offsetHeight-8)+'px';
+
+    // Submenus ("Move to", "Label as") default to opening right/below their parent item.
+    // Near a screen edge that pushes them off-view, so measure each one against the
+    // viewport and flip it to the opposite side when it wouldn't fit.
+    menu.querySelectorAll('.ctx-has-sub').forEach(parent=>{
+      const sub=parent.querySelector('.ctx-submenu');
+      if (!sub) return;
+      sub.style.left=''; sub.style.right=''; sub.style.top=''; sub.style.bottom='';
+      sub.style.visibility='hidden'; sub.style.display='block';
+      const pr=parent.getBoundingClientRect(), sw=sub.offsetWidth, sh=sub.offsetHeight;
+      sub.style.display=''; sub.style.visibility='';
+      if (pr.right+sw>window.innerWidth) { sub.style.left='auto'; sub.style.right='100%'; }
+      if (pr.top+sh>window.innerHeight) { sub.style.top='auto'; sub.style.bottom='-4px'; }
+    });
   });
 }
 

@@ -69,6 +69,39 @@ function positionMenu(menu, x, y) {
   menu.style.top  = Math.min(y, window.innerHeight - menu.offsetHeight - 8) + 'px';
 }
 
+// ---- Long-press → right-click (touch devices have no right-click) ----
+// Every context menu in the app is wired via oncontextmenu="...". Touch devices never fire
+// that event, so a ~550ms press-and-hold synthesizes a real 'contextmenu' event at the
+// touch point instead — every existing handler picks it up unchanged.
+(function () {
+  let timer = null, fired = false, start = null;
+  function cancel() { clearTimeout(timer); timer = null; }
+  document.addEventListener('touchstart', e => {
+    if (e.touches.length !== 1) { cancel(); return; }
+    const t = e.touches[0];
+    start = { x: t.clientX, y: t.clientY, target: e.target };
+    fired = false;
+    cancel();
+    timer = setTimeout(() => {
+      fired = true;
+      if (navigator.vibrate) navigator.vibrate(15);
+      start.target.dispatchEvent(new MouseEvent('contextmenu', {
+        bubbles: true, cancelable: true, clientX: start.x, clientY: start.y, view: window,
+      }));
+    }, 550);
+  }, { passive: true });
+  document.addEventListener('touchmove', e => {
+    if (!start || !timer) return;
+    const t = e.touches[0];
+    if (Math.abs(t.clientX - start.x) > 10 || Math.abs(t.clientY - start.y) > 10) cancel();
+  }, { passive: true });
+  document.addEventListener('touchend', e => {
+    cancel();
+    if (fired) { e.preventDefault(); fired = false; } // swallow the tap-through click
+  }, { passive: false });
+  document.addEventListener('touchcancel', cancel, { passive: true });
+})();
+
 // ---- Debounce ----
 function debounce(fn, ms) {
   let t;

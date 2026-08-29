@@ -225,6 +225,13 @@ func main() {
 	api.HandleFunc("/messages/{id:[0-9]+}/attachments/{att_id:[0-9]+}", h.API.DownloadAttachment).Methods("GET")
 	api.HandleFunc("/messages/{id:[0-9]+}", h.API.DeleteMessage).Methods("DELETE")
 	api.HandleFunc("/messages/starred", h.API.StarredMessages).Methods("GET")
+	api.HandleFunc("/messages/by-label/{id:[0-9]+}", h.API.MessagesByLabel).Methods("GET")
+	api.HandleFunc("/messages/{id:[0-9]+}/labels/{label_id:[0-9]+}", h.API.AssignLabel).Methods("POST")
+	api.HandleFunc("/messages/{id:[0-9]+}/labels/{label_id:[0-9]+}", h.API.UnassignLabel).Methods("DELETE")
+	api.HandleFunc("/labels", h.API.ListLabels).Methods("GET")
+	api.HandleFunc("/labels", h.API.CreateLabel).Methods("POST")
+	api.HandleFunc("/labels/{id:[0-9]+}", h.API.UpdateLabel).Methods("PUT")
+	api.HandleFunc("/labels/{id:[0-9]+}", h.API.DeleteLabel).Methods("DELETE")
 
 	// Remote content whitelist
 	api.HandleFunc("/remote-content-whitelist", h.API.GetRemoteContentWhitelist).Methods("GET")

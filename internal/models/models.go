@@ -126,6 +126,16 @@ type EmailAccount struct {
 	LastSync  time.Time `json:"last_sync"`
 	CreatedAt time.Time `json:"created_at"`
 }
+// Label is a user-defined organizational tag, local to gowebmail (not synced to the mail
+// provider — labels don't have a reliable cross-provider equivalent: Gmail's are IMAP-
+// extension-specific, Outlook's Categories need the Graph API, plain IMAP has none).
+type Label struct {
+	ID     int64  `json:"id"`
+	UserID int64  `json:"user_id"`
+	Name   string `json:"name"`
+	Color  string `json:"color"` // hex, e.g. "#5b8def"
+}
+
 // Folder represents a mailbox folder or Gmail label.
 type Folder struct {
 	ID        int64  `json:"id"`
@@ -188,6 +198,7 @@ type Message struct {
 	IsDraft     bool      `json:"is_draft"`
 	HasAttachment bool    `json:"has_attachment"`
 	Attachments []Attachment `json:"attachments,omitempty"`
+	Labels      []Label   `json:"labels,omitempty"`
 	CreatedAt   time.Time `json:"created_at"`
 }
 
@@ -208,6 +219,7 @@ type MessageSummary struct {
 	IsStarred     bool      `json:"is_starred"`
 	HasAttachment bool      `json:"has_attachment"`
 	Size          int64     `json:"size,omitempty"` // approximate; only populated by search results
+	Labels        []Label   `json:"labels,omitempty"`
 }
 
 // ---- Compose ----

@@ -1214,6 +1214,109 @@ func (h *APIHandler) GetMessageHeaders(w http.ResponseWriter, r *http.Request) {
 	h.writeJSON(w, map[string]interface{}{"headers": headers, "raw": rawHeaders})
 }
 
+// ---- Labels ----
+
+func (h *APIHandler) ListLabels(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.GetUserID(r)
+	labels, err := h.db.ListLabels(userID)
+	if err != nil {
+		h.writeError(w, http.StatusInternalServerError, "failed to list labels")
+		return
+	}
+	h.writeJSON(w, labels)
+}
+
+func (h *APIHandler) CreateLabel(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.GetUserID(r)
+	var req struct{ Name, Color string }
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.writeError(w, http.StatusBadRequest, "invalid request")
+		return
+	}
+	req.Name = strings.TrimSpace(req.Name)
+	if req.Name == "" || req.Color == "" {
+		h.writeError(w, http.StatusBadRequest, "name and color required")
+		return
+	}
+	label, err := h.db.CreateLabel(userID, req.Name, req.Color)
+	if err != nil {
+		h.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	h.writeJSON(w, label)
+}
+
+func (h *APIHandler) UpdateLabel(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.GetUserID(r)
+	labelID := pathInt64(r, "id")
+	var req struct{ Name, Color string }
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.writeError(w, http.StatusBadRequest, "invalid request")
+		return
+	}
+	req.Name = strings.TrimSpace(req.Name)
+	if req.Name == "" || req.Color == "" {
+		h.writeError(w, http.StatusBadRequest, "name and color required")
+		return
+	}
+	if err := h.db.UpdateLabel(labelID, userID, req.Name, req.Color); err != nil {
+		h.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	h.writeJSON(w, map[string]bool{"ok": true})
+}
+
+func (h *APIHandler) DeleteLabel(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.GetUserID(r)
+	labelID := pathInt64(r, "id")
+	if err := h.db.DeleteLabel(labelID, userID); err != nil {
+		h.writeError(w, http.StatusInternalServerError, "delete failed")
+		return
+	}
+	h.writeJSON(w, map[string]bool{"ok": true})
+}
+
+func (h *APIHandler) AssignLabel(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.GetUserID(r)
+	messageID := pathInt64(r, "id")
+	labelID := pathInt64(r, "label_id")
+	if err := h.db.AssignLabel(messageID, labelID, userID); err != nil {
+		h.writeError(w, http.StatusInternalServerError, "failed to assign label")
+		return
+	}
+	h.writeJSON(w, map[string]bool{"ok": true})
+}
+
+func (h *APIHandler) UnassignLabel(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.GetUserID(r)
+	messageID := pathInt64(r, "id")
+	labelID := pathInt64(r, "label_id")
+	if err := h.db.UnassignLabel(messageID, labelID, userID); err != nil {
+		h.writeError(w, http.StatusInternalServerError, "failed to remove label")
+		return
+	}
+	h.writeJSON(w, map[string]bool{"ok": true})
+}
+
+func (h *APIHandler) MessagesByLabel(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.GetUserID(r)
+	labelID := pathInt64(r, "id")
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	if page < 1 {
+		page = 1
+	}
+	pageSize, _ := strconv.Atoi(r.URL.Query().Get("page_size"))
+	if pageSize < 1 || pageSize > 200 {
+		pageSize = 50
+	}
+	result, err := h.db.ListMessagesByLabel(labelID, userID, page, pageSize)
+	if err != nil {
+		h.writeError(w, http.StatusInternalServerError, "failed to list labeled messages")
+		return
+	}
+	h.writeJSON(w, result)
+}
+
 func (h *APIHandler) StarredMessages(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.GetUserID(r)
 	page, _ := strconv.Atoi(r.URL.Query().Get("page"))

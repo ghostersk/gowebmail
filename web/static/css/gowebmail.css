@@ -276,8 +276,41 @@ body.app-page{overflow:hidden}
 .msg-dot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
 .msg-icons{display:flex;align-items:center;gap:4px;flex-shrink:0}
 .msg-size{font-size:10px;color:var(--muted)}
-.msg-star{color:var(--muted);font-size:11px;cursor:pointer}
+.msg-star{color:var(--muted);font-size:15px;cursor:pointer}
 .msg-star.on{color:var(--star)}
+
+/* ── Labels ──────────────────────────────────────────────────────────────── */
+.msg-label-dots{display:flex;align-items:center;gap:3px;flex-shrink:0}
+.msg-label-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
+.nav-label-dot{width:9px;height:9px;border-radius:50%;flex-shrink:0}
+/* Labels dropdown (panel-header, next to Filter) */
+.label-dropdown-row{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:5px}
+.label-dropdown-row:hover{background:var(--surface3)}
+.label-dropdown-name{flex:1;cursor:pointer;font-size:13px;color:var(--text2)}
+.label-dropdown-row:hover .label-dropdown-name{color:var(--text)}
+.label-dropdown-actions{display:flex;gap:2px;opacity:0;transition:opacity .1s;flex-shrink:0}
+.label-dropdown-row:hover .label-dropdown-actions{opacity:1}
+.label-dropdown-actions button{background:none;border:none;color:var(--muted);cursor:pointer;
+  font-size:11px;padding:3px 5px;border-radius:3px}
+.label-dropdown-actions button:hover{background:var(--surface2);color:var(--text)}
+.label-dropdown-new{padding:7px 12px;border-radius:5px;font-size:13px;cursor:pointer;color:var(--accent)}
+.label-dropdown-new:hover{background:var(--surface3)}
+.detail-labels{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:8px}
+.label-chip{display:inline-flex;align-items:center;gap:5px;padding:2px 4px 2px 8px;border-radius:12px;
+  font-size:11px;font-weight:500;border:1px solid transparent}
+.label-chip-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
+.label-chip button{background:none;border:none;color:inherit;opacity:.6;cursor:pointer;font-size:13px;
+  line-height:1;padding:0 3px}
+.label-chip button:hover{opacity:1}
+.label-add-btn{font-size:11px;color:var(--muted);background:none;border:1px dashed var(--border2);
+  border-radius:12px;padding:2px 10px;cursor:pointer;transition:border-color .15s,color .15s}
+.label-add-btn:hover{border-color:var(--accent);color:var(--accent)}
+.label-picker-item{display:flex;align-items:center;gap:8px}
+.label-swatches{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}
+.label-swatch{width:24px;height:24px;border-radius:50%;cursor:pointer;border:2px solid transparent;
+  transition:transform .1s,border-color .1s}
+.label-swatch:hover{transform:scale(1.1)}
+.label-swatch.selected{border-color:var(--text)}
 
 /* Comfortable density (opt-in via #app-root[data-density="comfortable"]): restores the
    roomier 4-line row with account email and larger padding. */
