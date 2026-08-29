@@ -2,7 +2,7 @@
 
 // ── State ──────────────────────────────────────────────────────────────────
 const S = {
-  me: null, accounts: [], providers: {gmail:false,outlook:false},
+  me: null, accounts: [], providers: {gmail:false,outlook:false}, signatures: [],
   folders: [], messages: [], totalMessages: 0,
   currentPage: 1, currentFolder: 'unified', currentFolderName: 'Unified Inbox',
   currentMessage: null, selectedMessageId: null,
@@ -10,7 +10,13 @@ const S = {
   filterUnread: false, filterAttachment: false,
   sortOrder: 'date-desc', // 'date-desc' | 'date-asc' | 'size-desc'
   uiPrefs: {}, // server-persisted UI preferences (collapsed accounts/folders etc.)
+  // Advanced search filters (Filter icon next to the search box) — cleared by clearSearchFilters().
+  searchFilters: { scope:'', hasAttachment:'', dateFrom:'', dateTo:'', minSizeKB:'', maxSizeKB:'', accountId:'', folderId:'' },
 };
+function hasActiveSearchFilters() {
+  const f = S.searchFilters;
+  return !!(f.scope || f.hasAttachment !== '' || f.dateFrom || f.dateTo || f.minSizeKB || f.maxSizeKB || f.accountId || f.folderId);
+}
 
 // ── UI Preferences (server-persisted, cross-device) ─────────────────────────
 let _uiPrefsSaveTimer = null;
@@ -24,6 +30,96 @@ function uiPrefsSet(key, val) {
 }
 function isAccountCollapsed(accId) { return uiPrefsGet('ac_'+accId, false); }
 function setAccountCollapsed(accId, v) { uiPrefsSet('ac_'+accId, v); }
+
+// ── View settings (density / reading pane position / sidebar mode) ──────────
+function applyViewPrefs() {
+  const density = uiPrefsGet('density', 'compact');
+  const pane = uiPrefsGet('readingPane', 'right');
+  const sidebarMode = uiPrefsGet('sidebarMode', 'expanded');
+  const root = document.getElementById('app-root');
+  if (root) { root.dataset.density = density; root.dataset.readingPane = pane; root.dataset.sidebar = sidebarMode; }
+  [['compact','Compact'],['comfortable','Comfortable']].forEach(([v,label]) => {
+    const el = document.getElementById('vopt-density-'+v);
+    if (el) el.textContent = (v===density?'✓ ':'○ ') + label;
+  });
+  [['right','Right'],['bottom','Bottom']].forEach(([v,label]) => {
+    const el = document.getElementById('vopt-pane-'+v);
+    if (el) el.textContent = (v===pane?'✓ ':'○ ') + label;
+  });
+  [['expanded','Pinned (always visible)'],['collapsed','Minimized'],['auto','Auto-hide (peek on hover)']].forEach(([v,label]) => {
+    const el = document.getElementById('vopt-sidebar-'+v);
+    if (el) el.textContent = (v===sidebarMode?'✓ ':'○ ') + label;
+  });
+  const listPanel = document.querySelector('.message-list-panel');
+  if (listPanel) {
+    const widthPx = uiPrefsGet('panelWidthPx', null);
+    const heightPct = uiPrefsGet('panelHeightPct', null);
+    if (widthPx) listPanel.style.width = widthPx + 'px';
+    if (heightPct) listPanel.style.height = heightPct + '%';
+  }
+}
+
+// ── Draggable list/reading-pane divider (desktop only) ───────────────────────
+// Persisted via uiPrefs (server-side, cross-device) rather than a cookie.
+function initPanelResize() {
+  const handle = document.getElementById('panel-resize-handle');
+  const listPanel = document.querySelector('.message-list-panel');
+  if (!handle || !listPanel) return;
+  let dragging = false;
+  handle.addEventListener('mousedown', e => {
+    dragging = true;
+    handle.classList.add('dragging');
+    document.body.style.userSelect = 'none';
+    e.preventDefault();
+  });
+  document.addEventListener('mousemove', e => {
+    if (!dragging) return;
+    const mailView = document.getElementById('mail-view');
+    const r = mailView.getBoundingClientRect();
+    if (document.getElementById('app-root').dataset.readingPane === 'bottom') {
+      const pct = Math.min(80, Math.max(15, ((e.clientY - r.top) / r.height) * 100));
+      listPanel.style.height = pct + '%';
+    } else {
+      const w = Math.min(680, Math.max(220, e.clientX - r.left));
+      listPanel.style.width = w + 'px';
+    }
+  });
+  document.addEventListener('mouseup', () => {
+    if (!dragging) return;
+    dragging = false;
+    handle.classList.remove('dragging');
+    document.body.style.userSelect = '';
+    if (document.getElementById('app-root').dataset.readingPane === 'bottom') {
+      uiPrefsSet('panelHeightPct', parseFloat(listPanel.style.height));
+    } else {
+      uiPrefsSet('panelWidthPx', parseInt(listPanel.style.width));
+    }
+  });
+}
+function setViewPref(key, val) {
+  uiPrefsSet(key, val);
+  applyViewPrefs();
+  closeViewDropdown();
+}
+// Quick manual toggle (header button + edge tab): flip between fully visible
+// and hidden. Doesn't touch 'auto' as a saved preference — pick that from the
+// View menu; this button just pins/unpins whatever's currently hidden.
+function toggleSidebarCollapse() {
+  const cur = uiPrefsGet('sidebarMode', 'expanded');
+  setViewPref('sidebarMode', cur === 'expanded' ? 'collapsed' : 'expanded');
+}
+function toggleViewDropdown(e) {
+  e.stopPropagation();
+  const menu = document.getElementById('view-dropdown-menu');
+  if (!menu) return;
+  const isOpen = menu.style.display !== 'none';
+  menu.style.display = isOpen ? 'none' : 'block';
+  if (!isOpen) setTimeout(() => document.addEventListener('click', closeViewDropdown, { once: true }), 0);
+}
+function closeViewDropdown() {
+  const menu = document.getElementById('view-dropdown-menu');
+  if (menu) menu.style.display = 'none';
+}
 
 // ── Boot ───────────────────────────────────────────────────────────────────
 async function init() {
@@ -39,6 +135,7 @@ async function init() {
   if (providers) { S.providers = providers; updateProviderButtons(); }
   if (wl?.whitelist) S.remoteWhitelist = new Set(wl.whitelist);
   if (uiPrefsRaw && typeof uiPrefsRaw === 'object') S.uiPrefs = uiPrefsRaw;
+  applyViewPrefs();
 
   await loadAccounts();
   await loadFolders();
@@ -52,22 +149,8 @@ async function init() {
   if (p.get('connected')) {
     toast('Account connected! Loading…', 'success');
     history.replaceState({},'','/');
-    // Reload accounts immediately — new account may already be in DB
     await loadAccounts();
-    await loadFolders();
-    // Poll for folder population (syncer takes a moment after account creation)
-    let tries = 0;
-    const poll = setInterval(async () => {
-      tries++;
-      await loadAccounts();
-      await loadFolders();
-      // Stop when at least one account now has folders, or after ~30s
-      const hasFolders = S.accounts.some(a => S.folders.some(f => f.account_id === a.id));
-      if (hasFolders || tries >= 12) {
-        clearInterval(poll);
-        toast('Account ready!', 'success');
-      }
-    }, 2500);
+    pollForNewFolders();
   }
   if (p.get('error')) { toast('Connection failed: '+p.get('error'), 'error'); history.replaceState({},'','/'); }
 
@@ -98,6 +181,7 @@ async function init() {
   });
 
   initComposeDragResize();
+  initPanelResize();
   startPoller();
   mobSetView('list'); // initialise mobile view state
 }
@@ -111,47 +195,31 @@ function updateProviderButtons() {
   });
 }
 
-// ── Accounts popup ─────────────────────────────────────────────────────────
-function toggleAccountsMenu(e) {
-  e.stopPropagation();
-  const popup = document.getElementById('accounts-popup');
-  const backdrop = document.getElementById('accounts-popup-backdrop');
-  if (popup.classList.contains('open')) {
-    closeAccountsMenu(); return;
-  }
-  renderAccountsPopup();
-  popup.classList.add('open');
-  backdrop.classList.add('open');
-}
-function closeAccountsMenu() {
-  document.getElementById('accounts-popup').classList.remove('open');
-  document.getElementById('accounts-popup-backdrop').classList.remove('open');
-}
-
-function renderAccountsPopup() {
-  const el = document.getElementById('accounts-popup-list');
+// ── Settings: connected-accounts list ────────────────────────────────────────
+function renderAccountsSettingsList() {
+  const el = document.getElementById('settings-accounts-list');
+  if (!el) return; // Settings modal not open yet — nothing to render into
   if (!S.accounts.length) {
     el.innerHTML = '<div style="font-size:12px;color:var(--muted);padding:8px 0">No accounts connected.</div>';
     return;
   }
   el.innerHTML = S.accounts.map(a => {
     const hasWarning = a.last_error || a.token_expired;
-    const warningTitle = a.token_expired ? 'OAuth token expired — click Settings to reconnect' : (a.last_error ? '⚠ '+a.last_error : '');
+    const warningTitle = a.token_expired ? 'OAuth token expired — click Manage to reconnect' : (a.last_error ? '⚠ '+a.last_error : '');
     return `
-    <div class="acct-popup-item" title="${esc(a.email_address)}${hasWarning?' — '+warningTitle:''}">
-      <div style="display:flex;align-items:center;gap:8px;flex:1;min-width:0">
-        <span class="account-dot" style="background:${a.color};flex-shrink:0"></span>
-        <span style="font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(a.display_name||a.email_address)}</span>
-        ${a.token_expired?'<span style="color:var(--danger);font-size:11px" title="OAuth token expired">🔑</span>':
-          a.last_error?'<span style="color:var(--danger);font-size:11px">⚠</span>':''}
+    <div class="acct-row" title="${esc(a.email_address)}${hasWarning?' — '+warningTitle:''}">
+      <span class="account-dot" style="background:${a.color};flex-shrink:0"></span>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(a.display_name||a.email_address)}</div>
+        <div style="font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(a.email_address)}</div>
       </div>
+      ${a.token_expired?'<span style="color:var(--danger);font-size:11px" title="OAuth token expired">🔑</span>':
+        a.last_error?'<span style="color:var(--danger);font-size:11px" title="'+esc(a.last_error)+'">⚠</span>':''}
       <div style="display:flex;gap:4px;flex-shrink:0">
         <button class="icon-btn" title="Sync now" onclick="syncNow(${a.id},event)">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg>
         </button>
-        <button class="icon-btn" title="Settings" onclick="openEditAccount(${a.id})">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
-        </button>
+        <button class="btn-secondary" style="font-size:11px;padding:3px 10px" onclick="openEditAccount(${a.id})">Manage</button>
         <button class="icon-btn" title="Remove" onclick="deleteAccount(${a.id})" style="color:var(--danger)">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
         </button>
@@ -165,8 +233,40 @@ async function loadAccounts() {
   const data = await api('GET','/accounts');
   if (!data) return;
   S.accounts = data;
-  renderAccountsPopup();
+  renderAccountsSettingsList();
   populateComposeFrom();
+  loadSignatures();
+}
+
+// ── Signatures (compose prefill) ────────────────────────────────────────────
+async function loadSignatures() {
+  const data = await api('GET','/signatures');
+  if (data) S.signatures = data;
+}
+
+// Returns the HTML for an account's default-for-new or default-for-reply signature, or ''.
+function getSignatureHTML(accountId, forReply) {
+  const acc = S.accounts.find(a => a.id === accountId);
+  if (!acc) return '';
+  const sigId = forReply ? acc.default_signature_reply_id : acc.default_signature_new_id;
+  if (!sigId) return '';
+  const sig = S.signatures.find(s => s.id === sigId);
+  return sig ? sig.content_html : '';
+}
+
+// Renders the (possibly empty) signature block with a stable id so it can be swapped
+// live if the From-account changes mid-compose, without touching the rest of the body.
+function signatureBlockHTML(accountId, forReply) {
+  const html = getSignatureHTML(accountId, forReply);
+  return `<div id="sig-block">${html ? '<br>' + html : ''}</div>`;
+}
+
+// Bound to #compose-from's change event — swaps just the signature block.
+function onComposeFromChange() {
+  const accountId = parseInt(document.getElementById('compose-from')?.value || 0);
+  const forReply = S.composeMode !== 'new';
+  const block = document.getElementById('sig-block');
+  if (block) block.outerHTML = signatureBlockHTML(accountId, forReply);
 }
 
 function connectOAuth(p) {
@@ -178,34 +278,61 @@ function connectOAuth(p) {
 }
 
 function openAddAccountModal() {
-  ['imap-email','imap-name','imap-password','imap-host','smtp-host'].forEach(id=>{ const el=document.getElementById(id); if(el) el.value=''; });
+  ['imap-email','imap-name','imap-password','imap-host','smtp-host','imap-caldav-url','imap-carddav-url'].forEach(id=>{ const el=document.getElementById(id); if(el) el.value=''; });
   document.getElementById('imap-port').value='993';
   document.getElementById('smtp-port').value='587';
+  document.getElementById('use-jmap').checked=false;
+  toggleJMAPFields();
   const r=document.getElementById('test-result'); if(r){r.style.display='none';r.className='test-result';}
-  closeAccountsMenu();
   openModal('add-account-modal');
+}
+
+// Toggles the Add Account modal between IMAP/SMTP fields and a single JMAP
+// server URL field (JMAP has no separate SMTP host/port or IMAP port — one
+// base URL covers both mail access and sending).
+function toggleJMAPFields() {
+  const jmap=document.getElementById('use-jmap').checked;
+  document.getElementById('imap-port-field').style.display=jmap?'none':'';
+  document.getElementById('smtp-fields').style.display=jmap?'none':'';
+  document.getElementById('imap-hint').style.display=jmap?'none':'';
+  const label=document.getElementById('imap-host-label'), host=document.getElementById('imap-host');
+  label.textContent=jmap?'JMAP Server URL':'IMAP Host';
+  host.placeholder=jmap?'https://mail.example.com:8443':'imap.example.com';
 }
 
 async function testNewConnection() {
   const btn=document.getElementById('test-btn'), result=document.getElementById('test-result');
+  const jmap=document.getElementById('use-jmap').checked;
   const body={email:document.getElementById('imap-email').value.trim(),password:document.getElementById('imap-password').value,
-    imap_host:document.getElementById('imap-host').value.trim(),imap_port:parseInt(document.getElementById('imap-port').value)||993,
-    smtp_host:document.getElementById('smtp-host').value.trim(),smtp_port:parseInt(document.getElementById('smtp-port').value)||587};
-  if (!body.email||!body.password||!body.imap_host){result.textContent='Email, password and IMAP host required.';result.className='test-result err';result.style.display='block';return;}
+    imap_host:document.getElementById('imap-host').value.trim()};
+  if (jmap) { body.provider='jmap'; }
+  else {
+    body.imap_port=parseInt(document.getElementById('imap-port').value)||993;
+    body.smtp_host=document.getElementById('smtp-host').value.trim();
+    body.smtp_port=parseInt(document.getElementById('smtp-port').value)||587;
+  }
+  if (!body.email||!body.password||!body.imap_host){result.textContent=(jmap?'Email, password and JMAP server URL required.':'Email, password and IMAP host required.');result.className='test-result err';result.style.display='block';return;}
   btn.innerHTML='<span class="spinner-inline"></span>Testing...';btn.disabled=true;
-  const r=await api('POST','/accounts/test',body);
+  const r=await api('POST','/accounts/test',body,20000);
   btn.textContent='Test Connection';btn.disabled=false;
-  result.textContent=(r?.ok)?'✓ Connection successful!':((r?.error)||'Connection failed');
+  result.textContent=(r?.ok)?'✓ Connection successful!':((r?.error?.message||r?.error)||'Connection failed');
   result.className='test-result '+((r?.ok)?'ok':'err'); result.style.display='block';
 }
 
 async function addIMAPAccount() {
   const btn=document.getElementById('save-acct-btn');
+  const jmap=document.getElementById('use-jmap').checked;
   const body={email:document.getElementById('imap-email').value.trim(),display_name:document.getElementById('imap-name').value.trim(),
-    password:document.getElementById('imap-password').value,imap_host:document.getElementById('imap-host').value.trim(),
-    imap_port:parseInt(document.getElementById('imap-port').value)||993,smtp_host:document.getElementById('smtp-host').value.trim(),
-    smtp_port:parseInt(document.getElementById('smtp-port').value)||587};
-  if (!body.email||!body.password||!body.imap_host){toast('Email, password and IMAP host required','error');return;}
+    password:document.getElementById('imap-password').value,imap_host:document.getElementById('imap-host').value.trim()};
+  if (jmap) { body.provider='jmap'; }
+  else {
+    body.imap_port=parseInt(document.getElementById('imap-port').value)||993;
+    body.smtp_host=document.getElementById('smtp-host').value.trim();
+    body.smtp_port=parseInt(document.getElementById('smtp-port').value)||587;
+  }
+  body.caldav_url=document.getElementById('imap-caldav-url').value.trim();
+  body.carddav_url=document.getElementById('imap-carddav-url').value.trim();
+  if (!body.email||!body.password||!body.imap_host){toast((jmap?'Email, password and JMAP server URL required':'Email, password and IMAP host required'),'error');return;}
   btn.disabled=true;btn.textContent='Connecting...';
   const r=await api('POST','/accounts',body);
   btn.disabled=false;btn.textContent='Connect';
@@ -213,9 +340,26 @@ async function addIMAPAccount() {
     toast('Account added — syncing…','success');
     closeModal('add-account-modal');
     await loadAccounts();
-    // Background sync takes a moment — reload folders/messages after a short wait
-    setTimeout(async ()=>{ await loadFolders(); await loadMessages(); toast('Sync complete','success'); }, 3000);
+    pollForNewFolders();
   } else toast(r?.error||'Failed to add account','error');
+}
+
+// Repeatedly reloads folders/accounts until the newly-added account's folders show up
+// (initial IMAP sync takes a few seconds), instead of guessing a fixed delay. Also
+// refreshes messages/unread counts so the sidebar updates without a manual page reload.
+function pollForNewFolders() {
+  let tries = 0;
+  const poll = setInterval(async () => {
+    tries++;
+    await loadAccounts();
+    await loadFolders();
+    await loadMessages();
+    const hasFolders = S.accounts.some(a => S.folders.some(f => f.account_id === a.id));
+    if (hasFolders || tries >= 12) {
+      clearInterval(poll);
+      if (hasFolders) toast('Account ready!', 'success');
+    }
+  }, 2500);
 }
 
 async function detectMailSettings() {
@@ -243,8 +387,10 @@ async function syncNow(id, e) {
 }
 
 // ── Edit Account modal ─────────────────────────────────────────────────────
+// Opened from the Settings modal's Accounts tab; stacks above it (see
+// #edit-account-modal z-index in CSS) rather than closing Settings, so
+// Cancel/Save land the user back in Settings automatically.
 async function openEditAccount(id) {
-  closeAccountsMenu();
   const r=await api('GET','/accounts/'+id);
   if (!r) return;
   document.getElementById('edit-account-id').value=id;
@@ -273,13 +419,20 @@ async function openEditAccount(id) {
     };
   }
 
+  const isJMAP = r.provider==='jmap';
   if (!isOAuth) {
     document.getElementById('edit-password').value='';
     document.getElementById('edit-imap-host').value=r.imap_host||'';
     document.getElementById('edit-imap-port').value=r.imap_port||993;
     document.getElementById('edit-smtp-host').value=r.smtp_host||'';
     document.getElementById('edit-smtp-port').value=r.smtp_port||587;
+    document.getElementById('edit-imap-port-field').style.display=isJMAP?'none':'';
+    document.getElementById('edit-smtp-fields').style.display=isJMAP?'none':'';
+    document.getElementById('edit-imap-host-label').textContent=isJMAP?'JMAP Server URL':'IMAP Host';
   }
+
+  document.getElementById('edit-caldav-url').value=r.caldav_url||'';
+  document.getElementById('edit-carddav-url').value=r.carddav_url||'';
 
   document.getElementById('edit-sync-days').value=r.sync_days||30;
   const sel = document.getElementById('edit-sync-mode');
@@ -347,12 +500,18 @@ async function testEditConnection() {
   const btn=document.getElementById('edit-test-btn'), connEl=document.getElementById('edit-conn-result');
   const pw=document.getElementById('edit-password').value, email=document.getElementById('edit-account-email').textContent.trim();
   if (!pw){connEl.textContent='Enter new password to test.';connEl.className='test-result err';connEl.style.display='block';return;}
+  const isJMAP=document.getElementById('edit-imap-port-field').style.display==='none';
+  const testBody={email,password:pw,imap_host:document.getElementById('edit-imap-host').value.trim()};
+  if (isJMAP) { testBody.provider='jmap'; }
+  else {
+    testBody.imap_port=parseInt(document.getElementById('edit-imap-port').value)||993;
+    testBody.smtp_host=document.getElementById('edit-smtp-host').value.trim();
+    testBody.smtp_port=parseInt(document.getElementById('edit-smtp-port').value)||587;
+  }
   btn.innerHTML='<span class="spinner-inline"></span>Testing...';btn.disabled=true;
-  const r=await api('POST','/accounts/test',{email,password:pw,
-    imap_host:document.getElementById('edit-imap-host').value.trim(),imap_port:parseInt(document.getElementById('edit-imap-port').value)||993,
-    smtp_host:document.getElementById('edit-smtp-host').value.trim(),smtp_port:parseInt(document.getElementById('edit-smtp-port').value)||587});
+  const r=await api('POST','/accounts/test',testBody,20000);
   btn.textContent='Test Connection';btn.disabled=false;
-  connEl.textContent=(r?.ok)?'✓ Successful!':((r?.error)||'Failed');
+  connEl.textContent=(r?.ok)?'✓ Successful!':((r?.error?.message||r?.error)||'Failed');
   connEl.className='test-result '+((r?.ok)?'ok':'err'); connEl.style.display='block';
 }
 
@@ -368,6 +527,8 @@ async function saveAccountEdit() {
     const pw=document.getElementById('edit-password').value;
     if (pw) body.password=pw;
   }
+  body.caldav_url=document.getElementById('edit-caldav-url').value.trim();
+  body.carddav_url=document.getElementById('edit-carddav-url').value.trim();
   const modeVal = document.getElementById('edit-sync-mode').value;
   let syncMode='all', syncDays=0;
   if (modeVal==='days') {
@@ -392,7 +553,7 @@ async function deleteAccount(id) {
     'Remove '+(a?a.email_address:'this account')+'? All synced messages will be deleted.',
     async () => {
       const r=await api('DELETE','/accounts/'+id);
-      if (r?.ok){toast('Account removed','success');closeAccountsMenu();loadAccounts();loadFolders();loadMessages();}
+      if (r?.ok){toast('Account removed','success');loadAccounts();loadFolders();loadMessages();}
       else toast('Remove failed','error');
     }
   );
@@ -409,6 +570,22 @@ function inlineConfirm(message, onOk, onCancel) {
   const cleanup = () => { el.classList.remove('open'); ok.onclick=null; cancel.onclick=null; };
   ok.onclick     = () => { cleanup(); onOk && onOk(); };
   cancel.onclick = () => { cleanup(); onCancel && onCancel(); };
+}
+
+// ── Inline prompt (replaces browser prompt()) ──────────────────────────────
+function inlinePrompt(message, onOk, defaultValue) {
+  const el     = document.getElementById('inline-prompt');
+  const msg    = document.getElementById('inline-prompt-msg');
+  const input  = document.getElementById('inline-prompt-input');
+  const ok     = document.getElementById('inline-prompt-ok');
+  const cancel = document.getElementById('inline-prompt-cancel');
+  msg.textContent = message;
+  input.value = defaultValue || '';
+  el.classList.add('open');
+  setTimeout(() => { input.focus(); input.select(); }, 50);
+  const cleanup = () => { el.classList.remove('open'); ok.onclick=null; cancel.onclick=null; };
+  ok.onclick     = () => { const v=input.value.trim(); if(!v) return; cleanup(); onOk && onOk(v); };
+  cancel.onclick = () => { cleanup(); };
 }
 
 // ── Folders ────────────────────────────────────────────────────────────────
@@ -479,8 +656,11 @@ function renderFolders() {
            oncontextmenu="showFolderMenu(event,${f.id})">
         <svg viewBox="0 0 24 24" fill="currentColor">${FOLDER_ICONS[f.folder_type]||FOLDER_ICONS.custom}</svg>
         ${esc(f.name)}
-        ${f.unread_count>0?`<span class="unread-badge">${f.unread_count}</span>`:''}
-        ${!f.sync_enabled?'<span style="font-size:9px;color:var(--muted);margin-left:auto" title="Sync disabled">\u29b8</span>':''}
+        <span class="folder-count-group">
+          ${f.unread_count>0?`<span class="unread-badge">${f.unread_count}</span>`:''}
+          ${f.total_count>0?`<span class="folder-total-count">${f.unread_count>0?'/':''}${f.total_count}</span>`:''}
+        </span>
+        ${!f.sync_enabled?'<span style="font-size:9px;color:var(--muted)" title="Sync disabled">\u29b8</span>':''}
       </div>`).join('');
 
     return `<div class="nav-account-group" data-acc-id="${accId}"
@@ -489,7 +669,8 @@ function renderFolders() {
                  ondragover="accDragOver(event)"
                  ondragleave="accDragLeave(event)"
                  ondrop="accDrop(event,${accId})">
-      <div class="nav-folder-header" onclick="toggleAccountCollapse(${accId})">
+      <div class="nav-folder-header" onclick="toggleAccountCollapse(${accId})"
+           oncontextmenu="showAccountMenu(event,${accId})">
         <span class="acc-drag-handle" title="Drag to reorder" onclick="event.stopPropagation()">&#8942;</span>
         <span style="width:7px;height:7px;border-radius:50%;background:${acc.color};display:inline-block;flex-shrink:0"></span>
         <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
@@ -582,7 +763,12 @@ function showFolderMenu(e, folderId) {
   const disabledCount = S.folders.filter(x=>x.account_id===f.account_id&&!x.sync_enabled).length;
   const enableAllEntry = disabledCount > 0
     ? `<div class="ctx-item" onclick="enableAllFolderSync(${f.account_id});closeMenu()">↻ Enable sync for all folders (${disabledCount})</div>` : '';
+  // Default folders (inbox/sent/drafts/trash/spam) are provider-managed — deleting them
+  // would break sync. Only user-created "custom" folders can be deleted.
+  const deleteEntry = f.folder_type==='custom'
+    ? `<div class="ctx-item danger" onclick="confirmDeleteFolder(${folderId});closeMenu()">🗑 Delete folder</div>` : '';
   showCtxMenu(e, `
+    <div class="ctx-item" onclick="createFolderPrompt(${f.account_id});closeMenu()">📁 New folder</div>
     <div class="ctx-item" onclick="syncFolderNow(${folderId});closeMenu()">↻ Sync this folder</div>
     <div class="ctx-item" onclick="toggleFolderSync(${folderId});closeMenu()">${syncLabel}</div>
     ${enableAllEntry}
@@ -591,7 +777,24 @@ function showFolderMenu(e, folderId) {
     ${moveEntry}
     ${emptyEntry}
     <div class="ctx-item" onclick="confirmHideFolder(${folderId});closeMenu()">👁 Hide from sidebar</div>
-    <div class="ctx-item danger" onclick="confirmDeleteFolder(${folderId});closeMenu()">🗑 Delete folder</div>`);
+    ${deleteEntry}`);
+}
+
+function showAccountMenu(e, accountId) {
+  e.preventDefault(); e.stopPropagation();
+  showCtxMenu(e, `
+    <div class="ctx-item" onclick="createFolderPrompt(${accountId});closeMenu()">📁 New folder</div>`);
+}
+
+function createFolderPrompt(accountId) {
+  inlinePrompt('New folder name:', async (name) => {
+    const r = await api('POST', '/accounts/'+accountId+'/folders', { name });
+    if (r?.ok) {
+      S.folders.push(r.folder);
+      toast('Folder created', 'success');
+      renderFolders();
+    } else toast(r?.error || 'Create failed', 'error');
+  });
 }
 
 async function syncFolderNow(folderId) {
@@ -709,6 +912,8 @@ function selectFolder(folderId, folderName) {
   S.currentFolder=folderId; S.currentFolderName=folderName||S.currentFolderName;
   S.currentPage=1; S.messages=[]; S.searchQuery='';
   document.getElementById('search-input').value='';
+  if (hasActiveSearchFilters()) clearSearchFiltersQuiet();
+  const sfp=document.getElementById('search-filters-panel'); if (sfp) sfp.style.display='none';
   document.getElementById('panel-title').textContent=folderName||S.currentFolderName;
   document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
   const navEl=folderId==='unified'?document.getElementById('nav-unified')
@@ -726,11 +931,102 @@ const handleSearch=debounce(q=>{
   loadMessages();
 },350);
 
+// ── Advanced search filters (scope, attachment, date range, size) ───────────
+// Lives at the end of <body> (position:fixed), same reasoning as #compose-dropdown —
+// its old spot inside .message-list-panel got clipped/overflowed in reading-pane
+// "bottom" mode (fixed-height list panel). Positioned via JS under the search bar.
+function toggleSearchFilters(e) {
+  if (e) e.stopPropagation();
+  const panel = document.getElementById('search-filters-panel');
+  const bar = document.querySelector('.search-bar');
+  if (!panel || !bar) return;
+  const isOpen = panel.style.display !== 'none';
+  document.removeEventListener('click', closeSearchFiltersOutside);
+  if (isOpen) { panel.style.display = 'none'; return; }
+  populateMailboxScopeOptions();
+  const r = bar.getBoundingClientRect();
+  panel.style.display = 'block';
+  panel.style.width = r.width + 'px';
+  panel.style.left = r.left + 'px';
+  panel.style.top = Math.min(r.bottom + 4, window.innerHeight - 60) + 'px';
+  setTimeout(() => document.addEventListener('click', closeSearchFiltersOutside), 0);
+}
+function closeSearchFiltersOutside(e) {
+  const panel = document.getElementById('search-filters-panel');
+  const btn = document.getElementById('search-filters-btn');
+  if (!panel || panel.contains(e.target) || (btn && btn.contains(e.target))) return;
+  panel.style.display = 'none';
+  document.removeEventListener('click', closeSearchFiltersOutside);
+}
+// Offers "this account" / "this folder" only when a real folder is currently selected
+// (not Unified Inbox / Starred, which don't map to a single account or folder).
+function populateMailboxScopeOptions() {
+  const sel = document.getElementById('sf-mailbox-scope');
+  if (!sel) return;
+  const prev = sel.value;
+  sel.innerHTML = '<option value="">All mailboxes</option>';
+  const cur = S.folders.find(f => String(f.id) === String(S.currentFolder));
+  if (cur) {
+    const acc = S.accounts.find(a => a.id === cur.account_id);
+    const accLabel = acc ? (acc.display_name || acc.email_address) : 'this account';
+    sel.innerHTML += `<option value="account:${cur.account_id}">This account: ${esc(accLabel)}</option>`;
+    sel.innerHTML += `<option value="folder:${cur.id}">This folder: ${esc(cur.name)}</option>`;
+  }
+  if ([...sel.options].some(o => o.value === prev)) sel.value = prev;
+}
+function applySearchFilters() {
+  const f = S.searchFilters;
+  f.scope = document.getElementById('sf-scope').value;
+  f.hasAttachment = document.getElementById('sf-attachment').value;
+  f.dateFrom = document.getElementById('sf-date-from').value;
+  f.dateTo = document.getElementById('sf-date-to').value;
+  const olderDays = document.getElementById('sf-older-days').value;
+  if (olderDays) {
+    const cutoff = new Date(Date.now() - olderDays * 86400000);
+    f.dateTo = cutoff.toISOString().slice(0, 10);
+    document.getElementById('sf-date-to').value = f.dateTo;
+  }
+  f.minSizeKB = document.getElementById('sf-min-size').value;
+  f.maxSizeKB = document.getElementById('sf-max-size').value;
+  const mb = document.getElementById('sf-mailbox-scope').value; // "" | "account:<id>" | "folder:<id>"
+  f.accountId = mb.startsWith('account:') ? mb.slice(8) : '';
+  f.folderId = mb.startsWith('folder:') ? mb.slice(7) : '';
+  document.getElementById('search-filters-btn').classList.toggle('active', hasActiveSearchFilters());
+  S.currentPage = 1;
+  loadMessages();
+}
+// Resets filter state/UI without triggering a reload — for callers (like selectFolder)
+// that are about to call loadMessages() themselves right after.
+function clearSearchFiltersQuiet() {
+  S.searchFilters = { scope:'', hasAttachment:'', dateFrom:'', dateTo:'', minSizeKB:'', maxSizeKB:'', accountId:'', folderId:'' };
+  ['sf-attachment','sf-date-from','sf-date-to','sf-older-days','sf-min-size','sf-max-size','sf-mailbox-scope']
+    .forEach(id => { const el=document.getElementById(id); if (el) el.value=''; });
+  const scopeEl=document.getElementById('sf-scope'); if (scopeEl) scopeEl.value='all'; // "" isn't a valid <option> here
+  const btn=document.getElementById('search-filters-btn'); if (btn) btn.classList.remove('active');
+}
+function clearSearchFilters() {
+  clearSearchFiltersQuiet();
+  S.currentPage = 1;
+  loadMessages();
+}
+
 async function loadMessages(append) {
   const list=document.getElementById('message-list');
   if (!append) list.innerHTML='<div class="spinner" style="margin-top:60px"></div>';
   let result;
-  if (S.searchQuery) result=await api('GET',`/search?q=${encodeURIComponent(S.searchQuery)}&page=${S.currentPage}&page_size=50`);
+  if (S.searchQuery || hasActiveSearchFilters()) {
+    const f = S.searchFilters;
+    let url = `/search?q=${encodeURIComponent(S.searchQuery)}&page=${S.currentPage}&page_size=50`;
+    if (f.scope) url += `&scope=${f.scope}`;
+    if (f.hasAttachment !== '') url += `&has_attachment=${f.hasAttachment}`;
+    if (f.dateFrom) url += `&date_from=${f.dateFrom}`;
+    if (f.dateTo) url += `&date_to=${f.dateTo}`;
+    if (f.minSizeKB) url += `&min_size_kb=${f.minSizeKB}`;
+    if (f.maxSizeKB) url += `&max_size_kb=${f.maxSizeKB}`;
+    if (f.accountId) url += `&account_id=${f.accountId}`;
+    if (f.folderId) url += `&folder_id=${f.folderId}`;
+    result=await api('GET',url);
+  }
   else if (S.currentFolder==='unified') result=await api('GET',`/messages/unified?page=${S.currentPage}&page_size=50`);
   else if (S.currentFolder==='starred') result=await api('GET',`/messages/starred?page=${S.currentPage}&page_size=50`);
   else result=await api('GET',`/messages?folder_id=${S.currentFolder}&page=${S.currentPage}&page_size=50`);
@@ -805,17 +1101,20 @@ function renderMessageList() {
          oncontextmenu="showMessageMenu(event,${m.id})"
          ondragstart="handleMsgDragStart(event,${m.id})">
       <div class="msg-top">
+        <span class="msg-unread-dot" title="${m.is_read?'':'Unread'}"></span>
+        <span class="msg-dot" style="background:${m.account_color}" title="${esc(m.account_email||'')}"></span>
         <span class="msg-from">${esc(m.from_name||m.from_email)}</span>
         <span class="msg-date">${formatDate(m.date)}</span>
       </div>
-      <div class="msg-subject">${esc(m.subject||'(no subject)')}</div>
-      <div class="msg-preview">${esc(m.preview||'')}</div>
-      <div class="msg-meta">
-        <span class="msg-dot" style="background:${m.account_color}"></span>
-        <span class="msg-acct">${esc(m.account_email||'')}</span>
-        ${m.size?`<span style="font-size:10px;color:var(--muted);margin-left:4px">${formatSize(m.size)}</span>`:''}
-        ${m.has_attachment?'<svg width="11" height="11" viewBox="0 0 24 24" fill="var(--muted)" style="margin-left:4px"><path d="M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5c0-1.38 1.12-2.5 2.5-2.5s2.5 1.12 2.5 2.5v10.5c0 .55-.45 1-1 1s-1-.45-1-1V6H10v9.5c0 1.38 1.12 2.5 2.5 2.5s2.5-1.12 2.5-2.5V5c0-2.21-1.79-4-4-4S7 2.79 7 5v12.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5V6h-1.5z"/></svg>':''}
-        <span class="msg-star ${m.is_starred?'on':''}" onclick="toggleStar(${m.id},event)">${m.is_starred?'★':'☆'}</span>
+      <div class="msg-line2">
+        <span class="msg-text" title="${esc(m.subject||'(no subject)')}">
+          <span class="msg-subject">${esc(m.subject||'(no subject)')}</span>${m.preview?` — <span class="msg-preview">${esc(m.preview)}</span>`:''}
+        </span>
+        <span class="msg-icons">
+          ${m.size?`<span class="msg-size">${formatSize(m.size)}</span>`:''}
+          ${m.has_attachment?'<svg width="11" height="11" viewBox="0 0 24 24" fill="var(--muted)"><path d="M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5c0-1.38 1.12-2.5 2.5-2.5s2.5 1.12 2.5 2.5v10.5c0 .55-.45 1-1 1s-1-.45-1-1V6H10v9.5c0 1.38 1.12 2.5 2.5 2.5s2.5-1.12 2.5-2.5V5c0-2.21-1.79-4-4-4S7 2.79 7 5v12.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5V6h-1.5z"/></svg>':''}
+          <span class="msg-star ${m.is_starred?'on':''}" onclick="toggleStar(${m.id},event)">${m.is_starred?'★':'☆'}</span>
+        </span>
       </div>
     </div>`).join('')+(S.messages.length<S.totalMessages
     ?`<div class="load-more"><button class="load-more-btn" onclick="loadMoreMessages()">Load more</button></div>`:'');
@@ -1232,11 +1531,14 @@ function openCompose(opts={}) {
   document.getElementById('compose-subject').value=opts.subject||'';
   document.getElementById('cc-row').style.display='none';
   document.getElementById('bcc-row').style.display='none';
-  const editor=document.getElementById('compose-editor');
-  editor.innerHTML=opts.body||'';
-  S.draftDirty=false;
-  updateAttachList();
   populateComposeFrom(opts.accountId||null);
+  const editor=document.getElementById('compose-editor');
+  const fromAccountId=parseInt(document.getElementById('compose-from')?.value||0);
+  const forReply=S.composeMode!=='new';
+  editor.innerHTML=(opts.body||'') + (opts.skipSignature?'':signatureBlockHTML(fromAccountId, forReply));
+  S.draftDirty=false;
+  S.draftUID=0; // IMAP UID of this compose session's autosaved draft, once one exists
+  updateAttachList();
   showCompose();
   setTimeout(()=>{ const inp=document.querySelector('#compose-to .tag-input'); if(inp) inp.focus(); },80);
   startDraftAutosave();
@@ -1262,11 +1564,19 @@ function restoreCompose() {
 }
 
 function closeCompose(skipCheck) {
-  if (!skipCheck && S.draftDirty) {
-    inlineConfirm('Save draft before closing?',
-      ()=>{ saveDraft(); _closeCompose(); },
-      ()=>{ _closeCompose(); }
-    );
+  // Only interrupt closing when there's something to decide about: unsaved edits, or a
+  // draft that autosave already wrote to the server (which "keep editing" should leave
+  // in place, but a bare close-without-asking would silently orphan).
+  if (!skipCheck && (S.draftDirty || S.draftUID)) {
+    const el = document.getElementById('draft-close-confirm');
+    const cancelBtn = document.getElementById('draft-close-cancel');
+    const deleteBtn = document.getElementById('draft-close-delete');
+    const saveBtn   = document.getElementById('draft-close-save');
+    el.classList.add('open');
+    const cleanup = () => { el.classList.remove('open'); cancelBtn.onclick=null; deleteBtn.onclick=null; saveBtn.onclick=null; };
+    cancelBtn.onclick = () => { cleanup(); }; // keep editing — compose panel stays open
+    deleteBtn.onclick = async () => { cleanup(); await discardDraft(); _closeCompose(); };
+    saveBtn.onclick   = async () => { cleanup(); await saveDraft(); _closeCompose(); };
     return;
   }
   _closeCompose();
@@ -1409,10 +1719,21 @@ async function saveDraft(silent) {
     subject:document.getElementById('compose-subject').value,
     body_html:editor.innerHTML.trim(),
     body_text:editor.innerText.trim(),
+    draft_uid:S.draftUID||0,
   };
   const r=await api('POST','/draft',meta);
-  if(!silent) toast('Draft saved','success');
-  else if(r?.ok) toast('Draft auto-saved to server','success');
+  if(r?.ok){ S.draftUID=r.draft_uid||S.draftUID; if(!silent) toast('Draft saved','success'); else toast('Draft auto-saved to server','success'); }
+  else if(!silent) toast(r?.error||'Draft save failed','error');
+}
+
+// Deletes the draft that autosave already wrote to the server for this compose session
+// (identified by its IMAP UID). No-op if nothing was ever saved.
+async function discardDraft() {
+  if (!S.draftUID) return;
+  const accountId=parseInt(document.getElementById('compose-from')?.value||0);
+  if (!accountId) return;
+  await api('POST','/draft/discard',{account_id:accountId, draft_uid:S.draftUID});
+  S.draftUID=0;
 }
 
 // ── Compose formatting ─────────────────────────────────────────────────────
@@ -1602,15 +1923,360 @@ function initComposeDragResize() {
 // ── Settings ───────────────────────────────────────────────────────────────
 async function openSettings() {
   openModal('settings-modal');
+  showSettingsTab('accounts');
   loadSyncInterval();
   renderMFAPanel();
   loadIPRules();
+  populateSettingsAccountSelects();
   // Pre-fill profile fields with current values
   const me = await api('GET', '/me');
   if (me) {
     document.getElementById('profile-username').placeholder = me.username || 'New username';
     document.getElementById('profile-email').placeholder = me.email || 'New email';
   }
+}
+
+// ── Settings: tabs ───────────────────────────────────────────────────────
+let _settingsTabsLoaded = {};
+
+function showSettingsTab(tab) {
+  document.querySelectorAll('.settings-nav button').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+  document.querySelectorAll('.settings-panel').forEach(p => p.classList.toggle('active', p.dataset.tab === tab));
+  if (_settingsTabsLoaded[tab]) return;
+  _settingsTabsLoaded[tab] = true;
+  if (tab === 'accounts') { renderAccountsSettingsList(); }
+  else if (tab === 'rules') { addRuleConditionRow(); loadRules(); }
+  else if (tab === 'signatures') { renderSignaturesList(); renderSignatureDefaultsForm(); }
+  else if (tab === 'certs') { loadCerts(); }
+}
+
+function accountOptionsHTML() {
+  return S.accounts.map(a => `<option value="${a.id}">${esc(a.display_name||a.email_address)} &lt;${esc(a.email_address)}&gt;</option>`).join('');
+}
+
+function populateSettingsAccountSelects() {
+  ['rules-account-select', 'certs-account-select', 'sig-defaults-account-select'].forEach(id => {
+    const sel = document.getElementById(id);
+    if (sel && !sel.options.length) sel.innerHTML = accountOptionsHTML();
+  });
+}
+
+// ── Settings: Rules ──────────────────────────────────────────────────────
+function addRuleConditionRow() {
+  const wrap = document.getElementById('rule-conditions');
+  const row = document.createElement('div');
+  row.className = 'rule-condition-row';
+  row.style.cssText = 'display:flex;gap:6px;margin-bottom:8px;align-items:center';
+  row.innerHTML = `
+    <select class="rc-field" style="flex:1">
+      <option value="from">From</option><option value="to">To</option><option value="subject">Subject</option>
+      <option value="body">Body</option><option value="has_attachment">Has attachment</option><option value="recipient_type">Recipient type</option>
+    </select>
+    <select class="rc-op" style="flex:1"><option value="contains">contains</option><option value="equals">equals</option><option value="starts_with">starts with</option></select>
+    <input class="rc-value" type="text" placeholder="value" style="flex:1">
+    <button class="icon-btn" onclick="this.closest('.rule-condition-row').remove()" title="Remove">&times;</button>`;
+  wrap.appendChild(row);
+}
+
+function updateRuleActionFields() {
+  const action = document.getElementById('rule-action').value;
+  const valField = document.getElementById('rule-action-value-field');
+  const valLabel = valField.querySelector('label');
+  const valInput = document.getElementById('rule-action-value');
+  const bodyField = document.getElementById('rule-autoreply-body-field');
+  bodyField.style.display = action === 'auto_reply' ? 'block' : 'none';
+  if (action === 'move_to_folder') { valField.style.display = ''; valLabel.textContent = 'Folder name'; valInput.placeholder = 'folder name'; }
+  else if (action === 'forward') { valField.style.display = ''; valLabel.textContent = 'Forward to'; valInput.placeholder = 'someone@example.com'; }
+  else if (action === 'auto_reply') { valField.style.display = ''; valLabel.textContent = 'Reply subject'; valInput.placeholder = 'Out of office'; }
+  else { valField.style.display = 'none'; }
+}
+
+let _rulesCache = [];
+
+async function loadRules() {
+  const accountId = parseInt(document.getElementById('rules-account-select')?.value || 0);
+  const el = document.getElementById('rules-list');
+  if (!accountId) { el.innerHTML = '<p style="color:var(--muted);font-size:13px">Connect an account first.</p>'; return; }
+  const rules = await api('GET', '/rules?account_id=' + accountId);
+  _rulesCache = rules || [];
+  if (!rules || !rules.length) { el.innerHTML = '<p style="color:var(--muted);font-size:13px">No rules yet.</p>'; return; }
+  el.innerHTML = `<table class="data-table">
+    <thead><tr><th>Name</th><th>Priority</th><th>Action</th><th>Active</th><th></th></tr></thead>
+    <tbody>${rules.map(r => `
+      <tr>
+        <td style="font-weight:500">${esc(r.name)}</td>
+        <td style="color:var(--muted)">${r.priority}</td>
+        <td style="color:var(--muted)">${esc(r.action)}${r.action_value?' → '+esc(r.action_value):''}</td>
+        <td><input type="checkbox" ${r.is_active?'checked':''} onchange="toggleRuleActive(${r.id},${accountId},this.checked)"></td>
+        <td><button class="btn-danger" style="padding:4px 10px;font-size:12px" onclick="deleteRule(${r.id},${accountId})">Delete</button></td>
+      </tr>`).join('')}
+    </tbody></table>`;
+}
+
+async function saveRule() {
+  const accountId = parseInt(document.getElementById('rules-account-select')?.value || 0);
+  if (!accountId) { toast('Connect an account first', 'err'); return; }
+  const conditions = [...document.querySelectorAll('#rule-conditions .rule-condition-row')].map(row => ({
+    field: row.querySelector('.rc-field').value, op: row.querySelector('.rc-op').value, value: row.querySelector('.rc-value').value.trim(),
+  })).filter(c => c.value);
+  if (!conditions.length) { toast('Add at least one condition', 'err'); return; }
+  const action = document.getElementById('rule-action').value;
+  const body = {
+    account_id: accountId,
+    name: document.getElementById('rule-name').value.trim() || 'Untitled rule',
+    priority: parseInt(document.getElementById('rule-priority').value) || 0,
+    match_type: document.getElementById('rule-match-type').value,
+    conditions, action,
+    action_value: document.getElementById('rule-action-value').value.trim(),
+    action_options: action === 'auto_reply' ? { body: document.getElementById('rule-autoreply-body').value } : {},
+    is_active: true,
+  };
+  const r = await api('POST', '/rules', body);
+  if (r && r.ok) { toast('Rule added'); document.getElementById('rule-name').value=''; document.getElementById('rule-conditions').innerHTML=''; addRuleConditionRow(); loadRules(); }
+  else toast(r?.error || 'Failed to save rule', 'err');
+}
+
+async function toggleRuleActive(id, accountId, checked) {
+  const rule = _rulesCache.find(r => r.id === id);
+  if (!rule) return;
+  rule.is_active = checked;
+  await api('PUT', '/rules/' + id, rule);
+}
+
+async function deleteRule(id, accountId) {
+  await api('DELETE', '/rules/' + id + '?account_id=' + accountId);
+  loadRules();
+}
+
+// ── Settings: Signatures ─────────────────────────────────────────────────
+function renderSignaturesList() {
+  const el = document.getElementById('signatures-list');
+  if (!S.signatures.length) { el.innerHTML = '<p style="color:var(--muted);font-size:13px">No signatures yet.</p>'; return; }
+  el.innerHTML = S.signatures.map(s => `
+    <div class="settings-group" style="padding-bottom:12px;margin-bottom:12px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+        <b>${esc(s.name)}</b>
+        <button class="btn-danger" style="padding:4px 10px;font-size:12px" onclick="deleteSignature(${s.id})">Delete</button>
+      </div>
+      <div style="font-size:13px;color:var(--text2);white-space:pre-wrap;background:var(--surface2);padding:8px;border-radius:6px">${s.content_html}</div>
+    </div>`).join('');
+}
+
+async function saveSignature() {
+  const name = document.getElementById('sig-name').value.trim();
+  if (!name) { toast('Name required', 'err'); return; }
+  const content_html = document.getElementById('sig-content').value;
+  const r = await api('POST', '/signatures', { name, content_html });
+  if (r && r.ok) {
+    toast('Signature added');
+    document.getElementById('sig-name').value = ''; document.getElementById('sig-content').value = '';
+    await loadSignatures(); renderSignaturesList(); renderSignatureDefaultsForm();
+  } else toast(r?.error || 'Failed to save', 'err');
+}
+
+async function deleteSignature(id) {
+  await api('DELETE', '/signatures/' + id);
+  await loadSignatures(); renderSignaturesList(); renderSignatureDefaultsForm();
+}
+
+function renderSignatureDefaultsForm() {
+  const accountId = parseInt(document.getElementById('sig-defaults-account-select')?.value || 0);
+  const el = document.getElementById('sig-defaults-form');
+  if (!el) return;
+  if (!accountId) { el.innerHTML = '<p style="color:var(--muted);font-size:13px">Connect an account first.</p>'; return; }
+  const acc = S.accounts.find(a => a.id === accountId) || {};
+  const opts = '<option value="0">None</option>' + S.signatures.map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join('');
+  el.innerHTML = `
+    <div class="modal-field"><label>Default for new messages</label>
+      <select id="sig-default-new">${opts}</select></div>
+    <div class="modal-field"><label>Default for replies/forwards</label>
+      <select id="sig-default-reply">${opts}</select></div>
+    <button class="btn-primary" onclick="saveSignatureDefaults()">Save</button>`;
+  document.getElementById('sig-default-new').value = acc.default_signature_new_id || 0;
+  document.getElementById('sig-default-reply').value = acc.default_signature_reply_id || 0;
+}
+
+async function saveSignatureDefaults() {
+  const accountId = parseInt(document.getElementById('sig-defaults-account-select')?.value || 0);
+  if (!accountId) return;
+  const body = {
+    default_new_id: parseInt(document.getElementById('sig-default-new').value) || 0,
+    default_reply_id: parseInt(document.getElementById('sig-default-reply').value) || 0,
+  };
+  const r = await api('PUT', '/accounts/' + accountId + '/signature-defaults', body);
+  if (r && r.ok) { toast('Defaults saved'); await loadAccounts(); }
+  else toast(r?.error || 'Failed to save', 'err');
+}
+
+// ── Settings: Certificates (S/MIME + PGP) ───────────────────────────────
+async function loadCerts() {
+  const accountId = parseInt(document.getElementById('certs-account-select')?.value || 0);
+  if (!accountId) return;
+  const [smimeIds, smimeContacts, pgpIds, pgpContacts] = await Promise.all([
+    api('GET', '/smime/identity?account_id=' + accountId),
+    api('GET', '/smime/contacts'),
+    api('GET', '/pgp/identity?account_id=' + accountId),
+    api('GET', '/pgp/contacts'),
+  ]);
+  renderSMIMEIdentities(smimeIds || [], accountId);
+  renderSMIMEContacts(smimeContacts || []);
+  renderPGPIdentities(pgpIds || [], accountId);
+  renderPGPContacts(pgpContacts || []);
+}
+
+function renderSMIMEIdentities(ids, accountId) {
+  const el = document.getElementById('smime-identity-list');
+  if (!ids.length) { el.innerHTML = '<p style="color:var(--muted);font-size:13px">No S/MIME certificates yet. Generate a free self-signed certificate, or import one you already have.</p>'; return; }
+  el.innerHTML = ids.map(i => `
+    <div class="setting-row">
+      <div><div class="setting-label">Certificate</div><div style="font-size:12px;color:var(--muted)">Expires ${new Date(i.not_after).toLocaleDateString()}</div></div>
+      <button class="btn-danger" style="padding:4px 10px;font-size:12px" onclick="smimeRemoveIdentity(${i.id},${accountId})">Delete</button>
+    </div>`).join('');
+}
+
+async function smimeGenerate() {
+  const accountId = parseInt(document.getElementById('certs-account-select')?.value || 0);
+  if (!accountId) { toast('Connect an account first', 'err'); return; }
+  const r = await api('POST', '/smime/identity', { account_id: accountId });
+  if (r && r.ok) { toast('Certificate generated'); loadCerts(); }
+  else toast(r?.error || 'Failed to generate', 'err');
+}
+
+async function smimeImport() {
+  const accountId = parseInt(document.getElementById('certs-account-select')?.value || 0);
+  const fileInput = document.getElementById('smime-import-file');
+  if (!accountId || !fileInput.files.length) { toast('Choose a .p12 file first', 'err'); return; }
+  const fd = new FormData();
+  fd.append('account_id', accountId);
+  fd.append('p12_file', fileInput.files[0]);
+  fd.append('p12_password', document.getElementById('smime-import-password').value);
+  const resp = await fetch('/api/smime/identity/import?account_id=' + accountId, { method: 'POST', body: fd });
+  const r = await resp.json().catch(() => null);
+  if (r && r.ok) { toast('Certificate imported'); fileInput.value = ''; loadCerts(); }
+  else toast(r?.error || 'Import failed', 'err');
+}
+
+async function smimeRemoveIdentity(id, accountId) {
+  await api('DELETE', '/smime/identity/' + id + '?account_id=' + accountId);
+  loadCerts();
+}
+
+function renderSMIMEContacts(contacts) {
+  const el = document.getElementById('smime-contacts-list');
+  if (!contacts.length) { el.innerHTML = ''; return; }
+  el.innerHTML = `<table class="data-table"><thead><tr><th>Email</th><th></th></tr></thead><tbody>${contacts.map(c => `
+    <tr><td>${esc(c.email)}</td><td><button class="btn-danger" style="padding:4px 10px;font-size:12px" onclick="smimeRemoveContact(${c.id})">Delete</button></td></tr>`).join('')}</tbody></table>`;
+}
+
+async function smimeAddContact() {
+  const email = document.getElementById('smime-contact-email').value.trim();
+  const fileInput = document.getElementById('smime-contact-file');
+  if (!email || !fileInput.files.length) { toast('Email and certificate file required', 'err'); return; }
+  const fd = new FormData();
+  fd.append('email', email);
+  fd.append('cert_file', fileInput.files[0]);
+  const resp = await fetch('/api/smime/contacts', { method: 'POST', body: fd });
+  const r = await resp.json().catch(() => null);
+  if (r && r.ok) { toast('Contact added'); document.getElementById('smime-contact-email').value=''; fileInput.value=''; loadCerts(); }
+  else toast(r?.error || 'Failed to add contact', 'err');
+}
+
+async function smimeRemoveContact(id) {
+  await api('DELETE', '/smime/contacts/' + id);
+  loadCerts();
+}
+
+function renderPGPIdentities(ids, accountId) {
+  const el = document.getElementById('pgp-identity-list');
+  if (!ids.length) { el.innerHTML = '<p style="color:var(--muted);font-size:13px">No PGP keys yet. Generate a new keypair, or import one you already have.</p>'; return; }
+  el.innerHTML = ids.map(i => `
+    <div class="setting-row">
+      <div><div class="setting-label">${esc(i.label || i.email)}</div><div style="font-size:11px;color:var(--muted);font-family:monospace">${esc(i.fingerprint)}</div></div>
+      <div style="display:flex;gap:6px;align-items:center">
+        <input type="password" id="pgp-unlock-pass-${i.id}" placeholder="passphrase" style="width:120px;display:none;padding:4px 8px;font-size:12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text)">
+        <button class="btn-secondary" style="padding:4px 10px;font-size:12px" id="pgp-unlock-btn-${i.id}" onclick="pgpUnlockToggle(${i.id},${accountId})">Unlock</button>
+        <button class="btn-danger" style="padding:4px 10px;font-size:12px" onclick="pgpRemoveIdentity(${i.id},${accountId})">Delete</button>
+      </div>
+    </div>`).join('');
+}
+
+async function pgpGenerate() {
+  const accountId = parseInt(document.getElementById('certs-account-select')?.value || 0);
+  if (!accountId) { toast('Connect an account first', 'err'); return; }
+  const pass = document.getElementById('pgp-gen-pass').value;
+  const pass2 = document.getElementById('pgp-gen-pass2').value;
+  if (pass.length < 8) { toast('Passphrase must be at least 8 characters', 'err'); return; }
+  if (pass !== pass2) { toast('Passphrases do not match', 'err'); return; }
+  const body = { account_id: accountId, label: document.getElementById('pgp-gen-label').value.trim(), passphrase: pass, passphrase_confirm: pass2 };
+  const r = await api('POST', '/pgp/identity', body);
+  if (r && r.ok) { toast('PGP key generated'); document.getElementById('pgp-gen-pass').value=''; document.getElementById('pgp-gen-pass2').value=''; loadCerts(); }
+  else toast(r?.error || 'Failed to generate', 'err');
+}
+
+async function pgpImport() {
+  const accountId = parseInt(document.getElementById('certs-account-select')?.value || 0);
+  const fileInput = document.getElementById('pgp-import-file');
+  if (!accountId || !fileInput.files.length) { toast('Choose a key file first', 'err'); return; }
+  const fd = new FormData();
+  fd.append('account_id', accountId);
+  fd.append('key_file', fileInput.files[0]);
+  fd.append('passphrase', document.getElementById('pgp-import-pass').value);
+  const resp = await fetch('/api/pgp/identity/import?account_id=' + accountId, { method: 'POST', body: fd });
+  const r = await resp.json().catch(() => null);
+  if (r && r.ok) { toast('PGP key imported'); fileInput.value = ''; loadCerts(); }
+  else toast(r?.error || 'Import failed', 'err');
+}
+
+async function pgpRemoveIdentity(id, accountId) {
+  await api('DELETE', '/pgp/identity/' + id + '?account_id=' + accountId);
+  loadCerts();
+}
+
+function pgpUnlockToggle(id, accountId) {
+  const input = document.getElementById('pgp-unlock-pass-' + id);
+  const btn = document.getElementById('pgp-unlock-btn-' + id);
+  if (!input) return;
+  if (input.style.display === 'none') {
+    input.style.display = '';
+    input.focus();
+    btn.textContent = 'Confirm';
+    return;
+  }
+  pgpUnlock(id, accountId, input.value);
+}
+
+async function pgpUnlock(id, accountId, passphrase) {
+  if (!passphrase) { toast('Enter a passphrase', 'err'); return; }
+  const r = await api('POST', '/pgp/unlock?account_id=' + accountId, { identity_id: id, passphrase });
+  toast(r && r.ok ? 'Key unlocked for this session' : (r?.error || 'Incorrect passphrase'), r && r.ok ? '' : 'err');
+  if (r && r.ok) loadCerts();
+}
+
+function renderPGPContacts(contacts) {
+  const el = document.getElementById('pgp-contacts-list');
+  if (!contacts.length) { el.innerHTML = ''; return; }
+  el.innerHTML = `<table class="data-table"><thead><tr><th>Email</th><th>Fingerprint</th><th></th></tr></thead><tbody>${contacts.map(c => `
+    <tr><td>${esc(c.email)}</td><td style="font-family:monospace;font-size:11px">${esc(c.fingerprint)}</td>
+    <td><button class="btn-danger" style="padding:4px 10px;font-size:12px" onclick="pgpRemoveContact(${c.id})">Delete</button></td></tr>`).join('')}</tbody></table>`;
+}
+
+async function pgpAddContact() {
+  const email = document.getElementById('pgp-contact-email').value.trim();
+  const fileInput = document.getElementById('pgp-contact-file');
+  if (!email || !fileInput.files.length) { toast('Email and public key file required', 'err'); return; }
+  const fd = new FormData();
+  fd.append('email', email);
+  fd.append('label', document.getElementById('pgp-contact-label').value.trim());
+  fd.append('key_file', fileInput.files[0]);
+  const resp = await fetch('/api/pgp/contacts', { method: 'POST', body: fd });
+  const r = await resp.json().catch(() => null);
+  if (r && r.ok) { toast('Contact added'); document.getElementById('pgp-contact-email').value=''; document.getElementById('pgp-contact-label').value=''; fileInput.value=''; loadCerts(); }
+  else toast(r?.error || 'Failed to add contact', 'err');
+}
+
+async function pgpRemoveContact(id) {
+  await api('DELETE', '/pgp/contacts/' + id);
+  loadCerts();
 }
 
 async function updateProfile(field) {
@@ -1972,16 +2638,21 @@ window.addEventListener('resize', () => {
 });
 
 // ── Compose dropdown ────────────────────────────────────────────────────────
+// Lives at the end of <body> (position:fixed) rather than inside .sidebar-header,
+// because .sidebar has overflow:hidden — an absolutely-positioned child there gets
+// clipped by that ancestor regardless of z-index. Position it via JS instead,
+// same idea as positionMenu() for the context menu.
 function toggleComposeDropdown(e) {
   e.stopPropagation();
   const dd = document.getElementById('compose-dropdown');
   if (!dd) return;
   const isOpen = dd.style.display !== 'none';
-  dd.style.display = isOpen ? 'none' : 'block';
-  if (!isOpen) {
-    // Close on next outside click
-    setTimeout(() => document.addEventListener('click', closeComposeDropdown, { once: true }), 0);
-  }
+  if (isOpen) { dd.style.display = 'none'; return; }
+  const r = e.currentTarget.getBoundingClientRect();
+  dd.style.display = 'block';
+  dd.style.left = Math.min(r.left, window.innerWidth - dd.offsetWidth - 8) + 'px';
+  dd.style.top = (r.bottom + 4) + 'px';
+  setTimeout(() => document.addEventListener('click', closeComposeDropdown, { once: true }), 0);
 }
 
 function closeComposeDropdown() {

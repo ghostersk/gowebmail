@@ -20,19 +20,22 @@
   <!-- Sidebar -->
   <aside class="sidebar">
     <div class="sidebar-header">
-      <div class="logo">
-        <div class="logo-icon"><svg viewBox="0 0 24 24"><path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"/></svg></div>
-        <span class="logo-text"><a href="/">GoWebMail</a></span>
+      <div style="display:flex;align-items:center;justify-content:space-between">
+        <div style="display:flex;align-items:center;gap:8px;min-width:0">
+          <button class="icon-btn sidebar-collapse-btn" onclick="toggleSidebarCollapse()" title="Collapse sidebar" style="flex-shrink:0">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><path d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg>
+          </button>
+          <div class="logo">
+            <div class="logo-icon"><svg viewBox="0 0 24 24"><path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"/></svg></div>
+            <span class="logo-text"><a href="/">GoWebMail</a></span>
+          </div>
+        </div>
       </div>
-      <div style="position:relative;display:inline-flex">
-        <button class="compose-btn" onclick="openCompose()" style="border-radius:6px 0 0 6px">+ New</button>
+      <div style="display:flex;margin-top:8px">
+        <button class="compose-btn" onclick="openCompose()" style="flex:1;border-radius:6px 0 0 6px">+ New</button>
         <button class="compose-btn" onclick="toggleComposeDropdown(event)" style="border-radius:0 6px 6px 0;border-left:1px solid rgba(255,255,255,.25);padding:6px 7px" title="More options">
           <svg viewBox="0 0 24 24" width="10" height="10" fill="white"><path d="M7 10l5 5 5-5z"/></svg>
         </button>
-        <div id="compose-dropdown" style="display:none;position:absolute;top:100%;left:0;margin-top:4px;background:var(--surface);border:1px solid var(--border2);border-radius:7px;box-shadow:0 4px 16px rgba(0,0,0,.2);z-index:200;min-width:200px;overflow:hidden">
-          <div class="ctx-item" onclick="openCompose();closeComposeDropdown()">✉ New message</div>
-          <div class="ctx-item" onclick="window.open('/compose','_blank');closeComposeDropdown()">↗ New message in new tab</div>
-        </div>
       </div>
     </div>
 
@@ -63,9 +66,6 @@
         <a href="/admin" id="admin-link" style="display:none;font-size:11px;color:var(--accent);text-decoration:none">Server Administration</a>
       </div>
       <div class="footer-actions">
-        <button class="icon-btn" id="accounts-btn" onclick="toggleAccountsMenu(event)" title="Manage accounts">
-          <svg viewBox="0 0 24 24"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
-        </button>
         <button class="icon-btn" onclick="openSettings()" title="Settings">
           <svg viewBox="0 0 24 24"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
         </button>
@@ -78,12 +78,38 @@
   <!-- Mobile sidebar backdrop -->
   <div class="mob-sidebar-backdrop" id="mob-sidebar-backdrop" onclick="mobCloseNav()"></div>
 
-  <!-- Message list -->
+  <!-- Mail view: message list + reading pane (position/density configurable via View menu) -->
+  <div class="mail-view" id="mail-view">
   <div class="message-list-panel">
     <div class="panel-header">
-      <span class="panel-title" id="panel-title">Unified Inbox</span>
+      <div style="display:flex;align-items:center;gap:6px;min-width:0">
+        <button class="icon-btn" id="sidebar-expand-btn" onclick="toggleSidebarCollapse()" title="Show sidebar" style="flex-shrink:0">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><path d="M8.59 16.59L13.17 12 8.59 7.41 10 6l6 6-6 6z"/></svg>
+        </button>
+        <span class="panel-title" id="panel-title">Unified Inbox</span>
+      </div>
       <div style="display:flex;align-items:center;gap:6px">
         <span class="panel-count" id="panel-count"></span>
+        <div class="filter-dropdown" id="view-dropdown">
+          <button class="filter-dropdown-btn" id="view-dropdown-btn" title="View settings" onclick="toggleViewDropdown(event)">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg>
+            <span>View</span>
+          </button>
+          <div class="filter-dropdown-menu" id="view-dropdown-menu" style="display:none;min-width:190px">
+            <div style="padding:6px 12px 2px;font-size:10px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted)">Reading pane</div>
+            <div class="filter-opt" id="vopt-pane-right" onclick="setViewPref('readingPane','right');event.stopPropagation()">✓ Right</div>
+            <div class="filter-opt" id="vopt-pane-bottom" onclick="setViewPref('readingPane','bottom');event.stopPropagation()">○ Bottom</div>
+            <div class="filter-sep-line"></div>
+            <div style="padding:6px 12px 2px;font-size:10px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted)">Density</div>
+            <div class="filter-opt" id="vopt-density-compact" onclick="setViewPref('density','compact');event.stopPropagation()">✓ Compact</div>
+            <div class="filter-opt" id="vopt-density-comfortable" onclick="setViewPref('density','comfortable');event.stopPropagation()">○ Comfortable</div>
+            <div class="filter-sep-line"></div>
+            <div style="padding:6px 12px 2px;font-size:10px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted)">Sidebar</div>
+            <div class="filter-opt" id="vopt-sidebar-expanded" onclick="setViewPref('sidebarMode','expanded');event.stopPropagation()">✓ Pinned (always visible)</div>
+            <div class="filter-opt" id="vopt-sidebar-collapsed" onclick="setViewPref('sidebarMode','collapsed');event.stopPropagation()">○ Minimized</div>
+            <div class="filter-opt" id="vopt-sidebar-auto" onclick="setViewPref('sidebarMode','auto');event.stopPropagation()">○ Auto-hide (peek on hover)</div>
+          </div>
+        </div>
         <div class="filter-dropdown" id="filter-dropdown">
           <button class="filter-dropdown-btn" id="filter-dropdown-btn" title="Filter &amp; sort" onclick="var m=document.getElementById('filter-dropdown-menu');m.style.display=m.style.display==='block'?'none':'block';event.stopPropagation()">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M10 18h4v-2h-4v2zM3 6v2h18V6H3zm3 7h12v-2H6v2z"/></svg>
@@ -103,15 +129,21 @@
       </div>
     </div>
     <div class="search-bar">
-      <div class="search-wrap">
-        <svg viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
-        <input class="search-input" type="text" id="search-input" placeholder="Search emails..." oninput="handleSearch(this.value)">
+      <div style="display:flex;gap:6px;align-items:center">
+        <div class="search-wrap" style="flex:1">
+          <svg viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+          <input class="search-input" type="text" id="search-input" placeholder="Search emails..." oninput="handleSearch(this.value)" onkeydown="if(event.key==='Enter')applySearchFilters()">
+        </div>
+        <button class="filter-dropdown-btn" id="search-filters-btn" title="Search filters" onclick="toggleSearchFilters(event)" style="flex-shrink:0">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M10 18h4v-2h-4v2zM3 6v2h18V6H3zm3 7h12v-2H6v2z"/></svg>
+        </button>
       </div>
     </div>
     <div class="message-list" id="message-list">
       <div class="spinner" style="margin-top:60px"></div>
     </div>
   </div>
+  <div class="panel-resize-handle" id="panel-resize-handle" title="Drag to resize"></div>
 
   <!-- Message detail -->
   <main class="message-detail" id="message-detail">
@@ -121,6 +153,7 @@
       <p>Choose a message from the list to read it</p>
     </div>
   </main>
+  </div>
 
   <!-- ── Contacts panel ──────────────────────────────────────────────────── -->
   <div id="contacts-panel" style="display:none;flex:1;flex-direction:column;overflow:hidden;background:var(--bg)">
@@ -222,24 +255,6 @@
   </div>
 </div>
 
-<!-- ── Accounts submenu popup ──────────────────────────────────────────────── -->
-<div class="accounts-popup" id="accounts-popup">
-  <div class="accounts-popup-inner">
-    <div class="accounts-popup-header">
-      <span>Accounts</span>
-      <button class="icon-btn" onclick="closeAccountsMenu()" style="margin:-4px -4px -4px 0">
-        <svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
-      </button>
-    </div>
-    <div id="accounts-popup-list"></div>
-    <button class="accounts-add-btn" onclick="closeAccountsMenu();openAddAccountModal()">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
-      Connect new account
-    </button>
-  </div>
-</div>
-<div class="accounts-popup-backdrop" id="accounts-popup-backdrop" onclick="closeAccountsMenu()"></div>
-
 <!-- ── Draggable Compose dialog ───────────────────────────────────────────── -->
 <div class="compose-dialog" id="compose-dialog">
   <div class="compose-dialog-header" id="compose-drag-handle">
@@ -250,7 +265,7 @@
     </div>
   </div>
   <div class="compose-body-wrap" id="compose-body-wrap">
-    <div class="compose-field"><label>From</label><select id="compose-from"></select></div>
+    <div class="compose-field"><label>From</label><select id="compose-from" onchange="onComposeFromChange()"></select></div>
     <div class="compose-field compose-tag-field"><label>To</label><div id="compose-to" class="tag-container"></div></div>
     <div class="compose-field compose-tag-field" id="cc-row" style="display:none"><label>CC</label><div id="compose-cc-tags" class="tag-container"></div></div>
     <div class="compose-field compose-tag-field" id="bcc-row" style="display:none"><label>BCC</label><div id="compose-bcc-tags" class="tag-container"></div></div>
@@ -303,6 +318,29 @@
   </div>
 </div>
 
+<!-- ── Inline prompt (replaces browser prompt()) ─────────────────────────── -->
+<div class="inline-confirm" id="inline-prompt">
+  <p id="inline-prompt-msg" style="margin:0 0 10px;font-size:13px;line-height:1.5"></p>
+  <div class="modal-field">
+    <input type="text" id="inline-prompt-input"
+           onkeydown="if(event.key==='Enter'){document.getElementById('inline-prompt-ok').click();}else if(event.key==='Escape'){document.getElementById('inline-prompt-cancel').click();}">
+  </div>
+  <div style="display:flex;gap:8px;justify-content:flex-end">
+    <button class="btn-secondary" style="font-size:12px" id="inline-prompt-cancel">Cancel</button>
+    <button class="btn-primary"   style="font-size:12px" id="inline-prompt-ok">Create</button>
+  </div>
+</div>
+
+<!-- ── Draft close confirm (save / delete / keep editing) ─────────────────── -->
+<div class="inline-confirm" id="draft-close-confirm">
+  <p style="margin:0 0 14px;font-size:13px;line-height:1.5">Save this message as a draft before closing?</p>
+  <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap">
+    <button class="btn-secondary" style="font-size:12px" id="draft-close-cancel">Keep editing</button>
+    <button class="btn-danger"    style="font-size:12px" id="draft-close-delete">Delete draft</button>
+    <button class="btn-primary"   style="font-size:12px" id="draft-close-save">Save draft</button>
+  </div>
+</div>
+
 <!-- ── Add Account Modal ──────────────────────────────────────────────────── -->
 <div class="modal-overlay" id="add-account-modal">
   <div class="modal">
@@ -342,18 +380,25 @@
     </div>
     <div class="modal-field"><label>Display Name</label><input type="text" id="imap-name" placeholder="Your Name"></div>
     <div class="modal-field"><label>Password / App Password</label><input type="password" id="imap-password"></div>
-    <div style="font-size:11px;color:var(--muted);padding:0 0 8px;line-height:1.6">
+    <div class="modal-field" style="display:flex;align-items:center;gap:8px;flex-direction:row">
+      <input type="checkbox" id="use-jmap" onchange="toggleJMAPFields()" style="width:auto;flex:none">
+      <label for="use-jmap" style="margin:0;font-weight:400">Connect via JMAP instead of IMAP/SMTP</label>
+    </div>
+    <div id="imap-hint" style="font-size:11px;color:var(--muted);padding:0 0 8px;line-height:1.6">
       Common ports — IMAP: <strong>993</strong> TLS/SSL, <strong>143</strong> STARTTLS/Plain &nbsp;·&nbsp;
       SMTP: <strong>587</strong> STARTTLS, <strong>465</strong> TLS/SSL, <strong>25</strong> Plain
     </div>
     <div class="modal-row">
-      <div class="modal-field"><label>IMAP Host</label><input type="text" id="imap-host" placeholder="imap.example.com"></div>
-      <div class="modal-field"><label>IMAP Port</label><input type="number" id="imap-port" value="993"></div>
+      <div class="modal-field"><label id="imap-host-label">IMAP Host</label><input type="text" id="imap-host" placeholder="imap.example.com"></div>
+      <div class="modal-field" id="imap-port-field"><label>IMAP Port</label><input type="number" id="imap-port" value="993"></div>
     </div>
-    <div class="modal-row">
+    <div class="modal-row" id="smtp-fields">
       <div class="modal-field"><label>SMTP Host</label><input type="text" id="smtp-host" placeholder="smtp.example.com"></div>
       <div class="modal-field"><label>SMTP Port</label><input type="number" id="smtp-port" value="587"></div>
     </div>
+    <div class="modal-divider"><span>optional — sync calendar &amp; contacts</span></div>
+    <div class="modal-field"><label>CalDAV URL</label><input type="text" id="imap-caldav-url" placeholder="https://mail.example.com/dav/calendars/user@example.com/default"></div>
+    <div class="modal-field"><label>CardDAV URL</label><input type="text" id="imap-carddav-url" placeholder="https://mail.example.com/dav/addressbooks/user@example.com/default"></div>
     <div class="test-result" id="test-result"></div>
     <div class="modal-actions">
       <button class="modal-cancel" onclick="closeModal('add-account-modal')">Cancel</button>
@@ -386,14 +431,18 @@
     <div id="edit-creds-section">
       <div class="modal-field"><label>New Password (leave blank to keep current)</label><input type="password" id="edit-password"></div>
       <div class="modal-row">
-        <div class="modal-field"><label>IMAP Host</label><input type="text" id="edit-imap-host"></div>
-        <div class="modal-field"><label>IMAP Port</label><input type="number" id="edit-imap-port"></div>
+        <div class="modal-field"><label id="edit-imap-host-label">IMAP Host</label><input type="text" id="edit-imap-host"></div>
+        <div class="modal-field" id="edit-imap-port-field"><label>IMAP Port</label><input type="number" id="edit-imap-port"></div>
       </div>
-      <div class="modal-row">
+      <div class="modal-row" id="edit-smtp-fields">
         <div class="modal-field"><label>SMTP Host</label><input type="text" id="edit-smtp-host"></div>
         <div class="modal-field"><label>SMTP Port</label><input type="number" id="edit-smtp-port"></div>
       </div>
     </div>
+
+    <div class="settings-group-title" style="margin:16px 0 8px">Calendar &amp; Contacts (optional)</div>
+    <div class="modal-field"><label>CalDAV URL</label><input type="text" id="edit-caldav-url" placeholder="leave blank to disable"></div>
+    <div class="modal-field"><label>CardDAV URL</label><input type="text" id="edit-carddav-url" placeholder="leave blank to disable"></div>
 
     <div class="settings-group-title" style="margin:16px 0 8px">Sync Settings</div>
     <div class="modal-field">
@@ -426,85 +475,277 @@
 
 <!-- ── Settings Modal ─────────────────────────────────────────────────────── -->
 <div class="modal-overlay" id="settings-modal">
-  <div class="modal" style="width:540px;max-height:90vh;overflow-y:auto">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:22px">
+  <div class="modal" style="width:820px;max-width:95vw;height:640px;max-height:90vh;padding:0;display:flex;flex-direction:column">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:22px 24px 16px">
       <h2 style="margin-bottom:0">Settings</h2>
       <button onclick="closeModal('settings-modal')" class="icon-btn"><svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg></button>
     </div>
+    <div style="display:flex;align-items:stretch;min-height:0;flex:1;border-top:1px solid var(--border)">
+      <div class="settings-nav">
+        <button data-tab="accounts" class="active" onclick="showSettingsTab('accounts')">Accounts</button>
+        <button data-tab="account" onclick="showSettingsTab('account')">Profile</button>
+        <button data-tab="rules" onclick="showSettingsTab('rules')">Rules</button>
+        <button data-tab="signatures" onclick="showSettingsTab('signatures')">Signatures</button>
+        <button data-tab="certs" onclick="showSettingsTab('certs')">Certificates</button>
+      </div>
+      <div style="flex:1;min-width:0;overflow-y:auto;padding:20px 24px">
 
-    <div class="settings-group">
-      <div class="settings-group-title">Profile</div>
-      <div class="modal-field">
-        <label>Username</label>
-        <div style="display:flex;gap:8px">
-          <input type="text" id="profile-username" placeholder="New username" style="flex:1">
-          <button class="btn-primary" onclick="updateProfile('username')">Save</button>
+      <div class="settings-panel active" data-tab="accounts">
+        <div class="settings-group">
+          <div class="settings-group-title">Connected mailboxes</div>
+          <div style="font-size:12px;color:var(--muted);margin-bottom:10px">Manage sync, credentials, CalDAV/CardDAV and per-account settings for each connected mailbox.</div>
+          <div id="settings-accounts-list"></div>
+          <button class="accounts-add-btn" onclick="openAddAccountModal()">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+            Connect new account
+          </button>
         </div>
       </div>
-      <div class="modal-field">
-        <label>Email Address</label>
-        <div style="display:flex;gap:8px">
-          <input type="email" id="profile-email" placeholder="New email address" style="flex:1">
-          <button class="btn-primary" onclick="updateProfile('email')">Save</button>
+
+      <div class="settings-panel" data-tab="account">
+        <div class="settings-group">
+          <div class="settings-group-title">Profile</div>
+          <div class="modal-field">
+            <label>Username</label>
+            <div style="display:flex;gap:8px">
+              <input type="text" id="profile-username" placeholder="New username" style="flex:1">
+              <button class="btn-primary" onclick="updateProfile('username')">Save</button>
+            </div>
+          </div>
+          <div class="modal-field">
+            <label>Email Address</label>
+            <div style="display:flex;gap:8px">
+              <input type="email" id="profile-email" placeholder="New email address" style="flex:1">
+              <button class="btn-primary" onclick="updateProfile('email')">Save</button>
+            </div>
+          </div>
+          <div class="modal-field">
+            <label>Current Password <span style="color:var(--muted);font-size:11px">(required to confirm changes)</span></label>
+            <input type="password" id="profile-confirm-pw" placeholder="Enter your current password">
+          </div>
+        </div>
+
+        <div class="settings-group">
+          <div class="settings-group-title">Email Sync</div>
+          <div style="font-size:13px;color:var(--muted);margin-bottom:12px">How often to automatically check all your accounts for new mail.</div>
+          <div style="display:flex;gap:10px;align-items:center">
+            <select id="sync-interval-select" style="flex:1;padding:8px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;outline:none">
+              <option value="0">Manual only</option>
+              <option value="1">Every 1 minute</option>
+              <option value="5">Every 5 minutes</option>
+              <option value="10">Every 10 minutes</option>
+              <option value="15">Every 15 minutes (default)</option>
+              <option value="30">Every 30 minutes</option>
+              <option value="60">Every 60 minutes</option>
+            </select>
+            <button class="btn-primary" onclick="saveSyncInterval()">Save</button>
+          </div>
+        </div>
+
+        <div class="settings-group">
+          <div class="settings-group-title">Change Password</div>
+          <div class="modal-field"><label>Current Password</label><input type="password" id="cur-pw"></div>
+          <div class="modal-field"><label>New Password</label><input type="password" id="new-pw" placeholder="Min. 8 characters"></div>
+          <button class="btn-primary" onclick="changePassword()">Update Password</button>
+        </div>
+
+        <div class="settings-group">
+          <div class="settings-group-title" style="display:flex;align-items:center;gap:10px">
+            Two-Factor Authentication <span id="mfa-badge"></span>
+          </div>
+          <div id="mfa-panel">Loading...</div>
+        </div>
+
+        <div class="settings-group">
+          <div class="settings-group-title">IP Access Rules</div>
+          <div style="font-size:13px;color:var(--muted);margin-bottom:14px">
+            Control which IP addresses can access your account. This overrides global brute-force settings for your account only.
+          </div>
+          <div class="modal-field">
+            <label>Mode</label>
+            <select id="ip-rule-mode" onchange="toggleIPRuleHelp()" style="width:100%;padding:8px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;outline:none">
+              <option value="disabled">Disabled — use global settings</option>
+              <option value="brute_skip">Skip brute-force check — listed IPs bypass lockout</option>
+              <option value="allow_only">Allow only — only listed IPs can log in</option>
+            </select>
+          </div>
+          <div id="ip-rule-help" style="font-size:12px;color:var(--muted);margin-bottom:10px;display:none"></div>
+          <div class="modal-field" id="ip-rule-list-field">
+            <label>Allowed IPs <span style="color:var(--muted);font-size:11px">(comma-separated)</span></label>
+            <input type="text" id="ip-rule-list" placeholder="e.g. 192.168.1.10, 10.0.0.5">
+          </div>
+          <button class="btn-primary" onclick="saveIPRules()">Save IP Rules</button>
         </div>
       </div>
-      <div class="modal-field">
-        <label>Current Password <span style="color:var(--muted);font-size:11px">(required to confirm changes)</span></label>
-        <input type="password" id="profile-confirm-pw" placeholder="Enter your current password">
-      </div>
-    </div>
 
-    <div class="settings-group">
-      <div class="settings-group-title">Email Sync</div>
-      <div style="font-size:13px;color:var(--muted);margin-bottom:12px">How often to automatically check all your accounts for new mail.</div>
-      <div style="display:flex;gap:10px;align-items:center">
-        <select id="sync-interval-select" style="flex:1;padding:8px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;outline:none">
-          <option value="0">Manual only</option>
-          <option value="1">Every 1 minute</option>
-          <option value="5">Every 5 minutes</option>
-          <option value="10">Every 10 minutes</option>
-          <option value="15">Every 15 minutes (default)</option>
-          <option value="30">Every 30 minutes</option>
-          <option value="60">Every 60 minutes</option>
-        </select>
-        <button class="btn-primary" onclick="saveSyncInterval()">Save</button>
+      <div class="settings-panel" data-tab="rules">
+        <div class="settings-group">
+          <div class="settings-group-title">Rules apply to</div>
+          <select id="rules-account-select" onchange="loadRules()" style="width:100%;padding:8px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;outline:none"></select>
+        </div>
+        <div class="settings-group">
+          <div class="settings-group-title">Add Rule</div>
+          <div style="font-size:12px;color:var(--muted);margin-bottom:12px">Rules run in priority order (lowest first) against newly-synced mail; the first match wins.</div>
+          <div class="modal-field"><label>Rule name</label><input type="text" id="rule-name" placeholder="e.g. Invoices to Accounting"></div>
+          <div style="display:flex;gap:8px">
+            <div class="modal-field" style="flex:1"><label>Priority</label><input type="number" id="rule-priority" value="0"></div>
+            <div class="modal-field" style="flex:1"><label>Match</label>
+              <select id="rule-match-type"><option value="all">ALL of the following (AND)</option><option value="any">ANY of the following (OR)</option></select>
+            </div>
+          </div>
+          <div id="rule-conditions"></div>
+          <button class="btn-secondary" style="margin-bottom:14px" onclick="addRuleConditionRow()">+ Add condition</button>
+          <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
+            <div class="modal-field" style="flex:1;min-width:140px"><label>Then</label>
+              <select id="rule-action" onchange="updateRuleActionFields()">
+                <option value="move_to_folder">Move to folder</option>
+                <option value="mark_as_spam">Mark as Junk</option>
+                <option value="delete">Delete</option>
+                <option value="mark_read">Mark as read</option>
+                <option value="forward">Forward to...</option>
+                <option value="auto_reply">Send auto-reply</option>
+              </select>
+            </div>
+            <div class="modal-field" style="flex:1;min-width:160px" id="rule-action-value-field"><label>Folder name</label><input type="text" id="rule-action-value" placeholder="folder name"></div>
+          </div>
+          <div class="modal-field" id="rule-autoreply-body-field" style="display:none"><label>Auto-reply body</label><textarea id="rule-autoreply-body" rows="3" style="width:100%"></textarea></div>
+          <button class="btn-primary" onclick="saveRule()">Add Rule</button>
+        </div>
+        <div class="settings-group">
+          <div class="settings-group-title">Existing Rules</div>
+          <div id="rules-list"><p style="color:var(--muted);font-size:13px">No rules yet.</p></div>
+        </div>
       </div>
-    </div>
 
-    <div class="settings-group">
-      <div class="settings-group-title">Change Password</div>
-      <div class="modal-field"><label>Current Password</label><input type="password" id="cur-pw"></div>
-      <div class="modal-field"><label>New Password</label><input type="password" id="new-pw" placeholder="Min. 8 characters"></div>
-      <button class="btn-primary" onclick="changePassword()">Update Password</button>
-    </div>
+      <div class="settings-panel" data-tab="signatures">
+        <div class="settings-group">
+          <div class="settings-group-title">Add Signature</div>
+          <div class="modal-field"><label>Name</label><input type="text" id="sig-name" placeholder="e.g. Work"></div>
+          <div class="modal-field"><label>Content (HTML)</label><textarea id="sig-content" rows="4" style="width:100%" placeholder="Best regards,&#10;Your Name"></textarea></div>
+          <button class="btn-primary" onclick="saveSignature()">Add Signature</button>
+        </div>
+        <div class="settings-group">
+          <div class="settings-group-title">Your Signatures</div>
+          <div id="signatures-list"><p style="color:var(--muted);font-size:13px">No signatures yet.</p></div>
+        </div>
+        <div class="settings-group">
+          <div class="settings-group-title">Defaults per account</div>
+          <select id="sig-defaults-account-select" onchange="renderSignatureDefaultsForm()" style="width:100%;margin-bottom:10px;padding:8px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;outline:none"></select>
+          <div id="sig-defaults-form"></div>
+        </div>
+      </div>
 
-    <div class="settings-group">
-      <div class="settings-group-title" style="display:flex;align-items:center;gap:10px">
-        Two-Factor Authentication <span id="mfa-badge"></span>
+      <div class="settings-panel" data-tab="certs">
+        <div class="settings-group">
+          <div class="settings-group-title">Certificates apply to</div>
+          <select id="certs-account-select" onchange="loadCerts()" style="width:100%;padding:8px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;outline:none"></select>
+          <div style="font-size:12px;color:var(--muted);margin-top:10px">S/MIME certificates <b>sign</b> outgoing mail. PGP keys <b>encrypt</b> it. A message can use either, both, or neither.</div>
+        </div>
+        <div class="settings-group">
+          <div class="settings-group-title">S/MIME — for signing</div>
+          <div id="smime-identity-list"></div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin:10px 0">
+            <button class="btn-primary" onclick="smimeGenerate()">Generate Self-Signed Certificate</button>
+          </div>
+          <div class="modal-field"><label>Import existing (.p12/.pfx)</label>
+            <input type="file" id="smime-import-file" accept=".p12,.pfx">
+            <input type="password" id="smime-import-password" placeholder=".p12 export password (if any)" style="margin-top:6px">
+            <button class="btn-secondary" style="margin-top:6px" onclick="smimeImport()">Import</button>
+          </div>
+          <div class="settings-group-title" style="margin-top:16px;font-size:13px">S/MIME contact certificates</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">
+            <input type="email" id="smime-contact-email" placeholder="someone@example.com" style="flex:1;min-width:160px">
+            <input type="file" id="smime-contact-file" accept=".pem,.crt,.cer">
+            <button class="btn-secondary" onclick="smimeAddContact()">Add Contact</button>
+          </div>
+          <div id="smime-contacts-list"></div>
+        </div>
+        <div class="settings-group">
+          <div class="settings-group-title">PGP — for encryption</div>
+          <div id="pgp-identity-list"></div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin:10px 0">
+            <input type="text" id="pgp-gen-label" placeholder="Label (optional)" style="flex:1;min-width:120px">
+            <input type="password" id="pgp-gen-pass" placeholder="Passphrase (min 8 chars)" style="flex:1;min-width:140px">
+            <input type="password" id="pgp-gen-pass2" placeholder="Confirm passphrase" style="flex:1;min-width:140px">
+            <button class="btn-primary" onclick="pgpGenerate()">Generate PGP Key</button>
+          </div>
+          <div class="modal-field"><label>Import existing (.asc)</label>
+            <input type="file" id="pgp-import-file" accept=".asc">
+            <input type="password" id="pgp-import-pass" placeholder="The key's passphrase" style="margin-top:6px">
+            <button class="btn-secondary" style="margin-top:6px" onclick="pgpImport()">Import</button>
+          </div>
+          <div class="settings-group-title" style="margin-top:16px;font-size:13px">PGP contact keys</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">
+            <input type="email" id="pgp-contact-email" placeholder="someone@example.com" style="flex:1;min-width:160px">
+            <input type="text" id="pgp-contact-label" placeholder="Label (optional)" style="flex:1;min-width:100px">
+            <input type="file" id="pgp-contact-file" accept=".asc">
+            <button class="btn-secondary" onclick="pgpAddContact()">Add Contact</button>
+          </div>
+          <div id="pgp-contacts-list"></div>
+        </div>
       </div>
-      <div id="mfa-panel">Loading...</div>
-    </div>
 
-    <div class="settings-group">
-      <div class="settings-group-title">IP Access Rules</div>
-      <div style="font-size:13px;color:var(--muted);margin-bottom:14px">
-        Control which IP addresses can access your account. This overrides global brute-force settings for your account only.
       </div>
-      <div class="modal-field">
-        <label>Mode</label>
-        <select id="ip-rule-mode" onchange="toggleIPRuleHelp()" style="width:100%;padding:8px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;outline:none">
-          <option value="disabled">Disabled — use global settings</option>
-          <option value="brute_skip">Skip brute-force check — listed IPs bypass lockout</option>
-          <option value="allow_only">Allow only — only listed IPs can log in</option>
-        </select>
-      </div>
-      <div id="ip-rule-help" style="font-size:12px;color:var(--muted);margin-bottom:10px;display:none"></div>
-      <div class="modal-field" id="ip-rule-list-field">
-        <label>Allowed IPs <span style="color:var(--muted);font-size:11px">(comma-separated)</span></label>
-        <input type="text" id="ip-rule-list" placeholder="e.g. 192.168.1.10, 10.0.0.5">
-      </div>
-      <button class="btn-primary" onclick="saveIPRules()">Save IP Rules</button>
     </div>
+  </div>
+</div>
+
+<!-- Compose split-button dropdown — fixed-position, JS-placed (see toggleComposeDropdown);
+     lives outside .sidebar so its overflow:hidden can't clip it -->
+<div id="compose-dropdown" style="display:none;position:fixed;background:var(--surface);border:1px solid var(--border2);border-radius:7px;box-shadow:0 4px 16px rgba(0,0,0,.2);z-index:210;min-width:200px;overflow:hidden">
+  <div class="ctx-item" onclick="openCompose();closeComposeDropdown()">✉ New message</div>
+  <div class="ctx-item" onclick="window.open('/compose','_blank');closeComposeDropdown()">↗ New message in new tab</div>
+</div>
+
+<!-- Search filters popover — fixed-position, JS-placed under the search bar (see
+     toggleSearchFilters); same reasoning as #compose-dropdown above. -->
+<div id="search-filters-panel" style="display:none;position:fixed;padding:10px;background:var(--surface2);border:1px solid var(--border2);border-radius:8px;box-shadow:0 8px 28px rgba(0,0,0,.5);z-index:210;max-height:80vh;overflow-y:auto">
+  <div class="modal-field" style="margin-bottom:8px">
+    <label>Search in mailbox</label>
+    <select id="sf-mailbox-scope" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px">
+      <option value="">All mailboxes</option>
+    </select>
+  </div>
+  <div class="modal-field" style="margin-bottom:8px">
+    <label>Search in</label>
+    <select id="sf-scope" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px">
+      <option value="all">All fields</option>
+      <option value="subject">Subject only</option>
+      <option value="body">Body only</option>
+      <option value="subject_body">Subject + Body</option>
+    </select>
+  </div>
+  <div class="modal-field" style="margin-bottom:8px">
+    <label>Attachment</label>
+    <select id="sf-attachment" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px">
+      <option value="">Any</option>
+      <option value="1">Has attachment</option>
+      <option value="0">No attachment</option>
+    </select>
+  </div>
+  <div class="modal-row" style="margin-bottom:8px;gap:8px">
+    <div class="modal-field" style="flex:1;margin-bottom:0"><label>From date</label>
+      <input type="date" id="sf-date-from" style="width:100%;padding:5px 6px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px">
+    </div>
+    <div class="modal-field" style="flex:1;margin-bottom:0"><label>To date</label>
+      <input type="date" id="sf-date-to" style="width:100%;padding:5px 6px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px">
+    </div>
+  </div>
+  <div class="modal-field" style="margin-bottom:8px">
+    <label>Older than (days) <span style="color:var(--muted);font-size:10px">— fills in "To date"</span></label>
+    <input type="number" id="sf-older-days" min="0" placeholder="e.g. 30" style="width:100%;padding:5px 6px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px">
+  </div>
+  <div class="modal-row" style="margin-bottom:10px;gap:8px">
+    <div class="modal-field" style="flex:1;margin-bottom:0"><label>Min size (KB)</label>
+      <input type="number" id="sf-min-size" min="0" style="width:100%;padding:5px 6px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px">
+    </div>
+    <div class="modal-field" style="flex:1;margin-bottom:0"><label>Max size (KB)</label>
+      <input type="number" id="sf-max-size" min="0" style="width:100%;padding:5px 6px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px">
+    </div>
+  </div>
+  <div style="display:flex;gap:6px;justify-content:flex-end">
+    <button class="btn-secondary" style="font-size:12px" onclick="clearSearchFilters()">Clear</button>
+    <button class="btn-primary" style="font-size:12px" onclick="applySearchFilters()">Apply</button>
   </div>
 </div>
 
@@ -514,6 +755,6 @@
 {{end}}
 
 {{define "scripts"}}
-<script src="/static/js/app.js?v=58"></script>
-<script src="/static/js/contacts_calendar.js?v=58"></script>
+<script src="/static/js/app.js?v=67"></script>
+<script src="/static/js/contacts_calendar.js?v=67"></script>
 {{end}}

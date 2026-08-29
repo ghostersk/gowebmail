@@ -17,17 +17,20 @@ import (
 	"github.com/ghostersk/gowebmail/internal/db"
 	"github.com/ghostersk/gowebmail/internal/email"
 	graphpkg "github.com/ghostersk/gowebmail/internal/graph"
+	"github.com/ghostersk/gowebmail/internal/jmap"
 	"github.com/ghostersk/gowebmail/internal/middleware"
 	"github.com/ghostersk/gowebmail/internal/models"
+	"github.com/ghostersk/gowebmail/internal/pgp"
 	"github.com/ghostersk/gowebmail/internal/syncer"
 	"github.com/gorilla/mux"
 )
 
 // APIHandler handles all /api/* JSON endpoints.
 type APIHandler struct {
-	db     *db.DB
-	cfg    *config.Config
-	syncer *syncer.Scheduler
+	db       *db.DB
+	cfg      *config.Config
+	syncer   *syncer.Scheduler
+	pgpCache *pgp.Cache
 }
 
 func (h *APIHandler) writeJSON(w http.ResponseWriter, v interface{}) {
@@ -63,6 +66,8 @@ type safeAccount struct {
 	IMAPPort     int                    `json:"imap_port,omitempty"`
 	SMTPHost     string                 `json:"smtp_host,omitempty"`
 	SMTPPort     int                    `json:"smtp_port,omitempty"`
+	CalDAVURL    string                 `json:"caldav_url,omitempty"`
+	CardDAVURL   string                 `json:"carddav_url,omitempty"`
 	SyncDays     int                    `json:"sync_days"`
 	SyncMode     string                 `json:"sync_mode"`
 	SortOrder    int                    `json:"sort_order"`
@@ -70,6 +75,8 @@ type safeAccount struct {
 	Color        string                 `json:"color"`
 	LastSync     string                 `json:"last_sync"`
 	TokenExpired bool                   `json:"token_expired,omitempty"`
+	DefaultSignatureNewID   int64       `json:"default_signature_new_id,omitempty"`
+	DefaultSignatureReplyID int64       `json:"default_signature_reply_id,omitempty"`
 }
 
 func toSafeAccount(a *models.EmailAccount) safeAccount {
@@ -85,6 +92,7 @@ func toSafeAccount(a *models.EmailAccount) safeAccount {
 		ID: a.ID, Provider: a.Provider, EmailAddress: a.EmailAddress,
 		DisplayName: a.DisplayName, IMAPHost: a.IMAPHost, IMAPPort: a.IMAPPort,
 		SMTPHost: a.SMTPHost, SMTPPort: a.SMTPPort,
+		CalDAVURL: a.CalDAVURL, CardDAVURL: a.CardDAVURL,
 		SyncDays: a.SyncDays, SyncMode: a.SyncMode, SortOrder: a.SortOrder,
 		LastError: a.LastError, Color: a.Color, LastSync: lastSync,
 		TokenExpired: tokenExpired,
@@ -100,7 +108,12 @@ func (h *APIHandler) ListAccounts(w http.ResponseWriter, r *http.Request) {
 	}
 	result := make([]safeAccount, 0, len(accounts))
 	for _, a := range accounts {
-		result = append(result, toSafeAccount(a))
+		sa := toSafeAccount(a)
+		if sd, err := h.db.GetSignatureDefaults(a.ID); err == nil {
+			sa.DefaultSignatureNewID = sd.DefaultNewID
+			sa.DefaultSignatureReplyID = sd.DefaultReplyID
+		}
+		result = append(result, sa)
 	}
 	h.writeJSON(w, result)
 }
@@ -110,10 +123,13 @@ func (h *APIHandler) AddAccount(w http.ResponseWriter, r *http.Request) {
 		Email       string `json:"email"`
 		DisplayName string `json:"display_name"`
 		Password    string `json:"password"`
+		Provider    string `json:"provider"` // "jmap" or "" / "imap_smtp" (default)
 		IMAPHost    string `json:"imap_host"`
 		IMAPPort    int    `json:"imap_port"`
 		SMTPHost    string `json:"smtp_host"`
 		SMTPPort    int    `json:"smtp_port"`
+		CalDAVURL   string `json:"caldav_url"`
+		CardDAVURL  string `json:"carddav_url"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.writeError(w, http.StatusBadRequest, "invalid request body")
@@ -123,15 +139,25 @@ func (h *APIHandler) AddAccount(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, http.StatusBadRequest, "email and password required")
 		return
 	}
+	isJMAP := req.Provider == string(models.ProviderJMAP)
 	if req.IMAPHost == "" {
-		h.writeError(w, http.StatusBadRequest, "IMAP host required")
+		msg := "IMAP host required"
+		if isJMAP {
+			msg = "JMAP server URL required"
+		}
+		h.writeError(w, http.StatusBadRequest, msg)
 		return
 	}
-	if req.IMAPPort == 0 {
-		req.IMAPPort = 993
-	}
-	if req.SMTPPort == 0 {
-		req.SMTPPort = 587
+	provider := models.ProviderIMAPSMTP
+	if isJMAP {
+		provider = models.ProviderJMAP
+	} else {
+		if req.IMAPPort == 0 {
+			req.IMAPPort = 993
+		}
+		if req.SMTPPort == 0 {
+			req.SMTPPort = 587
+		}
 	}
 
 	userID := middleware.GetUserID(r)
@@ -140,12 +166,20 @@ func (h *APIHandler) AddAccount(w http.ResponseWriter, r *http.Request) {
 	color := colors[len(accounts)%len(colors)]
 
 	account := &models.EmailAccount{
-		UserID: userID, Provider: models.ProviderIMAPSMTP,
+		UserID: userID, Provider: provider,
 		EmailAddress: req.Email, DisplayName: req.DisplayName,
 		AccessToken: req.Password,
 		IMAPHost:    req.IMAPHost, IMAPPort: req.IMAPPort,
 		SMTPHost: req.SMTPHost, SMTPPort: req.SMTPPort,
+		CalDAVURL: req.CalDAVURL, CardDAVURL: req.CardDAVURL,
 		Color: color, IsActive: true,
+	}
+
+	if isJMAP {
+		if _, err := jmap.New(account.IMAPHost, account.EmailAddress, account.AccessToken).Session(r.Context()); err != nil {
+			h.writeError(w, http.StatusBadGateway, "JMAP connection failed: "+err.Error())
+			return
+		}
 	}
 
 	if err := h.db.CreateAccount(account); err != nil {
@@ -154,7 +188,7 @@ func (h *APIHandler) AddAccount(w http.ResponseWriter, r *http.Request) {
 	}
 
 	uid := userID
-	h.db.WriteAudit(&uid, models.AuditAccountAdd, "imap:"+req.Email, middleware.ClientIP(r), r.UserAgent())
+	h.db.WriteAudit(&uid, models.AuditAccountAdd, string(provider)+":"+req.Email, middleware.ClientIP(r), r.UserAgent())
 
 	// Trigger an immediate sync in background
 	go h.syncer.SyncAccountNow(account.ID)
@@ -190,6 +224,8 @@ func (h *APIHandler) UpdateAccount(w http.ResponseWriter, r *http.Request) {
 		IMAPPort    int    `json:"imap_port"`
 		SMTPHost    string `json:"smtp_host"`
 		SMTPPort    int    `json:"smtp_port"`
+		CalDAVURL   *string `json:"caldav_url"`
+		CardDAVURL  *string `json:"carddav_url"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.writeError(w, http.StatusBadRequest, "invalid request")
@@ -214,32 +250,56 @@ func (h *APIHandler) UpdateAccount(w http.ResponseWriter, r *http.Request) {
 	if req.SMTPPort > 0 {
 		account.SMTPPort = req.SMTPPort
 	}
+	if req.CalDAVURL != nil {
+		account.CalDAVURL = *req.CalDAVURL
+	}
+	if req.CardDAVURL != nil {
+		account.CardDAVURL = *req.CardDAVURL
+	}
 
 	if err := h.db.UpdateAccount(account); err != nil {
 		h.writeError(w, http.StatusInternalServerError, "update failed")
 		return
+	}
+	if account.CalDAVURL != "" || account.CardDAVURL != "" {
+		go h.syncer.SyncAccountNow(account.ID)
 	}
 	h.writeJSON(w, map[string]bool{"ok": true})
 }
 
 func (h *APIHandler) TestConnection(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Email    string `json:"email"`
-		Password string `json:"password"`
-		IMAPHost string `json:"imap_host"`
-		IMAPPort int    `json:"imap_port"`
-		SMTPHost string `json:"smtp_host"`
-		SMTPPort int    `json:"smtp_port"`
+		Email     string `json:"email"`
+		Password  string `json:"password"`
+		Provider  string `json:"provider"` // "jmap" or "" / "imap_smtp" (default)
+		IMAPHost  string `json:"imap_host"`
+		IMAPPort  int    `json:"imap_port"`
+		SMTPHost  string `json:"smtp_host"`
+		SMTPPort  int    `json:"smtp_port"`
+		AccountID int64  `json:"account_id,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.writeError(w, http.StatusBadRequest, "invalid request")
 		return
 	}
+
+	if req.Provider == string(models.ProviderJMAP) {
+		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+		defer cancel()
+		if _, err := jmap.New(req.IMAPHost, req.Email, req.Password).Session(ctx); err != nil {
+			h.writeJSON(w, map[string]interface{}{"ok": false, "error": map[string]string{"type": "connection_error", "message": err.Error()}})
+			return
+		}
+		h.writeJSON(w, map[string]bool{"ok": true})
+		return
+	}
+
 	if req.IMAPPort == 0 {
 		req.IMAPPort = 993
 	}
 
 	testAccount := &models.EmailAccount{
+		ID:           req.AccountID,
 		Provider:     models.ProviderIMAPSMTP,
 		EmailAddress: req.Email,
 		AccessToken:  req.Password,
@@ -249,8 +309,28 @@ func (h *APIHandler) TestConnection(w http.ResponseWriter, r *http.Request) {
 		SMTPPort:     req.SMTPPort,
 	}
 
-	if err := email.TestConnection(testAccount); err != nil {
-		h.writeJSON(w, map[string]interface{}{"ok": false, "error": err.Error()})
+	connErr := email.TestConnectionDetailed(testAccount, h.db)
+	if connErr != nil {
+		h.writeJSON(w, map[string]interface{}{"ok": false, "error": connErr})
+		return
+	}
+	h.writeJSON(w, map[string]bool{"ok": true})
+}
+
+// TrustCertificate adds a certificate to the trusted list for an account.
+func (h *APIHandler) TrustCertificate(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		AccountID   int64  `json:"account_id"`
+		CertHash    string `json:"cert_hash"`
+		CertPEM     string `json:"cert_pem"`
+		Hostname    string `json:"hostname"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.writeError(w, http.StatusBadRequest, "invalid request")
+		return
+	}
+	if err := h.db.TrustCertificate(req.AccountID, req.CertHash, req.CertPEM, req.Hostname); err != nil {
+		h.writeError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to trust certificate: %v", err))
 		return
 	}
 	h.writeJSON(w, map[string]bool{"ok": true})
@@ -413,6 +493,53 @@ func (h *APIHandler) CountFolderMessages(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	h.writeJSON(w, map[string]int{"count": count})
+}
+
+func (h *APIHandler) CreateFolder(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.GetUserID(r)
+	accountID := pathInt64(r, "account_id")
+
+	var req struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.writeError(w, http.StatusBadRequest, "invalid request")
+		return
+	}
+	req.Name = strings.TrimSpace(req.Name)
+	if req.Name == "" {
+		h.writeError(w, http.StatusBadRequest, "folder name required")
+		return
+	}
+
+	account, err := h.db.GetAccount(accountID)
+	if err != nil || account == nil || account.UserID != userID {
+		h.writeError(w, http.StatusNotFound, "account not found")
+		return
+	}
+
+	imapClient, err := email.Connect(context.Background(), account)
+	if err != nil {
+		h.writeError(w, http.StatusBadGateway, "could not connect to mailbox")
+		return
+	}
+	defer imapClient.Close()
+	if err := imapClient.CreateMailbox(req.Name); err != nil {
+		h.writeError(w, http.StatusBadGateway, "create failed: "+err.Error())
+		return
+	}
+
+	folder := &models.Folder{AccountID: accountID, Name: req.Name, FullPath: req.Name, FolderType: "custom"}
+	if err := h.db.UpsertFolder(folder); err != nil {
+		h.writeError(w, http.StatusInternalServerError, "saved on server but failed to save locally")
+		return
+	}
+	saved, err := h.db.GetFolderByPath(accountID, req.Name)
+	if err != nil || saved == nil {
+		h.writeError(w, http.StatusInternalServerError, "created but failed to load folder")
+		return
+	}
+	h.writeJSON(w, map[string]interface{}{"ok": true, "folder": saved})
 }
 
 func (h *APIHandler) DeleteFolder(w http.ResponseWriter, r *http.Request) {
@@ -593,18 +720,26 @@ func (h *APIHandler) GetMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	h.db.MarkMessageRead(messageID, userID, true)
 
-	// For Graph accounts: fetch body lazily on open (not stored during list sync)
+	// For Graph/JMAP accounts: fetch body lazily on open (not stored during list sync)
 	if msg.BodyHTML == "" && msg.BodyText == "" {
-		if graphMsgID, _, account, gerr := h.db.GetMessageGraphInfo(messageID, userID); gerr == nil &&
-			account != nil && account.Provider == models.ProviderOutlookPersonal {
-			if gMsg, gErr := graphpkg.New(account).GetMessage(context.Background(), graphMsgID); gErr == nil {
-				if gMsg.Body.ContentType == "html" {
-					msg.BodyHTML = gMsg.Body.Content
-				} else {
-					msg.BodyText = gMsg.Body.Content
+		if remoteID, _, account, rerr := h.db.GetMessageGraphInfo(messageID, userID); rerr == nil && account != nil {
+			switch account.Provider {
+			case models.ProviderOutlookPersonal:
+				if gMsg, gErr := graphpkg.New(account).GetMessage(context.Background(), remoteID); gErr == nil {
+					if gMsg.Body.ContentType == "html" {
+						msg.BodyHTML = gMsg.Body.Content
+					} else {
+						msg.BodyText = gMsg.Body.Content
+					}
+					// Persist so next open is instant
+					h.db.UpdateMessageBody(messageID, msg.BodyText, msg.BodyHTML)
 				}
-				// Persist so next open is instant
-				h.db.UpdateMessageBody(messageID, msg.BodyText, msg.BodyHTML)
+			case models.ProviderJMAP:
+				if jMsg, jErr := jmap.New(account.IMAPHost, account.EmailAddress, account.AccessToken).GetEmailBody(context.Background(), remoteID); jErr == nil {
+					msg.BodyHTML = jMsg.HTMLValue()
+					msg.BodyText = jMsg.TextValue()
+					h.db.UpdateMessageBody(messageID, msg.BodyText, msg.BodyHTML)
+				}
 			}
 		}
 	}
@@ -640,10 +775,13 @@ func (h *APIHandler) MarkRead(w http.ResponseWriter, r *http.Request) {
 	json.NewDecoder(r.Body).Decode(&req)
 	h.db.MarkMessageRead(messageID, userID, req.Read)
 
-	if graphMsgID, _, account, err := h.db.GetMessageGraphInfo(messageID, userID); err == nil && account != nil &&
-		account.Provider == models.ProviderOutlookPersonal {
-		go graphpkg.New(account).MarkRead(context.Background(), graphMsgID, req.Read)
-	} else {
+	remoteID, _, account, rerr := h.db.GetMessageGraphInfo(messageID, userID)
+	switch {
+	case rerr == nil && account != nil && account.Provider == models.ProviderOutlookPersonal:
+		go graphpkg.New(account).MarkRead(context.Background(), remoteID, req.Read)
+	case rerr == nil && account != nil && account.Provider == models.ProviderJMAP:
+		go jmap.New(account.IMAPHost, account.EmailAddress, account.AccessToken).SetKeyword(context.Background(), remoteID, "$seen", req.Read)
+	default:
 		uid, folderPath, acc, err2 := h.db.GetMessageIMAPInfo(messageID, userID)
 		if err2 == nil && uid != 0 && acc != nil {
 			val := "0"
@@ -666,10 +804,13 @@ func (h *APIHandler) ToggleStar(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, http.StatusInternalServerError, "failed to toggle star")
 		return
 	}
-	if graphMsgID, _, account, err2 := h.db.GetMessageGraphInfo(messageID, userID); err2 == nil && account != nil &&
-		account.Provider == models.ProviderOutlookPersonal {
-		go graphpkg.New(account).MarkFlagged(context.Background(), graphMsgID, starred)
-	} else {
+	remoteID, _, account, rerr := h.db.GetMessageGraphInfo(messageID, userID)
+	switch {
+	case rerr == nil && account != nil && account.Provider == models.ProviderOutlookPersonal:
+		go graphpkg.New(account).MarkFlagged(context.Background(), remoteID, starred)
+	case rerr == nil && account != nil && account.Provider == models.ProviderJMAP:
+		go jmap.New(account.IMAPHost, account.EmailAddress, account.AccessToken).SetKeyword(context.Background(), remoteID, "$flagged", starred)
+	default:
 		uid, folderPath, acc, ierr := h.db.GetMessageIMAPInfo(messageID, userID)
 		if ierr == nil && uid != 0 && acc != nil {
 			val := "0"
@@ -705,10 +846,12 @@ func (h *APIHandler) MoveMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Route to Graph or IMAP
-	if graphMsgID, _, graphAcc, gerr := h.db.GetMessageGraphInfo(messageID, userID); gerr == nil && graphAcc != nil &&
-		graphAcc.Provider == models.ProviderOutlookPersonal && destFolder != nil {
-		go graphpkg.New(graphAcc).MoveMessage(context.Background(), graphMsgID, destFolder.FullPath)
+	// Route to Graph, JMAP, or IMAP
+	remoteID, _, remoteAcc, rerr := h.db.GetMessageGraphInfo(messageID, userID)
+	if rerr == nil && remoteAcc != nil && remoteAcc.Provider == models.ProviderOutlookPersonal && destFolder != nil {
+		go graphpkg.New(remoteAcc).MoveMessage(context.Background(), remoteID, destFolder.FullPath)
+	} else if rerr == nil && remoteAcc != nil && remoteAcc.Provider == models.ProviderJMAP && destFolder != nil {
+		go jmap.New(remoteAcc.IMAPHost, remoteAcc.EmailAddress, remoteAcc.AccessToken).MoveEmail(context.Background(), remoteID, destFolder.FullPath)
 	} else if imapErr == nil && uid != 0 && account != nil && destFolder != nil {
 		h.db.EnqueueIMAPOp(&db.PendingIMAPOp{
 			AccountID: account.ID, OpType: "move",
@@ -724,7 +867,7 @@ func (h *APIHandler) DeleteMessage(w http.ResponseWriter, r *http.Request) {
 	messageID := pathInt64(r, "id")
 
 	// Get message info before deleting from DB
-	graphMsgID, _, graphAcc, graphErr := h.db.GetMessageGraphInfo(messageID, userID)
+	remoteID, _, remoteAcc, remoteErr := h.db.GetMessageGraphInfo(messageID, userID)
 	uid, folderPath, account, imapErr := h.db.GetMessageIMAPInfo(messageID, userID)
 
 	if err := h.db.DeleteMessage(messageID, userID); err != nil {
@@ -732,8 +875,10 @@ func (h *APIHandler) DeleteMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if graphErr == nil && graphAcc != nil && graphAcc.Provider == models.ProviderOutlookPersonal {
-		go graphpkg.New(graphAcc).DeleteMessage(context.Background(), graphMsgID)
+	if remoteErr == nil && remoteAcc != nil && remoteAcc.Provider == models.ProviderOutlookPersonal {
+		go graphpkg.New(remoteAcc).DeleteMessage(context.Background(), remoteID)
+	} else if remoteErr == nil && remoteAcc != nil && remoteAcc.Provider == models.ProviderJMAP {
+		go jmap.New(remoteAcc.IMAPHost, remoteAcc.EmailAddress, remoteAcc.AccessToken).DeleteEmail(context.Background(), remoteID)
 	} else if imapErr == nil && uid != 0 && account != nil {
 		h.db.EnqueueIMAPOp(&db.PendingIMAPOp{
 			AccountID: account.ID, OpType: "delete",
@@ -853,8 +998,14 @@ func (h *APIHandler) handleSend(w http.ResponseWriter, r *http.Request, mode str
 		return
 	}
 
-	if err := email.SendMessageFull(context.Background(), account, &req); err != nil {
-		log.Printf("SMTP send failed account=%d user=%d: %v", req.AccountID, userID, err)
+	sendCtx, sendCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer sendCancel()
+	sendFn := email.SendMessageFull
+	if account.Provider == models.ProviderJMAP {
+		sendFn = email.SendMessageJMAP
+	}
+	if err := sendFn(sendCtx, account, &req, h.newSigner(userID)); err != nil {
+		log.Printf("send failed account=%d user=%d: %v", req.AccountID, userID, err)
 		h.db.WriteAudit(&userID, models.AuditAppError,
 			fmt.Sprintf("send failed account:%d – %v", req.AccountID, err),
 			middleware.ClientIP(r), r.UserAgent())
@@ -905,14 +1056,40 @@ func (h *APIHandler) ListAccountFolders(w http.ResponseWriter, r *http.Request) 
 func (h *APIHandler) Search(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.GetUserID(r)
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
-	if q == "" {
-		h.writeError(w, http.StatusBadRequest, "q parameter required")
-		return
-	}
 	page := queryInt(r, "page", 1)
 	pageSize := queryInt(r, "page_size", 50)
 
-	result, err := h.db.SearchMessages(userID, q, page, pageSize)
+	filters := db.SearchFilters{
+		Scope:    r.URL.Query().Get("scope"),
+		DateFrom: r.URL.Query().Get("date_from"),
+		DateTo:   r.URL.Query().Get("date_to"),
+	}
+	if v := r.URL.Query().Get("has_attachment"); v != "" {
+		b := v == "1" || v == "true"
+		filters.HasAttachment = &b
+	}
+	if v, err := strconv.Atoi(r.URL.Query().Get("min_size_kb")); err == nil {
+		filters.MinSizeKB = &v
+	}
+	if v, err := strconv.Atoi(r.URL.Query().Get("max_size_kb")); err == nil {
+		filters.MaxSizeKB = &v
+	}
+	if v, err := strconv.ParseInt(r.URL.Query().Get("account_id"), 10, 64); err == nil {
+		filters.AccountID = &v
+	}
+	if v, err := strconv.ParseInt(r.URL.Query().Get("folder_id"), 10, 64); err == nil {
+		filters.FolderID = &v
+	}
+	// q may be blank when the caller is filtering only (attachment/date/size/mailbox) —
+	// an empty LIKE pattern matches everything, so that's a no-op text filter, not an error.
+	if q == "" && filters.Scope == "" && filters.HasAttachment == nil && filters.DateFrom == "" &&
+		filters.DateTo == "" && filters.MinSizeKB == nil && filters.MaxSizeKB == nil &&
+		filters.AccountID == nil && filters.FolderID == nil {
+		h.writeError(w, http.StatusBadRequest, "q or a filter is required")
+		return
+	}
+
+	result, err := h.db.SearchMessages(userID, q, filters, page, pageSize)
 	if err != nil {
 		h.writeError(w, http.StatusInternalServerError, "search failed")
 		return
@@ -1414,25 +1591,55 @@ func (h *APIHandler) SaveDraft(w http.ResponseWriter, r *http.Request) {
 
 	raw := []byte(buf.String())
 
-	// Append to IMAP Drafts in background
-	go func() {
-		c, err := email.Connect(context.Background(), account)
-		if err != nil {
-			log.Printf("[draft] IMAP connect %s: %v", account.EmailAddress, err)
-			return
-		}
-		defer c.Close()
-		draftsFolder, err := c.AppendToDrafts(raw)
-		if err != nil {
-			log.Printf("[draft] AppendToDrafts %s: %v", account.EmailAddress, err)
-			return
-		}
-		if draftsFolder != "" {
-			// Trigger a sync of the drafts folder to pick up the saved draft
-			h.syncer.TriggerAccountSync(account.ID)
-		}
-	}()
+	c, err := email.Connect(context.Background(), account)
+	if err != nil {
+		h.writeError(w, http.StatusBadGateway, "could not connect to mailbox")
+		return
+	}
+	defer c.Close()
+	draftsFolder, newUID, err := c.AppendToDrafts(raw, req.DraftUID)
+	if err != nil {
+		h.writeError(w, http.StatusBadGateway, "save failed: "+err.Error())
+		return
+	}
+	if draftsFolder != "" {
+		// Trigger a sync of the drafts folder to pick up the saved draft
+		h.syncer.TriggerAccountSync(account.ID)
+	}
 
+	h.writeJSON(w, map[string]interface{}{"ok": true, "draft_uid": newUID})
+}
+
+// DiscardDraft deletes a previously-autosaved draft (identified by its IMAP UID, returned
+// from an earlier SaveDraft call) from the account's Drafts folder — used when the user
+// closes a compose panel and chooses not to keep the draft that autosave already wrote to
+// the server.
+func (h *APIHandler) DiscardDraft(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.GetUserID(r)
+	var req struct {
+		AccountID int64  `json:"account_id"`
+		DraftUID  uint32 `json:"draft_uid"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.DraftUID == 0 {
+		h.writeError(w, http.StatusBadRequest, "invalid request")
+		return
+	}
+	account, err := h.db.GetAccount(req.AccountID)
+	if err != nil || account == nil || account.UserID != userID {
+		h.writeError(w, http.StatusBadRequest, "account not found")
+		return
+	}
+	c, err := email.Connect(context.Background(), account)
+	if err != nil {
+		h.writeError(w, http.StatusBadGateway, "could not connect to mailbox")
+		return
+	}
+	defer c.Close()
+	if err := c.DiscardDraftUID(req.DraftUID); err != nil {
+		h.writeError(w, http.StatusBadGateway, "delete failed: "+err.Error())
+		return
+	}
+	h.syncer.TriggerAccountSync(account.ID)
 	h.writeJSON(w, map[string]bool{"ok": true})
 }
 

@@ -16,9 +16,11 @@ import (
 	"github.com/ghostersk/gowebmail/internal/logger"
 	"github.com/ghostersk/gowebmail/config"
 	"github.com/ghostersk/gowebmail/internal/auth"
+	"github.com/ghostersk/gowebmail/internal/caldav"
 	"github.com/ghostersk/gowebmail/internal/db"
 	"github.com/ghostersk/gowebmail/internal/email"
 	"github.com/ghostersk/gowebmail/internal/graph"
+	"github.com/ghostersk/gowebmail/internal/jmap"
 	"github.com/ghostersk/gowebmail/internal/models"
 )
 
@@ -205,6 +207,15 @@ func (s *Scheduler) reconcileWorkers(
 func (s *Scheduler) accountWorker(account *models.EmailAccount, stop chan struct{}, push chan struct{}) {
 	log.Printf("[sync] worker started for %s", account.EmailAddress)
 
+	// CalDAV/CardDAV sync is optional and independent of the mail provider above,
+	// so it runs for every account regardless of which branch below is taken.
+	// davWorker no-ops on each tick if neither URL is configured.
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		s.davWorker(account, stop)
+	}()
+
 	// Fresh account data function (interval can change at runtime)
 	getAccount := func() *models.EmailAccount {
 		a, _ := s.db.GetAccount(account.ID)
@@ -217,6 +228,12 @@ func (s *Scheduler) accountWorker(account *models.EmailAccount, stop chan struct
 	// Graph-based accounts (personal outlook.com) use a different sync path
 	if account.Provider == models.ProviderOutlookPersonal {
 		s.graphWorker(account, stop, push)
+		return
+	}
+
+	// JMAP accounts use a different sync path (REST/JSON, like Graph)
+	if account.Provider == models.ProviderJMAP {
+		s.jmapWorker(account, stop, push)
 		return
 	}
 
@@ -467,6 +484,9 @@ func (s *Scheduler) syncFolder(c *email.Client, account *models.EmailAccount, db
 	storedValidity, lastSeenUID := s.db.GetFolderSyncState(dbFolder.ID)
 	newMessages := 0
 
+	// Fetched once per folder-sync, not per message — rules rarely change mid-sync.
+	activeRules, _ := s.db.ListActiveRules(account.ID)
+
 	// UIDVALIDITY changed = folder was recreated on server; wipe local and re-fetch all
 	if storedValidity != 0 && status.UIDValidity != storedValidity {
 		log.Printf("[sync] UIDVALIDITY changed for %s/%s — full re-sync", account.EmailAddress, dbFolder.FullPath)
@@ -499,6 +519,9 @@ func (s *Scheduler) syncFolder(c *email.Client, account *models.EmailAccount, db
 			if len(msg.Attachments) > 0 && msg.ID > 0 {
 				_ = s.db.SaveAttachmentMeta(msg.ID, msg.Attachments)
 			}
+			if rule := matchRule(msg, account.EmailAddress, activeRules); rule != nil {
+				s.applyRuleIMAP(c, account, dbFolder, msg, rule)
+			}
 		}
 		uid := uint32(0)
 		fmt.Sscanf(msg.RemoteUID, "%d", &uid)
@@ -528,7 +551,15 @@ func (s *Scheduler) syncFolder(c *email.Client, account *models.EmailAccount, db
 
 	// Save sync state
 	s.db.SetFolderSyncState(dbFolder.ID, status.UIDValidity, maxUID)
-	s.db.UpdateFolderCounts(dbFolder.ID)
+
+	// Use the server's real total/unread counts (STATUS), not just what's synced locally —
+	// with a limited sync_days window, the local messages table only holds a recent subset,
+	// which would otherwise undercount folders that have older mail sitting on the server.
+	if total, unread, cerr := c.GetFolderCounts(dbFolder.FullPath); cerr == nil {
+		s.db.UpdateFolderCountsDirect(dbFolder.ID, int(total), int(unread))
+	} else {
+		s.db.UpdateFolderCounts(dbFolder.ID)
+	}
 
 	return newMessages, nil
 }
@@ -537,8 +568,9 @@ func (s *Scheduler) syncFolder(c *email.Client, account *models.EmailAccount, db
 // Applies queued IMAP write operations (delete/move/flag) with retry logic.
 
 func (s *Scheduler) drainPendingOps(account *models.EmailAccount) {
-	// Graph accounts don't use the IMAP ops queue
-	if account.Provider == models.ProviderOutlookPersonal {
+	// Graph/JMAP accounts don't use the IMAP ops queue — their mutations are
+	// applied synchronously in the API handlers instead (see api.go).
+	if account.Provider == models.ProviderOutlookPersonal || account.Provider == models.ProviderJMAP {
 		return
 	}
 	ops, err := s.db.DequeuePendingOps(account.ID, 50)
@@ -659,7 +691,15 @@ func (s *Scheduler) SyncAccountNow(accountID int64) (int, error) {
 		return 0, fmt.Errorf("account %d not found", accountID)
 	}
 	s.drainPendingOps(account)
-	s.deltaSync(account)
+	switch account.Provider {
+	case models.ProviderOutlookPersonal:
+		s.graphDeltaSync(account)
+	case models.ProviderJMAP:
+		s.jmapDeltaSync(account)
+	default:
+		s.deltaSync(account)
+	}
+	s.davSync(account)
 	return 0, nil
 }
 
@@ -706,6 +746,38 @@ func (s *Scheduler) SyncFolderNow(accountID, folderID int64) (int, error) {
 			}
 		}
 		// Update folder counts
+		s.db.UpdateFolderCountsDirect(folder.ID, len(msgs), 0)
+		return n, nil
+	}
+
+	// JMAP accounts use the JMAP sync path, not IMAP
+	if account.Provider == models.ProviderJMAP {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		jc := jmap.New(account.IMAPHost, account.EmailAddress, account.AccessToken)
+		msgs, err := jc.ListEmails(ctx, folder.FullPath, 100)
+		if err != nil {
+			return 0, fmt.Errorf("jmap list emails: %w", err)
+		}
+		n := 0
+		for _, jm := range msgs {
+			msg := &models.Message{
+				AccountID:     account.ID,
+				FolderID:      folder.ID,
+				RemoteUID:     jm.ID,
+				Subject:       jm.Subject,
+				FromName:      jm.FromName(),
+				FromEmail:     jm.FromEmail(),
+				ToList:        jm.ToList(),
+				Date:          jm.ReceivedAt,
+				IsRead:        jm.IsRead(),
+				IsStarred:     jm.IsFlagged(),
+				HasAttachment: jm.HasAttachment,
+			}
+			if dbErr := s.db.UpsertMessage(msg); dbErr == nil {
+				n++
+			}
+		}
 		s.db.UpdateFolderCountsDirect(folder.ID, len(msgs), 0)
 		return n, nil
 	}
@@ -817,6 +889,9 @@ func (s *Scheduler) graphDeltaSync(account *models.EmailAccount) {
 			continue
 		}
 
+		// Fetched once per folder-sync, not per message.
+		activeRules, _ := s.db.ListActiveRules(account.ID)
+
 		for _, gm := range msgs {
 			// Body is NOT included in list response — fetched lazily on first open via GetMessage.
 			msg := &models.Message{
@@ -835,6 +910,11 @@ func (s *Scheduler) graphDeltaSync(account *models.EmailAccount) {
 			}
 			if err := s.db.UpsertMessage(msg); err == nil {
 				totalNew++
+				// NOTE: msg.BodyText is never populated here (body is fetched lazily on open,
+				// by design, for perf) — a rule's "body" condition never matches on this path.
+				if rule := matchRule(msg, account.EmailAddress, activeRules); rule != nil {
+					s.applyRuleGraph(gc, account, msg, rule)
+				}
 			}
 		}
 
@@ -845,5 +925,192 @@ func (s *Scheduler) graphDeltaSync(account *models.EmailAccount) {
 	s.db.UpdateAccountLastSync(account.ID)
 	if totalNew > 0 {
 		logger.Debug("[graph:%s] %d new messages", account.EmailAddress, totalNew)
+	}
+}
+
+// ---- JMAP sync ----
+// jmapWorker is the accountWorker equivalent for ProviderJMAP accounts. It
+// polls the JMAP server instead of using IMAP — mirrors graphWorker, since
+// both are REST/JSON providers with no IMAP-style IDLE connection to hold open.
+
+func (s *Scheduler) jmapWorker(account *models.EmailAccount, stop chan struct{}, push chan struct{}) {
+	logger.Debug("[jmap] worker started for %s", account.EmailAddress)
+
+	getAccount := func() *models.EmailAccount {
+		a, _ := s.db.GetAccount(account.ID)
+		if a == nil {
+			return account
+		}
+		return a
+	}
+
+	s.jmapDeltaSync(getAccount())
+
+	syncTicker := time.NewTicker(30 * time.Second)
+	defer syncTicker.Stop()
+
+	for {
+		select {
+		case <-stop:
+			logger.Debug("[jmap] worker stopped for %s", account.EmailAddress)
+			return
+		case <-push:
+			s.jmapDeltaSync(getAccount())
+		case <-syncTicker.C:
+			acc := getAccount()
+			if !acc.LastSync.IsZero() {
+				interval := time.Duration(acc.SyncInterval) * time.Minute
+				if interval <= 0 {
+					interval = 15 * time.Minute
+				}
+				if time.Since(acc.LastSync) < interval {
+					continue
+				}
+			}
+			s.jmapDeltaSync(acc)
+		}
+	}
+}
+
+// jmapDeltaSync fetches mail via JMAP and stores it in the same DB tables as
+// the IMAP/Graph sync paths, so the rest of the app works unchanged.
+// account.IMAPHost holds the JMAP server base URL (see models.EmailAccount).
+func (s *Scheduler) jmapDeltaSync(account *models.EmailAccount) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	jc := jmap.New(account.IMAPHost, account.EmailAddress, account.AccessToken)
+
+	boxes, err := jc.ListMailboxes(ctx)
+	if err != nil {
+		log.Printf("[jmap:%s] list mailboxes: %v", account.EmailAddress, err)
+		s.db.SetAccountError(account.ID, "JMAP error: "+err.Error())
+		return
+	}
+	s.db.ClearAccountError(account.ID)
+
+	totalNew := 0
+	for _, mb := range boxes {
+		folderType := jmap.InferFolderType(mb.Role)
+		dbFolder := &models.Folder{
+			AccountID:   account.ID,
+			Name:        mb.Name,
+			FullPath:    mb.ID, // JMAP uses opaque IDs as folder path, like Graph
+			FolderType:  folderType,
+			UnreadCount: mb.UnreadEmails,
+			TotalCount:  mb.TotalEmails,
+			SyncEnabled: true,
+		}
+		if err := s.db.UpsertFolder(dbFolder); err != nil {
+			continue
+		}
+		dbFolderSaved, _ := s.db.GetFolderByPath(account.ID, mb.ID)
+		if dbFolderSaved == nil || !dbFolderSaved.SyncEnabled {
+			continue
+		}
+
+		// Fetch latest messages — no since filter, rely on upsert idempotency,
+		// same approach as graphDeltaSync (JMAP's Email/query sort isn't
+		// documented as supported — see tests/jmap-client.md).
+		msgs, err := jc.ListEmails(ctx, mb.ID, 100)
+		if err != nil {
+			log.Printf("[jmap:%s] list emails in %s: %v", account.EmailAddress, mb.Name, err)
+			continue
+		}
+
+		for _, jm := range msgs {
+			// Body is NOT included in list response — fetched lazily on first
+			// open, same as Graph's lazy-body pattern.
+			msg := &models.Message{
+				AccountID:     account.ID,
+				FolderID:      dbFolderSaved.ID,
+				RemoteUID:     jm.ID,
+				Subject:       jm.Subject,
+				FromName:      jm.FromName(),
+				FromEmail:     jm.FromEmail(),
+				ToList:        jm.ToList(),
+				Date:          jm.ReceivedAt,
+				IsRead:        jm.IsRead(),
+				IsStarred:     jm.IsFlagged(),
+				HasAttachment: jm.HasAttachment,
+			}
+			if err := s.db.UpsertMessage(msg); err == nil {
+				totalNew++
+			}
+		}
+
+		s.db.UpdateFolderCountsDirect(dbFolderSaved.ID, mb.TotalEmails, mb.UnreadEmails)
+	}
+
+	s.db.UpdateAccountLastSync(account.ID)
+	if totalNew > 0 {
+		logger.Debug("[jmap:%s] %d new messages", account.EmailAddress, totalNew)
+	}
+}
+
+// ---- CalDAV/CardDAV sync ----
+// Optional per-account add-on, independent of the mail provider (IMAP/JMAP/Graph).
+// Pull-only: mirrors the remote calendar/address book into the local DB.
+
+func (s *Scheduler) davWorker(account *models.EmailAccount, stop chan struct{}) {
+	getAccount := func() *models.EmailAccount {
+		a, _ := s.db.GetAccount(account.ID)
+		if a == nil {
+			return account
+		}
+		return a
+	}
+
+	s.davSync(getAccount())
+
+	ticker := time.NewTicker(15 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			s.davSync(getAccount())
+		}
+	}
+}
+
+func (s *Scheduler) davSync(account *models.EmailAccount) {
+	if account.CalDAVURL == "" && account.CardDAVURL == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	if account.CalDAVURL != "" {
+		events, err := caldav.SyncCalendar(ctx, account.CalDAVURL, account.EmailAddress, account.AccessToken, account.ID)
+		if err != nil {
+			logger.Debug("[caldav:%s] sync: %v", account.EmailAddress, err)
+		} else {
+			uids := make([]string, 0, len(events))
+			for _, e := range events {
+				e.UserID = account.UserID
+				if err := s.db.UpsertCalendarEvent(e); err == nil {
+					uids = append(uids, e.UID)
+				}
+			}
+			s.db.DeleteCalendarEventsNotIn(account.ID, uids)
+		}
+	}
+
+	if account.CardDAVURL != "" {
+		contacts, err := caldav.SyncContacts(ctx, account.CardDAVURL, account.EmailAddress, account.AccessToken, account.ID)
+		if err != nil {
+			logger.Debug("[carddav:%s] sync: %v", account.EmailAddress, err)
+		} else {
+			uids := make([]string, 0, len(contacts))
+			for _, c := range contacts {
+				c.UserID = account.UserID
+				if err := s.db.UpsertContact(c); err == nil {
+					uids = append(uids, c.UID)
+				}
+			}
+			s.db.DeleteContactsNotIn(account.ID, uids)
+		}
 	}
 }

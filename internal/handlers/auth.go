@@ -20,6 +20,7 @@ import (
 	"github.com/ghostersk/gowebmail/internal/mfa"
 	"github.com/ghostersk/gowebmail/internal/middleware"
 	"github.com/ghostersk/gowebmail/internal/models"
+	"github.com/ghostersk/gowebmail/internal/pgp"
 
 	"golang.org/x/oauth2"
 )
@@ -30,6 +31,7 @@ type AuthHandler struct {
 	cfg      *config.Config
 	renderer *Renderer
 	syncer   interface{ TriggerReconcile() }
+	pgpCache *pgp.Cache
 }
 
 // ---- Login ----
@@ -101,6 +103,9 @@ func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 			h.db.WriteAudit(&userID, models.AuditLogout, "", middleware.ClientIP(r), r.UserAgent())
 		}
 		h.db.DeleteSession(cookie.Value)
+		if h.pgpCache != nil {
+			h.pgpCache.ClearSession(cookie.Value)
+		}
 	}
 	http.SetCookie(w, &http.Cookie{
 		Name: "gomail_session", Value: "", MaxAge: -1, Path: "/",

@@ -4,8 +4,11 @@ package email
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,6 +16,7 @@ import (
 	"mime"
 	"mime/multipart"
 	"mime/quotedprintable"
+	"net"
 	netmail "net/mail"
 	"net/smtp"
 	"path/filepath"
@@ -25,6 +29,50 @@ import (
 
 	gomailModels "github.com/ghostersk/gowebmail/internal/models"
 )
+
+// defaultNetTimeout bounds any dial/command whose caller passed a context
+// with no deadline (e.g. TestConnection). Callers with a deadline (deltaSync,
+// idleWatcher) get that deadline instead — see dialTimeout.
+const defaultNetTimeout = 20 * time.Second
+
+func dialTimeout(ctx context.Context) time.Duration {
+	if dl, ok := ctx.Deadline(); ok {
+		if d := time.Until(dl); d > 0 {
+			return d
+		}
+	}
+	return defaultNetTimeout
+}
+
+// connectIMAP dials host:port, trying implicit TLS first — this covers both
+// the standard 993 port and non-standard implicit-SSL ports (e.g. 40993).
+// If the server isn't speaking TLS at all (tls.RecordHeaderError), it falls
+// back to plaintext + STARTTLS. A genuine TLS error (bad/self-signed cert)
+// is NOT retried in plaintext — it's returned so callers can surface it.
+// The dial and every subsequent IMAP command are bounded by timeout, so a
+// misconfigured or unreachable server can never hang a caller forever.
+func connectIMAP(ctx context.Context, host string, port int) (*client.Client, error) {
+	addr := fmt.Sprintf("%s:%d", host, port)
+	timeout := dialTimeout(ctx)
+	dialer := &net.Dialer{Timeout: timeout}
+
+	c, err := client.DialWithDialerTLS(dialer, addr, &tls.Config{ServerName: host})
+	if err != nil {
+		if _, notTLS := err.(tls.RecordHeaderError); !notTLS {
+			return nil, err
+		}
+		c, err = client.DialWithDialer(dialer, addr)
+		if err != nil {
+			return nil, err
+		}
+		if err := c.StartTLS(&tls.Config{ServerName: host}); err != nil {
+			c.Logout()
+			return nil, fmt.Errorf("STARTTLS: %w", err)
+		}
+	}
+	c.Timeout = timeout
+	return c, nil
+}
 
 func imapHostFor(provider gomailModels.AccountProvider) (string, int) {
 	switch provider {
@@ -111,21 +159,9 @@ func Connect(ctx context.Context, account *gomailModels.EmailAccount) (*Client, 
 		return nil, fmt.Errorf("IMAP host not configured for account %s", account.EmailAddress)
 	}
 
-	addr := fmt.Sprintf("%s:%d", host, port)
-	var c *client.Client
-	var err error
-
-	if port == 993 {
-		c, err = client.DialTLS(addr, &tls.Config{ServerName: host})
-	} else {
-		c, err = client.Dial(addr)
-		if err == nil {
-			// Attempt STARTTLS; ignore error if server doesn't support it
-			_ = c.StartTLS(&tls.Config{ServerName: host})
-		}
-	}
+	c, err := connectIMAP(ctx, host, port)
 	if err != nil {
-		return nil, fmt.Errorf("IMAP connect %s: %w", addr, err)
+		return nil, fmt.Errorf("IMAP connect %s:%d: %w", host, port, err)
 	}
 
 	switch account.Provider {
@@ -172,6 +208,15 @@ func Connect(ctx context.Context, account *gomailModels.EmailAccount) (*Client, 
 	return &Client{imap: c, account: account}, nil
 }
 
+// TestConnectionError details why a connection failed.
+type TestConnectionError struct {
+	Type     string `json:"type"`      // "connection_error", "cert_error", "auth_error"
+	Message  string `json:"message"`
+	CertPEM  string `json:"cert_pem,omitempty"`
+	CertHash string `json:"cert_hash,omitempty"`
+	Hostname string `json:"hostname,omitempty"`
+}
+
 func TestConnection(account *gomailModels.EmailAccount) error {
 	c, err := Connect(context.Background(), account)
 	if err != nil {
@@ -181,10 +226,102 @@ func TestConnection(account *gomailModels.EmailAccount) error {
 	return nil
 }
 
+// TestConnectionDetailed returns structured error info including cert details on failure.
+func TestConnectionDetailed(account *gomailModels.EmailAccount, db interface{}) *TestConnectionError {
+	host, port := imapHostFor(account.Provider)
+	if account.IMAPHost != "" {
+		host = account.IMAPHost
+		port = account.IMAPPort
+	}
+
+	addr := fmt.Sprintf("%s:%d", host, port)
+
+	ctx, cancel := context.WithTimeout(context.Background(), defaultNetTimeout)
+	defer cancel()
+	c, err := connectIMAP(ctx, host, port)
+
+	if err != nil {
+		errInfo := &TestConnectionError{Message: err.Error()}
+
+		// Check if it's a cert error
+		if certErr, ok := err.(tls.RecordHeaderError); ok && certErr.Msg != "" {
+			errInfo.Type = "cert_error"
+			errInfo.Hostname = host
+			// Try to dial and capture the cert for display
+			conn, _ := tls.Dial("tcp", addr, &tls.Config{ServerName: host, InsecureSkipVerify: true})
+			if conn != nil {
+				if len(conn.ConnectionState().PeerCertificates) > 0 {
+					cert := conn.ConnectionState().PeerCertificates[0]
+					hash := sha256.Sum256(cert.Raw)
+					errInfo.CertHash = hex.EncodeToString(hash[:])
+					errInfo.CertPEM = string(mustEncodeCert(cert.Raw))
+				}
+				conn.Close()
+			}
+		} else {
+			// Check if underlying error is a cert error
+			if e, ok := err.(*x509.UnknownAuthorityError); ok {
+				errInfo.Type = "cert_error"
+				errInfo.Hostname = host
+				if cert := e.Cert; cert != nil {
+					hash := sha256.Sum256(cert.Raw)
+					errInfo.CertHash = hex.EncodeToString(hash[:])
+					errInfo.CertPEM = string(mustEncodeCert(cert.Raw))
+				}
+			} else if strings.Contains(err.Error(), "certificate") {
+				errInfo.Type = "cert_error"
+				errInfo.Hostname = host
+				// Dial insecurely to get the cert
+				conn, _ := tls.Dial("tcp", addr, &tls.Config{ServerName: host, InsecureSkipVerify: true})
+				if conn != nil && len(conn.ConnectionState().PeerCertificates) > 0 {
+					cert := conn.ConnectionState().PeerCertificates[0]
+					hash := sha256.Sum256(cert.Raw)
+					errInfo.CertHash = hex.EncodeToString(hash[:])
+					errInfo.CertPEM = string(mustEncodeCert(cert.Raw))
+					conn.Close()
+				}
+			} else if strings.Contains(err.Error(), "auth") {
+				errInfo.Type = "auth_error"
+			} else {
+				errInfo.Type = "connection_error"
+			}
+		}
+		return errInfo
+	}
+
+	// Try auth
+	switch account.Provider {
+	case gomailModels.ProviderGmail, gomailModels.ProviderOutlook:
+		sasl := &xoauth2Client{user: account.EmailAddress, token: account.AccessToken}
+		if err := c.Authenticate(sasl); err != nil {
+			c.Logout()
+			return &TestConnectionError{Type: "auth_error", Message: fmt.Sprintf("OAuth auth failed: %v", err)}
+		}
+	default:
+		if err := c.Login(account.EmailAddress, account.AccessToken); err != nil {
+			c.Logout()
+			return &TestConnectionError{Type: "auth_error", Message: fmt.Sprintf("Login failed: %v", err)}
+		}
+	}
+
+	c.Close()
+	return nil
+}
+
+func mustEncodeCert(derBytes []byte) []byte {
+	// Encode DER to PEM
+	return []byte(fmt.Sprintf("-----BEGIN CERTIFICATE-----\n%s\n-----END CERTIFICATE-----\n",
+		base64.StdEncoding.EncodeToString(derBytes)))
+}
+
 func (c *Client) Close() { c.imap.Logout() }
 
 func (c *Client) DeleteMailbox(name string) error {
 	return c.imap.Delete(name)
+}
+
+func (c *Client) CreateMailbox(name string) error {
+	return c.imap.Create(name)
 }
 
 // MoveByUID copies a message to destMailbox and marks it deleted in srcMailbox.
@@ -884,9 +1021,37 @@ func authSMTP(c *smtp.Client, account *gomailModels.EmailAccount, host string) e
 	}
 }
 
+// Signer optionally S/MIME-signs and/or PGP-encrypts the raw outgoing MIME message before
+// it is sent. Implemented in internal/handlers using loaded S/MIME/PGP identities and
+// contacts — kept as an interface here so this package never needs to import internal/db.
+// A nil Signer (the common case: no certs configured) is a no-op.
+type Signer interface {
+	SignAndEncrypt(account *gomailModels.EmailAccount, recipients []string, raw []byte) ([]byte, error)
+}
+
 // SendMessageFull sends an email via SMTP using the account's configured server.
-// It also appends the sent message to the IMAP Sent folder.
-func SendMessageFull(ctx context.Context, account *gomailModels.EmailAccount, req *gomailModels.ComposeRequest) error {
+// It also appends the sent message to the IMAP Sent folder. signer may be nil.
+// BuildRawMessage assembles the RFC822 message body for req (optionally signed/
+// encrypted via signer), shared by the SMTP (SendMessageFull) and JMAP
+// (SendMessageJMAP) send paths.
+func BuildRawMessage(account *gomailModels.EmailAccount, req *gomailModels.ComposeRequest, signer Signer) ([]byte, error) {
+	var buf bytes.Buffer
+	buildMIMEMessage(&buf, account, req)
+	rawMsg := buf.Bytes()
+
+	if signer != nil {
+		allRecipients := append(append([]string{}, req.To...), req.CC...)
+		allRecipients = append(allRecipients, req.BCC...)
+		signed, err := signer.SignAndEncrypt(account, allRecipients, rawMsg)
+		if err != nil {
+			return nil, fmt.Errorf("sign/encrypt: %w", err)
+		}
+		rawMsg = signed
+	}
+	return rawMsg, nil
+}
+
+func SendMessageFull(ctx context.Context, account *gomailModels.EmailAccount, req *gomailModels.ComposeRequest, signer Signer) error {
 	host, port := smtpHostFor(account.Provider)
 	if account.SMTPHost != "" {
 		host = account.SMTPHost
@@ -896,26 +1061,36 @@ func SendMessageFull(ctx context.Context, account *gomailModels.EmailAccount, re
 		return fmt.Errorf("SMTP host not configured")
 	}
 
-	var buf bytes.Buffer
-	buildMIMEMessage(&buf, account, req)
-	rawMsg := buf.Bytes()
+	rawMsg, err := BuildRawMessage(account, req, signer)
+	if err != nil {
+		return err
+	}
 
 	addr := fmt.Sprintf("%s:%d", host, port)
 	logger.Debug("[SMTP] dialing %s for account %s", addr, account.EmailAddress)
 
-	var c *smtp.Client
-	var err error
+	timeout := dialTimeout(ctx)
+	dialer := &net.Dialer{Timeout: timeout}
 
-	if port == 465 {
-		// Implicit TLS (SMTPS)
-		conn, err2 := tls.Dial("tcp", addr, &tls.Config{ServerName: host})
-		if err2 != nil {
-			return fmt.Errorf("SMTPS dial %s: %w", addr, err2)
-		}
-		c, err = smtp.NewClient(conn, host)
+	var c *smtp.Client
+
+	// Try implicit TLS first — covers both the standard 465 port and
+	// non-standard implicit-SSL ports (e.g. 40465). Fall back to plaintext +
+	// STARTTLS only if the server isn't speaking TLS at all; a genuine TLS
+	// error (bad/self-signed cert) is returned as-is, not retried in plaintext.
+	tlsConn, tlsErr := tls.DialWithDialer(dialer, "tcp", addr, &tls.Config{ServerName: host})
+	if tlsErr == nil {
+		tlsConn.SetDeadline(time.Now().Add(timeout))
+		c, err = smtp.NewClient(tlsConn, host)
+	} else if _, notTLS := tlsErr.(tls.RecordHeaderError); !notTLS {
+		return fmt.Errorf("SMTPS dial %s: %w", addr, tlsErr)
 	} else {
-		// Plain SMTP then upgrade with STARTTLS (port 587 / 25)
-		c, err = smtp.Dial(addr)
+		conn, dialErr := dialer.Dial("tcp", addr)
+		if dialErr != nil {
+			return fmt.Errorf("SMTP dial %s: %w", addr, dialErr)
+		}
+		conn.SetDeadline(time.Now().Add(timeout))
+		c, err = smtp.NewClient(conn, host)
 		if err == nil {
 			// EHLO with sender's domain (not "localhost") to avoid rejection by strict MTAs
 			senderDomain := "localhost"
@@ -1137,27 +1312,72 @@ func (c *Client) AppendToSent(rawMsg []byte) error {
 	return c.imap.Append(sentName, flags, now, bytes.NewReader(rawMsg))
 }
 
-// AppendToDrafts saves a draft message to the IMAP Drafts folder via APPEND.
-// Returns the folder name that was used (for sync purposes).
-func (c *Client) AppendToDrafts(rawMsg []byte) (string, error) {
+// draftsMailboxName finds the account's Drafts folder, or "" if none exists.
+func (c *Client) draftsMailboxName() (string, error) {
 	mailboxes, err := c.ListMailboxes()
 	if err != nil {
 		return "", err
 	}
-	var draftsName string
 	for _, mb := range mailboxes {
-		ft := InferFolderType(mb.Name, mb.Attributes)
-		if ft == "drafts" {
-			draftsName = mb.Name
-			break
+		if InferFolderType(mb.Name, mb.Attributes) == "drafts" {
+			return mb.Name, nil
 		}
 	}
+	return "", nil
+}
+
+// AppendToDrafts saves a draft message to the IMAP Drafts folder via APPEND. When prevUID
+// is non-zero, that earlier draft copy is deleted first, so repeated autosaves of the same
+// in-progress compose replace the draft in place instead of piling up duplicates. Returns
+// the folder name (for sync purposes) and the new draft's UID (0 if it couldn't be
+// determined — e.g. concurrent mailbox activity — in which case the next save just
+// appends another copy rather than risk deleting the wrong message).
+//
+// UID lookup is done via a plain UID SEARCH ALL (already used elsewhere for sync) rather
+// than SEARCH HEADER on a custom marker header: some real-world IMAP servers (observed:
+// centrum.sk) reject arbitrary HEADER search keys with "Unsupported search key", which
+// would silently break both the replace-in-place and the discard-on-close paths.
+func (c *Client) AppendToDrafts(rawMsg []byte, prevUID uint32) (string, uint32, error) {
+	draftsName, err := c.draftsMailboxName()
+	if err != nil {
+		return "", 0, err
+	}
 	if draftsName == "" {
-		return "", nil // no Drafts folder, skip silently
+		return "", 0, nil // no Drafts folder, skip silently
+	}
+	if prevUID != 0 {
+		_ = c.DeleteByUID(draftsName, prevUID, "")
 	}
 	flags := []string{imap.DraftFlag, imap.SeenFlag}
 	now := time.Now()
-	return draftsName, c.imap.Append(draftsName, flags, now, bytes.NewReader(rawMsg))
+	if err := c.imap.Append(draftsName, flags, now, bytes.NewReader(rawMsg)); err != nil {
+		return draftsName, 0, err
+	}
+	uids, err := c.ListAllUIDs(draftsName)
+	if err != nil || len(uids) == 0 {
+		return draftsName, 0, nil
+	}
+	newUID := uids[0]
+	for _, u := range uids {
+		if u > newUID {
+			newUID = u
+		}
+	}
+	return draftsName, newUID, nil
+}
+
+// DiscardDraftUID deletes a previously-autosaved draft by UID — used when the user closes
+// an in-progress compose and chooses not to keep the draft that autosave already wrote to
+// the server.
+func (c *Client) DiscardDraftUID(uid uint32) error {
+	if uid == 0 {
+		return nil
+	}
+	draftsName, err := c.draftsMailboxName()
+	if err != nil || draftsName == "" {
+		return err
+	}
+	return c.DeleteByUID(draftsName, uid, "")
 }
 
 // FetchAttachmentRaw fetches a specific attachment from a message by fetching the full
@@ -1338,6 +1558,19 @@ func (c *Client) GetFolderStatus(mailboxName string) (*FolderStatus, error) {
 		UIDNext:     mbox.UidNext,
 		Messages:    mbox.Messages,
 	}, nil
+}
+
+// GetFolderCounts returns the true total/unread message counts for a mailbox straight from
+// the server (IMAP STATUS), independent of how much history has been synced locally — a
+// SELECT's response doesn't carry a real unseen count (only the sequence number of the
+// first unseen message), so this needs its own STATUS query. STATUS doesn't disturb the
+// currently selected mailbox, so it's safe to call alongside GetFolderStatus/syncFolder.
+func (c *Client) GetFolderCounts(mailboxName string) (total, unread uint32, err error) {
+	status, err := c.imap.Status(mailboxName, []imap.StatusItem{imap.StatusMessages, imap.StatusUnseen})
+	if err != nil {
+		return 0, 0, err
+	}
+	return status.Messages, status.Unseen, nil
 }
 
 // ListAllUIDs returns all UIDs currently in the mailbox. Used for purge detection.

@@ -12,13 +12,12 @@ function _setView(view) {
   ['nav-unified','nav-starred','nav-contacts','nav-calendar'].forEach(id => {
     document.getElementById(id)?.classList.remove('active');
   });
-  // Show/hide panels
-  const mail1 = document.getElementById('message-list-panel');
-  const mail2 = document.getElementById('message-detail');
+  // Show/hide panels — mail-view wraps the message list + reading pane together
+  // so they hide/show as one unit rather than two separately-toggled panels.
+  const mailView = document.getElementById('mail-view');
   const contacts = document.getElementById('contacts-panel');
   const calendar = document.getElementById('calendar-panel');
-  if (mail1) mail1.style.display = view === 'mail' ? '' : 'none';
-  if (mail2) mail2.style.display = view === 'mail' ? '' : 'none';
+  if (mailView) mailView.style.display = view === 'mail' ? '' : 'none';
   if (contacts) contacts.style.display = view === 'contacts' ? 'flex' : 'none';
   if (calendar) calendar.style.display = view === 'calendar' ? 'flex' : 'none';
 }

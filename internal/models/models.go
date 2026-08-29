@@ -87,6 +87,7 @@ const (
 	ProviderOutlook        AccountProvider = "outlook"
 	ProviderOutlookPersonal AccountProvider = "outlook_personal" // personal outlook.com via Graph API
 	ProviderIMAPSMTP       AccountProvider = "imap_smtp"
+	ProviderJMAP           AccountProvider = "jmap" // generic JMAP (RFC 8620/8621) server
 )
 
 // EmailAccount represents a connected email account (Gmail, Outlook, IMAP).
@@ -100,11 +101,18 @@ type EmailAccount struct {
 	AccessToken  string    `json:"-"`
 	RefreshToken string    `json:"-"`
 	TokenExpiry  time.Time `json:"-"`
-	// IMAP/SMTP settings (optional, stored encrypted)
+	// IMAP/SMTP settings (optional, stored encrypted).
+	// For ProviderJMAP accounts, IMAPHost holds the JMAP server base URL
+	// (e.g. "https://mail.example.com:8443") and AccessToken holds the app
+	// password — IMAPPort/SMTPHost/SMTPPort are unused for that provider.
 	IMAPHost string `json:"imap_host,omitempty"`
 	IMAPPort int    `json:"imap_port,omitempty"`
 	SMTPHost string `json:"smtp_host,omitempty"`
 	SMTPPort int    `json:"smtp_port,omitempty"`
+	// CalDAV/CardDAV sync — optional, works alongside any provider above.
+	// Blank = disabled. Uses EmailAddress + AccessToken for HTTP basic auth.
+	CalDAVURL  string `json:"caldav_url,omitempty"`
+	CardDAVURL string `json:"carddav_url,omitempty"`
 	// Sync settings
 	SyncDays  int    `json:"sync_days"`  // how many days back to fetch (0 = all)
 	SyncMode  string `json:"sync_mode"`  // "days" or "all"
@@ -199,6 +207,7 @@ type MessageSummary struct {
 	IsRead        bool      `json:"is_read"`
 	IsStarred     bool      `json:"is_starred"`
 	HasAttachment bool      `json:"has_attachment"`
+	Size          int64     `json:"size,omitempty"` // approximate; only populated by search results
 }
 
 // ---- Compose ----
@@ -217,6 +226,10 @@ type ComposeRequest struct {
 	ForwardFromID int64  `json:"forward_from_id,omitempty"`
 	// Attachments: populated from multipart/form-data or inline base64
 	Attachments   []Attachment `json:"attachments,omitempty"`
+	// DraftUID is the IMAP UID of this compose session's previously-autosaved draft (0 if
+	// never saved). A resave deletes that copy before appending the new one, so repeated
+	// autosaves replace the draft in place instead of piling up duplicates.
+	DraftUID uint32 `json:"draft_uid,omitempty"`
 }
 
 // ---- Search ----
@@ -249,6 +262,8 @@ type PagedMessages struct {
 type Contact struct {
 	ID          int64  `json:"id"`
 	UserID      int64  `json:"user_id"`
+	AccountID   *int64 `json:"account_id,omitempty"` // set when synced from an account's CardDAV server
+	UID         string `json:"uid,omitempty"`        // CardDAV UID, or "gwm-..." for locally-created contacts
 	DisplayName string `json:"display_name"`
 	Email       string `json:"email"`
 	Phone       string `json:"phone"`
@@ -288,4 +303,93 @@ type CalDAVToken struct {
 	Label     string `json:"label"`
 	CreatedAt string `json:"created_at"`
 	LastUsed  string `json:"last_used,omitempty"`
+}
+
+// ---- Rules (filters) ----
+
+// RuleCondition is one field/op/value test within a Rule.
+type RuleCondition struct {
+	Field string `json:"field"` // from|to|subject|body|has_attachment|recipient_type
+	Op    string `json:"op"`    // contains|equals|starts_with
+	Value string `json:"value"`
+}
+
+// RuleActionOptions holds action-specific extra settings, stored as JSON.
+type RuleActionOptions struct {
+	KeepCopy bool   `json:"keep_copy,omitempty"` // forward action
+	Body     string `json:"body,omitempty"`      // auto_reply action
+}
+
+// Rule is a mail filter evaluated against newly-synced messages for one account.
+type Rule struct {
+	ID            int64           `json:"id"`
+	AccountID     int64           `json:"account_id"`
+	Name          string          `json:"name"`
+	Priority      int             `json:"priority"`
+	Conditions    []RuleCondition `json:"conditions"`
+	MatchType     string          `json:"match_type"` // all|any
+	Action        string          `json:"action"`      // move_to_folder|delete|mark_read|mark_as_spam|forward|auto_reply
+	ActionValue   string          `json:"action_value"`
+	ActionOptions RuleActionOptions `json:"action_options"`
+	IsActive      bool            `json:"is_active"`
+	CreatedAt     string          `json:"created_at,omitempty"`
+}
+
+// ---- Signatures ----
+
+type Signature struct {
+	ID          int64  `json:"id"`
+	UserID      int64  `json:"user_id"`
+	Name        string `json:"name"`
+	ContentHTML string `json:"content_html"`
+	CreatedAt   string `json:"created_at,omitempty"`
+}
+
+// SignatureDefaults maps an account to its default-for-new/default-for-reply signature.
+type SignatureDefaults struct {
+	AccountID       int64 `json:"account_id"`
+	DefaultNewID    int64 `json:"default_new_id,omitempty"`
+	DefaultReplyID  int64 `json:"default_reply_id,omitempty"`
+}
+
+// ---- S/MIME ----
+
+type SMIMEIdentity struct {
+	ID        int64     `json:"id"`
+	AccountID int64     `json:"account_id"`
+	CertPEM   string    `json:"cert_pem"`
+	KeyPEM    string    `json:"-"` // never serialized to API responses
+	NotAfter  time.Time `json:"not_after"`
+	CreatedAt string    `json:"created_at,omitempty"`
+}
+
+type SMIMEContact struct {
+	ID        int64  `json:"id"`
+	UserID    int64  `json:"user_id"`
+	Email     string `json:"email"`
+	CertPEM   string `json:"cert_pem"`
+	CreatedAt string `json:"created_at,omitempty"`
+}
+
+// ---- PGP ----
+
+type PGPIdentity struct {
+	ID               int64  `json:"id"`
+	AccountID        int64  `json:"account_id"`
+	Label            string `json:"label"`
+	Email            string `json:"email"`
+	Fingerprint      string `json:"fingerprint"`
+	PublicKeyArmor   string `json:"public_key_armor"`
+	PrivateKeyArmor  string `json:"-"` // never serialized to API responses
+	CreatedAt        string `json:"created_at,omitempty"`
+}
+
+type PGPContact struct {
+	ID             int64  `json:"id"`
+	UserID         int64  `json:"user_id"`
+	Email          string `json:"email"`
+	Label          string `json:"label"`
+	Fingerprint    string `json:"fingerprint"`
+	PublicKeyArmor string `json:"public_key_armor"`
+	CreatedAt      string `json:"created_at,omitempty"`
 }

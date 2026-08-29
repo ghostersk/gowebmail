@@ -204,6 +204,7 @@ func main() {
 	api.HandleFunc("/accounts", h.API.ListAccounts).Methods("GET")
 	api.HandleFunc("/accounts", h.API.AddAccount).Methods("POST")
 	api.HandleFunc("/accounts/test", h.API.TestConnection).Methods("POST")
+	api.HandleFunc("/accounts/trust-cert", h.API.TrustCertificate).Methods("POST")
 	api.HandleFunc("/accounts/detect", h.API.DetectMailSettings).Methods("POST")
 	api.HandleFunc("/accounts/{id:[0-9]+}", h.API.GetAccount).Methods("GET")
 	api.HandleFunc("/accounts/{id:[0-9]+}", h.API.UpdateAccount).Methods("PUT")
@@ -235,6 +236,7 @@ func main() {
 	api.HandleFunc("/forward", h.API.ForwardMessage).Methods("POST")
 	api.HandleFunc("/forward-attachment", h.API.ForwardAsAttachment).Methods("POST")
 	api.HandleFunc("/draft", h.API.SaveDraft).Methods("POST")
+	api.HandleFunc("/draft/discard", h.API.DiscardDraft).Methods("POST")
 
 	// Folders
 	api.HandleFunc("/folders", h.API.ListFolders).Methods("GET")
@@ -247,6 +249,7 @@ func main() {
 	api.HandleFunc("/folders/{id:[0-9]+}/mark-all-read", h.API.MarkFolderAllRead).Methods("POST")
 	api.HandleFunc("/folders/{id:[0-9]+}", h.API.DeleteFolder).Methods("DELETE")
 	api.HandleFunc("/accounts/{account_id:[0-9]+}/enable-all-sync", h.API.EnableAllFolderSync).Methods("POST")
+	api.HandleFunc("/accounts/{account_id:[0-9]+}/folders", h.API.CreateFolder).Methods("POST")
 	api.HandleFunc("/poll", h.API.PollUnread).Methods("GET")
 	api.HandleFunc("/new-messages", h.API.NewMessagesSince).Methods("GET")
 
@@ -281,6 +284,38 @@ func main() {
 
 	// CalDAV public feed — token-authenticated, no session needed
 	r.HandleFunc("/caldav/{token}/calendar.ics", h.API.ServeCalDAV).Methods("GET")
+
+	// Mail rules (filters)
+	api.HandleFunc("/rules", h.API.ListRules).Methods("GET")
+	api.HandleFunc("/rules", h.API.CreateRule).Methods("POST")
+	api.HandleFunc("/rules/{id:[0-9]+}", h.API.UpdateRule).Methods("PUT")
+	api.HandleFunc("/rules/{id:[0-9]+}", h.API.DeleteRule).Methods("DELETE")
+
+	// Signatures
+	api.HandleFunc("/signatures", h.API.ListSignatures).Methods("GET")
+	api.HandleFunc("/signatures", h.API.CreateSignature).Methods("POST")
+	api.HandleFunc("/signatures/{id:[0-9]+}", h.API.UpdateSignature).Methods("PUT")
+	api.HandleFunc("/signatures/{id:[0-9]+}", h.API.DeleteSignature).Methods("DELETE")
+	api.HandleFunc("/accounts/{id:[0-9]+}/signature-defaults", h.API.SetSignatureDefaults).Methods("PUT")
+
+	// S/MIME certificates
+	api.HandleFunc("/smime/identity", h.API.SMIMEIdentity).Methods("GET")
+	api.HandleFunc("/smime/identity", h.API.SMIMEGenerate).Methods("POST")
+	api.HandleFunc("/smime/identity/import", h.API.SMIMEImport).Methods("POST")
+	api.HandleFunc("/smime/identity/{id:[0-9]+}", h.API.SMIMERemoveIdentity).Methods("DELETE")
+	api.HandleFunc("/smime/contacts", h.API.SMIMEContacts).Methods("GET")
+	api.HandleFunc("/smime/contacts", h.API.SMIMEAddContact).Methods("POST")
+	api.HandleFunc("/smime/contacts/{id:[0-9]+}", h.API.SMIMERemoveContact).Methods("DELETE")
+
+	// PGP keys
+	api.HandleFunc("/pgp/identity", h.API.PGPIdentity).Methods("GET")
+	api.HandleFunc("/pgp/identity", h.API.PGPGenerate).Methods("POST")
+	api.HandleFunc("/pgp/identity/import", h.API.PGPImport).Methods("POST")
+	api.HandleFunc("/pgp/identity/{id:[0-9]+}", h.API.PGPRemoveIdentity).Methods("DELETE")
+	api.HandleFunc("/pgp/unlock", h.API.PGPUnlock).Methods("POST")
+	api.HandleFunc("/pgp/contacts", h.API.PGPContacts).Methods("GET")
+	api.HandleFunc("/pgp/contacts", h.API.PGPAddContact).Methods("POST")
+	api.HandleFunc("/pgp/contacts/{id:[0-9]+}", h.API.PGPRemoveContact).Methods("DELETE")
 
 	// Admin API
 	adminAPI := r.PathPrefix("/api/admin").Subrouter()

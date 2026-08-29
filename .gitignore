@@ -7,3 +7,7 @@ data/*.txt
 gowebmail-devplan.md
 testrun/
 webmail.code-workspace
+
+graphify-out
+GEMINI.md
+tests/

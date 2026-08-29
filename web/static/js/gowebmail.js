@@ -1,10 +1,13 @@
 // GoWebMail shared utilities - loaded on every page
 
 // ---- API helper ----
-async function api(method, path, body) {
+async function api(method, path, body, timeoutMs) {
   const opts = { method, headers: { 'Content-Type': 'application/json' } };
   if (body !== undefined) opts.body = JSON.stringify(body);
   try {
+    const controller = new AbortController();
+    if (timeoutMs) setTimeout(() => controller.abort(), timeoutMs);
+    opts.signal = controller.signal;
     const r = await fetch('/api' + path, opts);
     if (r.status === 401) { location.href = '/auth/login'; return null; }
     return r.json().catch(() => null);

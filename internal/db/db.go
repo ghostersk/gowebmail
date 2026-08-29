@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -183,6 +184,16 @@ func (d *DB) Migrate() error {
 		`ALTER TABLE email_accounts ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0`,
 		// UI preferences (JSON): collapsed accounts/folders, etc. Synced across devices.
 		`ALTER TABLE users ADD COLUMN ui_prefs TEXT NOT NULL DEFAULT '{}'`,
+		// Optional CalDAV/CardDAV sync, works alongside any mail provider (encrypted like imap_host).
+		`ALTER TABLE email_accounts ADD COLUMN caldav_url TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE email_accounts ADD COLUMN carddav_url TEXT NOT NULL DEFAULT ''`,
+		// account_id/uid let CardDAV-synced contacts be upserted and pruned like calendar_events already are.
+		`ALTER TABLE contacts ADD COLUMN account_id INTEGER REFERENCES email_accounts(id) ON DELETE SET NULL`,
+		`ALTER TABLE contacts ADD COLUMN uid TEXT NOT NULL DEFAULT ''`,
+		// Scoped plaintext search indexes — let search filter to subject-only or body-only
+		// instead of always matching the combined search_text blob.
+		`ALTER TABLE messages ADD COLUMN search_subject TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE messages ADD COLUMN search_body TEXT NOT NULL DEFAULT ''`,
 	}
 	for _, stmt := range alterStmts {
 		d.sql.Exec(stmt) // ignore "duplicate column" errors intentionally
@@ -253,6 +264,8 @@ func (d *DB) Migrate() error {
 	if _, err := d.sql.Exec(`CREATE TABLE IF NOT EXISTS contacts (
 		id           INTEGER PRIMARY KEY AUTOINCREMENT,
 		user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		account_id   INTEGER REFERENCES email_accounts(id) ON DELETE SET NULL,
+		uid          TEXT    NOT NULL DEFAULT '',
 		display_name TEXT    NOT NULL DEFAULT '',
 		email        TEXT    NOT NULL DEFAULT '',
 		phone        TEXT    NOT NULL DEFAULT '',
@@ -266,6 +279,9 @@ func (d *DB) Migrate() error {
 	}
 	if _, err := d.sql.Exec(`CREATE INDEX IF NOT EXISTS idx_contacts_user ON contacts(user_id)`); err != nil {
 		return fmt.Errorf("index contacts_user: %w", err)
+	}
+	if _, err := d.sql.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_contacts_user_uid ON contacts(user_id, uid)`); err != nil {
+		return fmt.Errorf("index contacts_user_uid: %w", err)
 	}
 
 	if _, err := d.sql.Exec(`CREATE TABLE IF NOT EXISTS calendar_events (
@@ -306,8 +322,197 @@ func (d *DB) Migrate() error {
 		return fmt.Errorf("create caldav_tokens: %w", err)
 	}
 
+	// Mail rules (filters) — evaluated against newly-synced messages per account.
+	if _, err := d.sql.Exec(`CREATE TABLE IF NOT EXISTS rules (
+		id             INTEGER PRIMARY KEY AUTOINCREMENT,
+		account_id     INTEGER NOT NULL REFERENCES email_accounts(id) ON DELETE CASCADE,
+		name           TEXT    NOT NULL,
+		priority       INTEGER NOT NULL DEFAULT 0,
+		conditions     TEXT    NOT NULL,             -- JSON [{field,op,value}]
+		match_type     TEXT    NOT NULL DEFAULT 'all', -- all|any
+		action         TEXT    NOT NULL,             -- move_to_folder|delete|mark_read|mark_as_spam|forward|auto_reply
+		action_value   TEXT    NOT NULL DEFAULT '',
+		action_options TEXT    NOT NULL DEFAULT '{}',
+		is_active      INTEGER NOT NULL DEFAULT 1,
+		created_at     DATETIME DEFAULT (datetime('now'))
+	)`); err != nil {
+		return fmt.Errorf("create rules: %w", err)
+	}
+	if _, err := d.sql.Exec(`CREATE INDEX IF NOT EXISTS idx_rules_account ON rules(account_id, priority)`); err != nil {
+		return fmt.Errorf("index rules_account: %w", err)
+	}
+	// Loop-prevention log for the auto_reply rule action.
+	if _, err := d.sql.Exec(`CREATE TABLE IF NOT EXISTS auto_reply_log (
+		id              INTEGER PRIMARY KEY AUTOINCREMENT,
+		account_id      INTEGER NOT NULL,
+		rule_id         INTEGER NOT NULL,
+		recipient_email TEXT    NOT NULL,
+		sent_at         DATETIME DEFAULT (datetime('now'))
+	)`); err != nil {
+		return fmt.Errorf("create auto_reply_log: %w", err)
+	}
+	if _, err := d.sql.Exec(`CREATE INDEX IF NOT EXISTS idx_auto_reply_log ON auto_reply_log(account_id, rule_id, recipient_email, sent_at)`); err != nil {
+		return fmt.Errorf("index auto_reply_log: %w", err)
+	}
+
+	// Signatures — belong to the user (span accounts); default assignment is per-account.
+	if _, err := d.sql.Exec(`CREATE TABLE IF NOT EXISTS signatures (
+		id           INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		name         TEXT    NOT NULL,
+		content_html TEXT    NOT NULL,
+		created_at   DATETIME DEFAULT (datetime('now'))
+	)`); err != nil {
+		return fmt.Errorf("create signatures: %w", err)
+	}
+	if _, err := d.sql.Exec(`CREATE INDEX IF NOT EXISTS idx_signatures_user ON signatures(user_id)`); err != nil {
+		return fmt.Errorf("index signatures_user: %w", err)
+	}
+	if _, err := d.sql.Exec(`CREATE TABLE IF NOT EXISTS signature_defaults (
+		account_id       INTEGER PRIMARY KEY REFERENCES email_accounts(id) ON DELETE CASCADE,
+		default_new_id   INTEGER REFERENCES signatures(id) ON DELETE SET NULL,
+		default_reply_id INTEGER REFERENCES signatures(id) ON DELETE SET NULL
+	)`); err != nil {
+		return fmt.Errorf("create signature_defaults: %w", err)
+	}
+
+	// S/MIME identities (per-account, sign) and contact certs (per-user, encrypt-to).
+	if _, err := d.sql.Exec(`CREATE TABLE IF NOT EXISTS smime_identities (
+		id         INTEGER PRIMARY KEY AUTOINCREMENT,
+		account_id INTEGER NOT NULL REFERENCES email_accounts(id) ON DELETE CASCADE,
+		cert_pem   TEXT    NOT NULL,
+		key_pem    TEXT    NOT NULL, -- encrypted at rest via internal/crypto.Encryptor
+		not_after  DATETIME NOT NULL,
+		created_at DATETIME DEFAULT (datetime('now'))
+	)`); err != nil {
+		return fmt.Errorf("create smime_identities: %w", err)
+	}
+	if _, err := d.sql.Exec(`CREATE TABLE IF NOT EXISTS smime_contacts (
+		id         INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		email      TEXT    NOT NULL,
+		cert_pem   TEXT    NOT NULL,
+		created_at DATETIME DEFAULT (datetime('now')),
+		UNIQUE(user_id, email)
+	)`); err != nil {
+		return fmt.Errorf("create smime_contacts: %w", err)
+	}
+
+	// PGP identities (per-account, encrypt/decrypt) and contact public keys (per-user, encrypt-to).
+	if _, err := d.sql.Exec(`CREATE TABLE IF NOT EXISTS pgp_identities (
+		id                INTEGER PRIMARY KEY AUTOINCREMENT,
+		account_id        INTEGER NOT NULL REFERENCES email_accounts(id) ON DELETE CASCADE,
+		label             TEXT    NOT NULL,
+		email             TEXT    NOT NULL,
+		fingerprint       TEXT    NOT NULL,
+		public_key_armor  TEXT    NOT NULL,
+		private_key_armor TEXT    NOT NULL, -- native OpenPGP S2K passphrase protection
+		created_at        DATETIME DEFAULT (datetime('now'))
+	)`); err != nil {
+		return fmt.Errorf("create pgp_identities: %w", err)
+	}
+	if _, err := d.sql.Exec(`CREATE TABLE IF NOT EXISTS pgp_contacts (
+		id               INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id          INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		email            TEXT    NOT NULL,
+		label            TEXT    NOT NULL DEFAULT '',
+		fingerprint      TEXT    NOT NULL,
+		public_key_armor TEXT    NOT NULL,
+		created_at       DATETIME DEFAULT (datetime('now')),
+		UNIQUE(user_id, email)
+	)`); err != nil {
+		return fmt.Errorf("create pgp_contacts: %w", err)
+	}
+
+	if _, err := d.sql.Exec(`CREATE TABLE IF NOT EXISTS trusted_certs (
+		id               INTEGER PRIMARY KEY AUTOINCREMENT,
+		account_id       INTEGER NOT NULL REFERENCES email_accounts(id) ON DELETE CASCADE,
+		cert_fingerprint TEXT    NOT NULL,
+		cert_pem         TEXT    NOT NULL,
+		hostname         TEXT    NOT NULL,
+		created_at       DATETIME DEFAULT (datetime('now')),
+		UNIQUE(account_id, cert_fingerprint)
+	)`); err != nil {
+		return fmt.Errorf("create trusted_certs: %w", err)
+	}
+
+	// One-row-per-migration marker table so a one-time data backfill (as opposed to a
+	// schema ALTER, which is naturally idempotent) runs exactly once, ever — never
+	// re-applying and silently overwriting a choice the user made after that first run.
+	if _, err := d.sql.Exec(`CREATE TABLE IF NOT EXISTS data_migrations (
+		name       TEXT PRIMARY KEY,
+		applied_at DATETIME DEFAULT (datetime('now'))
+	)`); err != nil {
+		return fmt.Errorf("create data_migrations: %w", err)
+	}
+
+	d.backfillSearchIndex()
+	d.runOnce("sync_all_folders_by_default", d.backfillSyncAllFoldersDefault)
+
 	// Bootstrap admin account if no users exist
 	return d.bootstrapAdmin()
+}
+
+// runOnce executes fn the first time this DB ever sees the given migration name, then
+// never again — used for one-time data backfills where re-running on every startup would
+// stomp a choice the user made afterward (unlike a schema ALTER, which is self-limiting).
+func (d *DB) runOnce(name string, fn func()) {
+	var exists int
+	d.sql.QueryRow(`SELECT 1 FROM data_migrations WHERE name=?`, name).Scan(&exists)
+	if exists == 1 {
+		return
+	}
+	fn()
+	d.sql.Exec(`INSERT OR IGNORE INTO data_migrations(name) VALUES (?)`, name)
+}
+
+// backfillSyncAllFoldersDefault enables sync for every folder that predates the "sync all
+// folders by default" change (previously only inbox/sent/drafts/trash/spam synced by
+// default; custom folders sat disabled until manually enabled). Runs once, via runOnce.
+func (d *DB) backfillSyncAllFoldersDefault() {
+	r, err := d.sql.Exec(`UPDATE folders SET sync_enabled=1 WHERE sync_enabled=0`)
+	if err != nil {
+		return
+	}
+	if n, _ := r.RowsAffected(); n > 0 {
+		log.Printf("[migrate] enabled sync for %d folder(s) that predated the sync-all-by-default change", n)
+	}
+	d.sql.Exec(`UPDATE email_accounts SET sync_all_folders=1`)
+}
+
+// backfillSearchIndex populates search_subject/search_body for messages synced
+// before those columns existed (they default to '' from the ALTER TABLE above).
+// One-time, best-effort: skipped entirely once no rows need it.
+func (d *DB) backfillSearchIndex() {
+	var pending int
+	d.sql.QueryRow(`SELECT COUNT(*) FROM messages WHERE search_subject='' AND search_text!=''`).Scan(&pending)
+	if pending == 0 {
+		return
+	}
+	log.Printf("[migrate] backfilling search index for %d message(s)...", pending)
+	rows, err := d.sql.Query(`SELECT id, subject, body_text FROM messages WHERE search_subject='' AND search_text!=''`)
+	if err != nil {
+		return
+	}
+	type row struct{ id int64; subject, body string }
+	var pendingRows []row
+	for rows.Next() {
+		var r row
+		if rows.Scan(&r.id, &r.subject, &r.body) == nil {
+			pendingRows = append(pendingRows, r)
+		}
+	}
+	rows.Close()
+	for _, r := range pendingRows {
+		subject, _ := d.enc.Decrypt(r.subject)
+		body, _ := d.enc.Decrypt(r.body)
+		if len(body) > 2000 {
+			body = body[:2000]
+		}
+		d.sql.Exec(`UPDATE messages SET search_subject=?, search_body=? WHERE id=?`,
+			strings.ToLower(subject), strings.ToLower(body), r.id)
+	}
+	log.Printf("[migrate] search index backfill complete")
 }
 
 // bootstrapAdmin creates the default admin/admin account on first run.
@@ -641,16 +846,18 @@ func (d *DB) CreateAccount(a *models.EmailAccount) error {
 	refreshEnc, _ := d.enc.Encrypt(a.RefreshToken)
 	imapHostEnc, _ := d.enc.Encrypt(a.IMAPHost)
 	smtpHostEnc, _ := d.enc.Encrypt(a.SMTPHost)
+	caldavEnc, _ := d.enc.Encrypt(a.CalDAVURL)
+	carddavEnc, _ := d.enc.Encrypt(a.CardDAVURL)
 
 	res, err := d.sql.Exec(`
 		INSERT INTO email_accounts
 			(user_id, provider, email_address, display_name, access_token, refresh_token,
-			 token_expiry, imap_host, imap_port, smtp_host, smtp_port, color)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+			 token_expiry, imap_host, imap_port, smtp_host, smtp_port, color, caldav_url, carddav_url)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		a.UserID, a.Provider, a.EmailAddress, a.DisplayName,
 		accessEnc, refreshEnc, a.TokenExpiry,
 		imapHostEnc, a.IMAPPort, smtpHostEnc, a.SMTPPort,
-		a.Color,
+		a.Color, caldavEnc, carddavEnc,
 	)
 	if err != nil {
 		return err
@@ -677,14 +884,15 @@ func (d *DB) UpdateAccountLastSync(accountID int64) error {
 
 func (d *DB) GetAccount(accountID int64) (*models.EmailAccount, error) {
 	a := &models.EmailAccount{}
-	var accessEnc, refreshEnc, imapHostEnc, smtpHostEnc string
+	var accessEnc, refreshEnc, imapHostEnc, smtpHostEnc, caldavEnc, carddavEnc string
 	var lastSync sql.NullTime
 	err := d.sql.QueryRow(`
 		SELECT id, user_id, provider, email_address, display_name,
 		       access_token, refresh_token, token_expiry,
 		       imap_host, imap_port, smtp_host, smtp_port,
 		       last_error, color, is_active, last_sync, created_at,
-		       COALESCE(sync_days,30), COALESCE(sync_mode,'days'), COALESCE(sort_order,0)
+		       COALESCE(sync_days,30), COALESCE(sync_mode,'days'), COALESCE(sort_order,0),
+		       COALESCE(caldav_url,''), COALESCE(carddav_url,'')
 		FROM email_accounts WHERE id=?`, accountID,
 	).Scan(
 		&a.ID, &a.UserID, &a.Provider, &a.EmailAddress, &a.DisplayName,
@@ -692,6 +900,7 @@ func (d *DB) GetAccount(accountID int64) (*models.EmailAccount, error) {
 		&imapHostEnc, &a.IMAPPort, &smtpHostEnc, &a.SMTPPort,
 		&a.LastError, &a.Color, &a.IsActive, &lastSync, &a.CreatedAt,
 		&a.SyncDays, &a.SyncMode, &a.SortOrder,
+		&caldavEnc, &carddavEnc,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -703,6 +912,8 @@ func (d *DB) GetAccount(accountID int64) (*models.EmailAccount, error) {
 	a.RefreshToken, _ = d.enc.Decrypt(refreshEnc)
 	a.IMAPHost, _ = d.enc.Decrypt(imapHostEnc)
 	a.SMTPHost, _ = d.enc.Decrypt(smtpHostEnc)
+	a.CalDAVURL, _ = d.enc.Decrypt(caldavEnc)
+	a.CardDAVURL, _ = d.enc.Decrypt(carddavEnc)
 	if lastSync.Valid {
 		a.LastSync = lastSync.Time
 	}
@@ -748,6 +959,8 @@ func (d *DB) UpdateAccount(a *models.EmailAccount) error {
 	accessEnc, _ := d.enc.Encrypt(a.AccessToken)
 	imapHostEnc, _ := d.enc.Encrypt(a.IMAPHost)
 	smtpHostEnc, _ := d.enc.Encrypt(a.SMTPHost)
+	caldavEnc, _ := d.enc.Encrypt(a.CalDAVURL)
+	carddavEnc, _ := d.enc.Encrypt(a.CardDAVURL)
 	syncMode := a.SyncMode
 	if syncMode == "" {
 		syncMode = "days"
@@ -760,10 +973,12 @@ func (d *DB) UpdateAccount(a *models.EmailAccount) error {
 		UPDATE email_accounts SET
 			display_name=?, access_token=?,
 			imap_host=?, imap_port=?, smtp_host=?, smtp_port=?,
+			caldav_url=?, carddav_url=?,
 			color=?, sync_days=?, sync_mode=?
 		WHERE id=? AND user_id=?`,
 		a.DisplayName, accessEnc,
 		imapHostEnc, a.IMAPPort, smtpHostEnc, a.SMTPPort,
+		caldavEnc, carddavEnc,
 		a.Color, syncDays, syncMode, a.ID, a.UserID,
 	)
 	return err
@@ -784,7 +999,7 @@ func (d *DB) ListAllActiveAccounts() ([]*models.EmailAccount, error) {
 		       a.access_token, a.refresh_token, a.token_expiry,
 		       a.imap_host, a.imap_port, a.smtp_host, a.smtp_port,
 		       a.last_error, a.color, a.is_active, a.last_sync, a.created_at,
-		       u.sync_interval
+		       u.sync_interval, COALESCE(a.caldav_url,''), COALESCE(a.carddav_url,'')
 		FROM email_accounts a
 		JOIN users u ON u.id = a.user_id
 		WHERE a.is_active=1 AND u.is_active=1`)
@@ -796,14 +1011,14 @@ func (d *DB) ListAllActiveAccounts() ([]*models.EmailAccount, error) {
 	var accounts []*models.EmailAccount
 	for rows.Next() {
 		a := &models.EmailAccount{}
-		var accessEnc, refreshEnc, imapHostEnc, smtpHostEnc string
+		var accessEnc, refreshEnc, imapHostEnc, smtpHostEnc, caldavEnc, carddavEnc string
 		var lastSync sql.NullTime
 		if err := rows.Scan(
 			&a.ID, &a.UserID, &a.Provider, &a.EmailAddress, &a.DisplayName,
 			&accessEnc, &refreshEnc, &a.TokenExpiry,
 			&imapHostEnc, &a.IMAPPort, &smtpHostEnc, &a.SMTPPort,
 			&a.LastError, &a.Color, &a.IsActive, &lastSync, &a.CreatedAt,
-			&a.SyncInterval,
+			&a.SyncInterval, &caldavEnc, &carddavEnc,
 		); err != nil {
 			return nil, err
 		}
@@ -811,6 +1026,8 @@ func (d *DB) ListAllActiveAccounts() ([]*models.EmailAccount, error) {
 		a.RefreshToken, _ = d.enc.Decrypt(refreshEnc)
 		a.IMAPHost, _ = d.enc.Decrypt(imapHostEnc)
 		a.SMTPHost, _ = d.enc.Decrypt(smtpHostEnc)
+		a.CalDAVURL, _ = d.enc.Decrypt(caldavEnc)
+		a.CardDAVURL, _ = d.enc.Decrypt(carddavEnc)
 		if lastSync.Valid {
 			a.LastSync = lastSync.Time
 		}
@@ -825,7 +1042,7 @@ func (d *DB) ListAccountsByUser(userID int64) ([]*models.EmailAccount, error) {
 		       access_token, refresh_token, token_expiry,
 		       imap_host, imap_port, smtp_host, smtp_port,
 		       last_error, color, is_active, last_sync, created_at,
-		       COALESCE(sort_order,0)
+		       COALESCE(sort_order,0), COALESCE(caldav_url,''), COALESCE(carddav_url,'')
 		FROM email_accounts WHERE user_id=? AND is_active=1
 		ORDER BY COALESCE(sort_order,0), created_at`, userID)
 	if err != nil {
@@ -839,14 +1056,14 @@ func (d *DB) scanAccounts(rows *sql.Rows) ([]*models.EmailAccount, error) {
 	var accounts []*models.EmailAccount
 	for rows.Next() {
 		a := &models.EmailAccount{}
-		var accessEnc, refreshEnc, imapHostEnc, smtpHostEnc string
+		var accessEnc, refreshEnc, imapHostEnc, smtpHostEnc, caldavEnc, carddavEnc string
 		var lastSync sql.NullTime
 		if err := rows.Scan(
 			&a.ID, &a.UserID, &a.Provider, &a.EmailAddress, &a.DisplayName,
 			&accessEnc, &refreshEnc, &a.TokenExpiry,
 			&imapHostEnc, &a.IMAPPort, &smtpHostEnc, &a.SMTPPort,
 			&a.LastError, &a.Color, &a.IsActive, &lastSync, &a.CreatedAt,
-			&a.SortOrder,
+			&a.SortOrder, &caldavEnc, &carddavEnc,
 		); err != nil {
 			return nil, err
 		}
@@ -854,6 +1071,8 @@ func (d *DB) scanAccounts(rows *sql.Rows) ([]*models.EmailAccount, error) {
 		a.RefreshToken, _ = d.enc.Decrypt(refreshEnc)
 		a.IMAPHost, _ = d.enc.Decrypt(imapHostEnc)
 		a.SMTPHost, _ = d.enc.Decrypt(smtpHostEnc)
+		a.CalDAVURL, _ = d.enc.Decrypt(caldavEnc)
+		a.CardDAVURL, _ = d.enc.Decrypt(carddavEnc)
 		if lastSync.Valid {
 			a.LastSync = lastSync.Time
 		}
@@ -985,21 +1204,18 @@ func (d *DB) UpdateFolderCounts(folderID int64) {
 // ---- Folders ----
 
 func (d *DB) UpsertFolder(f *models.Folder) error {
-	// On insert: set sync_enabled based on folder type (primary types sync by default)
-	defaultSync := 0
-	switch f.FolderType {
-	case "inbox", "sent", "drafts", "trash", "spam":
-		defaultSync = 1
-	}
+	// All folders sync by default (the user can disable sync per folder afterward via
+	// SetFolderVisibility). ON CONFLICT deliberately never touches sync_enabled, so this
+	// default only applies the first time a folder is discovered.
 	_, err := d.sql.Exec(`
 		INSERT INTO folders (account_id, name, full_path, folder_type, unread_count, total_count, sync_enabled)
-		VALUES (?,?,?,?,?,?,?)
+		VALUES (?,?,?,?,?,?,1)
 		ON CONFLICT(account_id, full_path) DO UPDATE SET
 			name=excluded.name,
 			folder_type=excluded.folder_type,
 			unread_count=excluded.unread_count,
 			total_count=excluded.total_count`,
-		f.AccountID, f.Name, f.FullPath, f.FolderType, f.UnreadCount, f.TotalCount, defaultSync,
+		f.AccountID, f.Name, f.FullPath, f.FolderType, f.UnreadCount, f.TotalCount,
 	)
 	return err
 }
@@ -1011,6 +1227,42 @@ func (d *DB) GetFolderByPath(accountID int64, fullPath string) (*models.Folder, 
 		`SELECT id, account_id, name, full_path, folder_type, unread_count, total_count,
 		       COALESCE(is_hidden,0), COALESCE(sync_enabled,1)
 		 FROM folders WHERE account_id=? AND full_path=?`, accountID, fullPath,
+	).Scan(&f.ID, &f.AccountID, &f.Name, &f.FullPath, &f.FolderType, &f.UnreadCount, &f.TotalCount, &isHidden, &syncEnabled)
+	f.IsHidden = isHidden == 1
+	f.SyncEnabled = syncEnabled == 1
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return f, err
+}
+
+// GetFolderByName returns a folder matched by its display name (case-insensitive), used to
+// resolve a rule's move_to_folder ActionValue (a human-typed folder name) to a real folder.
+func (d *DB) GetFolderByName(accountID int64, name string) (*models.Folder, error) {
+	f := &models.Folder{}
+	var isHidden, syncEnabled int
+	err := d.sql.QueryRow(
+		`SELECT id, account_id, name, full_path, folder_type, unread_count, total_count,
+		       COALESCE(is_hidden,0), COALESCE(sync_enabled,1)
+		 FROM folders WHERE account_id=? AND name=? COLLATE NOCASE LIMIT 1`, accountID, name,
+	).Scan(&f.ID, &f.AccountID, &f.Name, &f.FullPath, &f.FolderType, &f.UnreadCount, &f.TotalCount, &isHidden, &syncEnabled)
+	f.IsHidden = isHidden == 1
+	f.SyncEnabled = syncEnabled == 1
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return f, err
+}
+
+// GetFolderByType returns the first folder of the given folder_type for an account
+// (used to resolve e.g. the Junk folder for a mark_as_spam rule action).
+func (d *DB) GetFolderByType(accountID int64, folderType string) (*models.Folder, error) {
+	f := &models.Folder{}
+	var isHidden, syncEnabled int
+	err := d.sql.QueryRow(
+		`SELECT id, account_id, name, full_path, folder_type, unread_count, total_count,
+		       COALESCE(is_hidden,0), COALESCE(sync_enabled,1)
+		 FROM folders WHERE account_id=? AND folder_type=? LIMIT 1`, accountID, folderType,
 	).Scan(&f.ID, &f.AccountID, &f.Name, &f.FullPath, &f.FolderType, &f.UnreadCount, &f.TotalCount, &isHidden, &syncEnabled)
 	f.IsHidden = isHidden == 1
 	f.SyncEnabled = syncEnabled == 1
@@ -1057,28 +1309,39 @@ func (d *DB) UpsertMessage(m *models.Message) error {
 	bodyTextEnc, _ := d.enc.Encrypt(m.BodyText)
 	bodyHTMLEnc, _ := d.enc.Encrypt(m.BodyHTML)
 
-	// Build plaintext search index: subject + from name + from email + first 200 chars of body
+	// Build plaintext search indexes: combined (subject+from+preview, for the default/all
+	// scope), plus subject-only and body-only so search can be scoped to just one of them.
 	preview := m.BodyText
 	if len(preview) > 200 {
 		preview = preview[:200]
 	}
 	searchText := strings.ToLower(m.Subject + " " + m.FromName + " " + m.FromEmail + " " + preview)
+	searchSubject := strings.ToLower(m.Subject)
+	bodyForSearch := m.BodyText
+	if len(bodyForSearch) > 2000 {
+		bodyForSearch = bodyForSearch[:2000]
+	}
+	searchBody := strings.ToLower(bodyForSearch)
 
 	res, err := d.sql.Exec(`
 		INSERT INTO messages
 			(account_id, folder_id, remote_uid, thread_id, message_id,
 			 subject, from_name, from_email, to_list, cc_list, bcc_list, reply_to,
-			 body_text, body_html, date, is_read, is_starred, is_draft, has_attachment, search_text)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+			 body_text, body_html, date, is_read, is_starred, is_draft, has_attachment,
+			 search_text, search_subject, search_body)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(account_id, folder_id, remote_uid) DO UPDATE SET
 			is_read=excluded.is_read,
 			is_starred=excluded.is_starred,
 			has_attachment=excluded.has_attachment,
-			search_text=excluded.search_text`,
+			search_text=excluded.search_text,
+			search_subject=excluded.search_subject,
+			search_body=excluded.search_body`,
 		m.AccountID, m.FolderID, m.RemoteUID, m.ThreadID, m.MessageID,
 		subjectEnc, fromNameEnc, fromEmailEnc, toEnc, ccEnc, bccEnc, replyToEnc,
 		bodyTextEnc, bodyHTMLEnc, m.Date,
-		m.IsRead, m.IsStarred, m.IsDraft, m.HasAttachment, searchText,
+		m.IsRead, m.IsStarred, m.IsDraft, m.HasAttachment,
+		searchText, searchSubject, searchBody,
 	)
 	if err != nil {
 		return err
@@ -1216,28 +1479,97 @@ func (d *DB) ListMessages(userID int64, folderIDs []int64, accountID int64, page
 	}, nil
 }
 
-func (d *DB) SearchMessages(userID int64, q string, page, pageSize int) (*models.PagedMessages, error) {
+// SearchFilters narrows a SearchMessages query beyond the plain text match.
+// All fields are optional (zero value = "no filter").
+type SearchFilters struct {
+	Scope         string // "" / "all" | "subject" | "body" | "subject_body"
+	HasAttachment *bool
+	DateFrom      string // "YYYY-MM-DD", inclusive
+	DateTo        string // "YYYY-MM-DD", inclusive
+	MinSizeKB     *int
+	MaxSizeKB     *int
+	AccountID     *int64 // narrow to one connected mailbox instead of all of them
+	FolderID      *int64 // narrow to one folder within a mailbox
+}
+
+// approxSizeExpr estimates a message's size from ciphertext length (a stand-in for
+// plaintext length — AES output is close enough in size for filtering purposes)
+// plus its attachments' real sizes. There's no stored message size, so this avoids
+// a schema/sync change just to support a size filter.
+const approxSizeExpr = `(LENGTH(m.body_text)+LENGTH(m.body_html)+COALESCE((SELECT SUM(a.size) FROM attachments a WHERE a.message_id=m.id),0))`
+
+func (d *DB) SearchMessages(userID int64, q string, filters SearchFilters, page, pageSize int) (*models.PagedMessages, error) {
 	offset := (page - 1) * pageSize
 	like := "%" + strings.ToLower(q) + "%"
-	args := []interface{}{userID, like, pageSize, offset}
+
+	where := []string{"a.user_id=?"}
+	args := []interface{}{userID}
+
+	switch filters.Scope {
+	case "subject":
+		where = append(where, "m.search_subject LIKE ?")
+		args = append(args, like)
+	case "body":
+		where = append(where, "m.search_body LIKE ?")
+		args = append(args, like)
+	case "subject_body":
+		where = append(where, "(m.search_subject LIKE ? OR m.search_body LIKE ?)")
+		args = append(args, like, like)
+	default:
+		where = append(where, "m.search_text LIKE ?")
+		args = append(args, like)
+	}
+	if filters.HasAttachment != nil {
+		v := 0
+		if *filters.HasAttachment {
+			v = 1
+		}
+		where = append(where, "m.has_attachment=?")
+		args = append(args, v)
+	}
+	if filters.DateFrom != "" {
+		where = append(where, "m.date >= ?")
+		args = append(args, filters.DateFrom)
+	}
+	if filters.DateTo != "" {
+		where = append(where, "m.date <= ?")
+		args = append(args, filters.DateTo+" 23:59:59")
+	}
+	if filters.MinSizeKB != nil {
+		where = append(where, approxSizeExpr+" >= ?")
+		args = append(args, *filters.MinSizeKB*1024)
+	}
+	if filters.MaxSizeKB != nil {
+		where = append(where, approxSizeExpr+" <= ?")
+		args = append(args, *filters.MaxSizeKB*1024)
+	}
+	if filters.AccountID != nil {
+		where = append(where, "m.account_id=?")
+		args = append(args, *filters.AccountID)
+	}
+	if filters.FolderID != nil {
+		where = append(where, "m.folder_id=?")
+		args = append(args, *filters.FolderID)
+	}
+	whereClause := strings.Join(where, " AND ")
 
 	var total int
 	d.sql.QueryRow(`
 		SELECT COUNT(*) FROM messages m
 		JOIN email_accounts a ON a.id=m.account_id
-		WHERE a.user_id=? AND m.search_text LIKE ?`,
-		userID, like,
+		WHERE `+whereClause, args...,
 	).Scan(&total)
 
+	qArgs := append(append([]interface{}{}, args...), pageSize, offset)
 	rows, err := d.sql.Query(`
 		SELECT m.id, m.account_id, a.email_address, a.color, m.folder_id, f.name,
 		       m.subject, m.from_name, m.from_email, m.body_text,
-		       m.date, m.is_read, m.is_starred, m.has_attachment
+		       m.date, m.is_read, m.is_starred, m.has_attachment, `+approxSizeExpr+`
 		FROM messages m
 		JOIN email_accounts a ON a.id=m.account_id
 		JOIN folders f ON f.id=m.folder_id
-		WHERE a.user_id=? AND m.search_text LIKE ?
-		ORDER BY m.date DESC LIMIT ? OFFSET ?`, args...,
+		WHERE `+whereClause+`
+		ORDER BY m.date DESC LIMIT ? OFFSET ?`, qArgs...,
 	)
 	if err != nil {
 		return nil, err
@@ -1251,7 +1583,7 @@ func (d *DB) SearchMessages(userID int64, q string, page, pageSize int) (*models
 		if err := rows.Scan(
 			&s.ID, &s.AccountID, &s.AccountEmail, &s.AccountColor, &s.FolderID, &s.FolderName,
 			&subjectEnc, &fromNameEnc, &fromEmailEnc, &bodyTextEnc,
-			&s.Date, &s.IsRead, &s.IsStarred, &s.HasAttachment,
+			&s.Date, &s.IsRead, &s.IsStarred, &s.HasAttachment, &s.Size,
 		); err != nil {
 			return nil, err
 		}
@@ -2248,7 +2580,7 @@ func (d *DB) ListIPBlocksWithUsername() ([]IPBlockWithUsername, error) {
 
 func (d *DB) ListContacts(userID int64) ([]*models.Contact, error) {
 	rows, err := d.sql.Query(`
-		SELECT id, user_id, display_name, email, phone, company, notes, avatar_color, created_at, updated_at
+		SELECT id, user_id, account_id, uid, display_name, email, phone, company, notes, avatar_color, created_at, updated_at
 		FROM contacts WHERE user_id=? ORDER BY display_name COLLATE NOCASE`, userID)
 	if err != nil {
 		return nil, err
@@ -2257,8 +2589,10 @@ func (d *DB) ListContacts(userID int64) ([]*models.Contact, error) {
 	var out []*models.Contact
 	for rows.Next() {
 		var c models.Contact
+		var accountID *int64
 		var dn, em, ph, co, no, av []byte
-		rows.Scan(&c.ID, &c.UserID, &dn, &em, &ph, &co, &no, &av, &c.CreatedAt, &c.UpdatedAt)
+		rows.Scan(&c.ID, &c.UserID, &accountID, &c.UID, &dn, &em, &ph, &co, &no, &av, &c.CreatedAt, &c.UpdatedAt)
+		c.AccountID = accountID
 		c.DisplayName, _ = d.enc.Decrypt(string(dn))
 		c.Email, _ = d.enc.Decrypt(string(em))
 		c.Phone, _ = d.enc.Decrypt(string(ph))
@@ -2272,14 +2606,16 @@ func (d *DB) ListContacts(userID int64) ([]*models.Contact, error) {
 
 func (d *DB) GetContact(id, userID int64) (*models.Contact, error) {
 	var c models.Contact
+	var accountID *int64
 	var dn, em, ph, co, no, av []byte
 	err := d.sql.QueryRow(`
-		SELECT id, user_id, display_name, email, phone, company, notes, avatar_color, created_at, updated_at
+		SELECT id, user_id, account_id, uid, display_name, email, phone, company, notes, avatar_color, created_at, updated_at
 		FROM contacts WHERE id=? AND user_id=?`, id, userID).
-		Scan(&c.ID, &c.UserID, &dn, &em, &ph, &co, &no, &av, &c.CreatedAt, &c.UpdatedAt)
+		Scan(&c.ID, &c.UserID, &accountID, &c.UID, &dn, &em, &ph, &co, &no, &av, &c.CreatedAt, &c.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
+	c.AccountID = accountID
 	c.DisplayName, _ = d.enc.Decrypt(string(dn))
 	c.Email, _ = d.enc.Decrypt(string(em))
 	c.Phone, _ = d.enc.Decrypt(string(ph))
@@ -2296,14 +2632,62 @@ func (d *DB) CreateContact(c *models.Contact) error {
 	co, _ := d.enc.Encrypt(c.Company)
 	no, _ := d.enc.Encrypt(c.Notes)
 	av, _ := d.enc.Encrypt(c.AvatarColor)
+	if c.UID == "" {
+		c.UID = fmt.Sprintf("gwm-%d-%d", c.UserID, time.Now().UnixNano())
+	}
 	res, err := d.sql.Exec(`
-		INSERT INTO contacts (user_id, display_name, email, phone, company, notes, avatar_color)
-		VALUES (?,?,?,?,?,?,?)`, c.UserID, dn, em, ph, co, no, av)
+		INSERT INTO contacts (user_id, uid, display_name, email, phone, company, notes, avatar_color)
+		VALUES (?,?,?,?,?,?,?,?)`, c.UserID, c.UID, dn, em, ph, co, no, av)
 	if err != nil {
 		return err
 	}
 	c.ID, _ = res.LastInsertId()
 	return nil
+}
+
+// UpsertContact inserts or updates a contact synced from a CardDAV server,
+// keyed on (user_id, uid) like UpsertCalendarEvent.
+func (d *DB) UpsertContact(c *models.Contact) error {
+	dn, _ := d.enc.Encrypt(c.DisplayName)
+	em, _ := d.enc.Encrypt(c.Email)
+	ph, _ := d.enc.Encrypt(c.Phone)
+	co, _ := d.enc.Encrypt(c.Company)
+	no, _ := d.enc.Encrypt(c.Notes)
+	av, _ := d.enc.Encrypt(c.AvatarColor)
+	res, err := d.sql.Exec(`
+		INSERT INTO contacts (user_id, account_id, uid, display_name, email, phone, company, notes, avatar_color)
+		VALUES (?,?,?,?,?,?,?,?,?)
+		ON CONFLICT(user_id, uid) DO UPDATE SET
+			account_id=excluded.account_id, display_name=excluded.display_name, email=excluded.email,
+			phone=excluded.phone, company=excluded.company, notes=excluded.notes,
+			updated_at=datetime('now')`,
+		c.UserID, c.AccountID, c.UID, dn, em, ph, co, no, av)
+	if err != nil {
+		return err
+	}
+	if c.ID == 0 {
+		c.ID, _ = res.LastInsertId()
+	}
+	return nil
+}
+
+// DeleteContactsNotIn removes previously-synced contacts for accountID whose
+// uid is no longer present on the CardDAV server (i.e. deleted remotely).
+func (d *DB) DeleteContactsNotIn(accountID int64, keepUIDs []string) error {
+	if len(keepUIDs) == 0 {
+		_, err := d.sql.Exec(`DELETE FROM contacts WHERE account_id=?`, accountID)
+		return err
+	}
+	placeholders := make([]string, len(keepUIDs))
+	args := make([]interface{}, 0, len(keepUIDs)+1)
+	args = append(args, accountID)
+	for i, u := range keepUIDs {
+		placeholders[i] = "?"
+		args = append(args, u)
+	}
+	q := fmt.Sprintf(`DELETE FROM contacts WHERE account_id=? AND uid NOT IN (%s)`, strings.Join(placeholders, ","))
+	_, err := d.sql.Exec(q, args...)
+	return err
 }
 
 func (d *DB) UpdateContact(c *models.Contact, userID int64) error {
@@ -2460,6 +2844,25 @@ func (d *DB) DeleteCalendarEvent(id, userID int64) error {
 	return err
 }
 
+// DeleteCalendarEventsNotIn removes previously-synced events for accountID
+// whose uid is no longer present on the CalDAV server (i.e. deleted remotely).
+func (d *DB) DeleteCalendarEventsNotIn(accountID int64, keepUIDs []string) error {
+	if len(keepUIDs) == 0 {
+		_, err := d.sql.Exec(`DELETE FROM calendar_events WHERE account_id=?`, accountID)
+		return err
+	}
+	placeholders := make([]string, len(keepUIDs))
+	args := make([]interface{}, 0, len(keepUIDs)+1)
+	args = append(args, accountID)
+	for i, u := range keepUIDs {
+		placeholders[i] = "?"
+		args = append(args, u)
+	}
+	q := fmt.Sprintf(`DELETE FROM calendar_events WHERE account_id=? AND uid NOT IN (%s)`, strings.Join(placeholders, ","))
+	_, err := d.sql.Exec(q, args...)
+	return err
+}
+
 // ======== CalDAV Tokens ========
 
 func (d *DB) CreateCalDAVToken(userID int64, label string) (*models.CalDAVToken, error) {
@@ -2506,4 +2909,29 @@ func (d *DB) GetUserByCalDAVToken(token string) (int64, error) {
 	}
 	d.sql.Exec(`UPDATE caldav_tokens SET last_used=datetime('now') WHERE token=?`, token)
 	return userID, nil
+}
+
+// ---- Trusted Certificates (for self-signed certs) ----
+
+func (d *DB) TrustCertificate(accountID int64, fingerprint, certPEM, hostname string) error {
+	_, err := d.sql.Exec(`
+		INSERT OR IGNORE INTO trusted_certs (account_id, cert_fingerprint, cert_pem, hostname)
+		VALUES (?, ?, ?, ?)`,
+		accountID, fingerprint, certPEM, hostname)
+	return err
+}
+
+func (d *DB) IsCertTrusted(accountID int64, fingerprint string) (bool, error) {
+	var count int
+	err := d.sql.QueryRow(`SELECT COUNT(*) FROM trusted_certs WHERE account_id=? AND cert_fingerprint=?`, accountID, fingerprint).Scan(&count)
+	return count > 0, err
+}
+
+func (d *DB) GetTrustedCert(accountID int64, fingerprint string) (string, error) {
+	var certPEM string
+	err := d.sql.QueryRow(`SELECT cert_pem FROM trusted_certs WHERE account_id=? AND cert_fingerprint=?`, accountID, fingerprint).Scan(&certPEM)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return certPEM, err
 }
