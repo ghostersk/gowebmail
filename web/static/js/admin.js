@@ -9,7 +9,7 @@ const adminRoutes = {
 
 function navigate(path) {
   history.pushState({}, '', path);
-  document.querySelectorAll('.admin-nav a').forEach(a => a.classList.toggle('active', a.getAttribute('href') === path));
+  document.querySelectorAll('.admin-nav a').forEach(a => { const on = a.getAttribute('href') === path; a.classList.toggle('active', on); if (on) a.setAttribute('aria-current','page'); else a.removeAttribute('aria-current'); });
   const fn = adminRoutes[path];
   if (fn) fn();
 }
@@ -35,7 +35,7 @@ async function renderUsers() {
       </div>
       <div id="users-table"><div class="spinner"></div></div>
     </div>
-    <div class="modal-overlay" id="user-modal">
+    <div class="modal-overlay" id="user-modal" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="user-modal-title">
       <div class="modal">
         <h2 id="user-modal-title">New User</h2>
         <input type="hidden" id="user-id">
@@ -346,7 +346,7 @@ function eventBadge(evt) {
 // Boot: detect current page from URL
 (function() {
   const path = location.pathname;
-  document.querySelectorAll('.admin-nav a').forEach(a => a.classList.toggle('active', a.getAttribute('href') === path));
+  document.querySelectorAll('.admin-nav a').forEach(a => { const on = a.getAttribute('href') === path; a.classList.toggle('active', on); if (on) a.setAttribute('aria-current','page'); else a.removeAttribute('aria-current'); });
   const fn = adminRoutes[path];
   if (fn) fn();
   else renderUsers();
@@ -385,9 +385,9 @@ async function renderSecurity() {
       <div id="attempts-table"><div class="spinner"></div></div>
     </div>
 
-    <div class="modal-overlay" id="add-block-modal">
+    <div class="modal-overlay" id="add-block-modal" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="add-block-modal-title">
       <div class="modal" style="max-width:420px">
-        <h2>Block IP Address</h2>
+        <h2 id="add-block-modal-title">Block IP Address</h2>
         <div class="modal-field"><label>IP Address</label><input type="text" id="block-ip" placeholder="e.g. 192.168.1.100"></div>
         <div class="modal-field"><label>Reason</label><input type="text" id="block-reason" placeholder="Manual admin block"></div>
         <div class="modal-field"><label>Ban Hours (0 = permanent)</label><input type="number" id="block-hours" value="24" min="0"></div>

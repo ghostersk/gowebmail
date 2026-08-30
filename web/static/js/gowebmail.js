@@ -24,6 +24,9 @@ function toast(msg, type) {
     container = document.createElement('div');
     container.id = 'toast-container';
     container.className = 'toast-container';
+    container.setAttribute('role', 'status');
+    container.setAttribute('aria-live', 'polite');
+    container.setAttribute('aria-atomic', 'true');
     document.body.appendChild(container);
   }
   const el = document.createElement('div');
@@ -111,11 +114,15 @@ function debounce(fn, ms) {
 // ---- Modal helpers ----
 function openModal(id) {
   const el = document.getElementById(id);
-  if (el) el.classList.add('open');
+  if (!el) return;
+  el.classList.add('open');
+  el.setAttribute('aria-hidden', 'false');
+  const focusable = el.querySelector('input,button,select,textarea,[tabindex]');
+  if (focusable) setTimeout(() => focusable.focus(), 50);
 }
 function closeModal(id) {
   const el = document.getElementById(id);
-  if (el) el.classList.remove('open');
+  if (el) { el.classList.remove('open'); el.setAttribute('aria-hidden', 'true'); }
 }
 
 // Close modals on overlay click
@@ -137,12 +144,21 @@ document.addEventListener('keydown', e => {
 });
 
 // ---- Rich text compose helpers ----
-function insertLink() {
-  const url = prompt('Enter URL:');
-  if (!url) return;
-  const text = window.getSelection().toString() || url;
-  document.getElementById('compose-editor').focus();
-  document.execCommand('createLink', false, url);
+// editorId defaults to the main compose editor; the signature editor passes 'sig-content'.
+// Uses inlinePrompt (not window.prompt) so the selection has to be saved/restored across the
+// async gap — prompt() blocked synchronously and never lost it.
+function insertLink(editorId) {
+  editorId = editorId || 'compose-editor';
+  const editor = document.getElementById(editorId);
+  if (!editor) return;
+  const sel = window.getSelection();
+  const range = sel.rangeCount ? sel.getRangeAt(0).cloneRange() : null;
+  inlinePrompt('Enter URL:', url => {
+    if (!url) return;
+    editor.focus();
+    if (range) { sel.removeAllRanges(); sel.addRange(range); }
+    document.execCommand('createLink', false, url);
+  });
 }
 
 // ── Filter dropdown (stubs — real logic in app.js, but onclick needs global scope) ──

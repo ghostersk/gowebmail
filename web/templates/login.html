@@ -9,10 +9,10 @@
   </div>
   <h1>Welcome back</h1>
   <p class="subtitle">Sign in to your Web Mail Client</p>
-  <div id="err" class="alert error" style="display:none"></div>
+  <div id="err" class="alert error" role="alert" style="display:none"></div>
   <form method="POST" action="/auth/login">
-    <div class="field"><label>Username or Email</label><input type="text" name="username" placeholder="admin" required autocomplete="username"></div>
-    <div class="field"><label>Password</label><input type="password" name="password" placeholder="••••••••" required autocomplete="current-password"></div>
+    <div class="field"><label for="login-username">Username or Email</label><input id="login-username" type="text" name="username" placeholder="admin" required autocomplete="username"></div>
+    <div class="field"><label for="login-password">Password</label><input id="login-password" type="password" name="password" placeholder="••••••••" required autocomplete="current-password"></div>
     <button class="btn-primary" type="submit" style="width:100%;padding:13px;font-size:15px;margin-top:8px">Sign In</button>
   </form>
 </div>

@@ -1,9 +1,9 @@
 {{template "base" .}}
 {{define "title"}}Message — GoWebMail{{end}}
-{{define "body_class"}}app-page{{end}}
+{{define "body_class"}}{{end}}
 
 {{define "body"}}
-<div id="msg-page" style="max-width:860px;margin:0 auto;padding:20px 16px;min-height:100vh">
+<div id="msg-page" style="width:100%;box-sizing:border-box;margin:0 auto;padding:20px 32px;min-height:100vh">
   <div style="display:flex;align-items:center;gap:12px;margin-bottom:18px;padding-bottom:14px;border-bottom:1px solid var(--border)">
     <a href="/" style="color:var(--accent);text-decoration:none;font-size:13px;display:flex;align-items:center;gap:4px">
       <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
@@ -25,6 +25,7 @@
 {{define "scripts"}}
 <script>
 const msgId = parseInt(location.pathname.split('/').pop());
+let remoteWhitelist = new Set(), remoteImagePolicy = 'manual', contactsCache = null;
 
 async function api(method, path, body) {
   const opts = { method, headers: {} };
@@ -35,14 +36,83 @@ async function api(method, path, body) {
 
 function esc(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
-async function load() {
-  const msg = await api('GET', '/messages/' + msgId);
-  if (!msg) { document.getElementById('msg-content').innerHTML = '<p style="color:var(--danger)">Message not found or not accessible.</p>'; return; }
+// ── Remote-image policy — same rules as the main reading pane (app.js) ──
+function stripUnresolvedCID(h){ return h.replace(/src\s*=\s*(['"])cid:[^'"]*\1/gi,'src=""').replace(/src\s*=\s*cid:\S+/gi,'src=""'); }
+function stripEmbeddedFrames(h){ return h.replace(/<iframe[\s\S]*?<\/iframe>/gi,'').replace(/<iframe[^>]*>/gi,''); }
+function stripRemoteImages(h){
+  return h.replace(/<img(\s[^>]*?)src\s*=\s*(['"])(https?:\/\/[^'"]+)\2/gi,'<img$1src="" data-blocked-src="$3"')
+          .replace(/url\s*\(\s*(['"]?)https?:\/\/[^)'"]+\1\s*\)/gi,'url()')
+          .replace(/<link[^>]*>/gi,'').replace(/<script[\s\S]*?<\/script>/gi,'');
+}
+function isContactEmail(fromEmail) {
+  if (!fromEmail || !contactsCache) return false;
+  const e = fromEmail.toLowerCase();
+  return contactsCache.some(c => (c.email||'').toLowerCase() === e);
+}
+function isRemoteContentAllowed(fromEmail) {
+  if (remoteImagePolicy === 'always') return true;
+  if (remoteImagePolicy === 'never') return false;
+  if (remoteImagePolicy === 'contacts') return isContactEmail(fromEmail) || remoteWhitelist.has(fromEmail);
+  return remoteWhitelist.has(fromEmail); // manual (default)
+}
+async function whitelistSender(sender) {
+  const r = await api('POST', '/remote-content-whitelist', { sender });
+  if (r?.ok) { remoteWhitelist.add(sender); render(window._msg, true); }
+}
 
-  // Mark read
-  await api('PUT', '/messages/' + msgId + '/read', { read: true });
+const cssReset = `<style>html,body{background:#ffffff!important;color:#1a1a1a!important;` +
+  `font-family:Arial,sans-serif;font-size:14px;line-height:1.5;margin:8px}a{color:#1a5fb4}` +
+  `img{max-width:100%;height:auto}iframe{display:none!important}</style>`;
+// Content-aware height report (leaf elements only — see app.js renderMessageDetail for why
+// document.documentElement.scrollHeight is wrong: it counts trailing structural dead space
+// some email templates leave behind) + link-click interception.
+const heightScript = `<script>
+  function _reportH(){
+    try{
+      var maxBottom=0;
+      var all=document.body?document.body.getElementsByTagName('*'):[];
+      for(var i=0;i<all.length;i++){
+        var el=all[i];
+        if(el.children.length>0) continue;
+        var cs=getComputedStyle(el);
+        if(cs.display==='none'||cs.visibility==='hidden'||parseFloat(cs.opacity||'1')===0) continue;
+        var hasText=(el.textContent||'').replace(/[\\s\\u00A0]/g,'').length>0;
+        if(!hasText && el.tagName!=='IMG') continue;
+        var r=el.getBoundingClientRect();
+        if(r.bottom>maxBottom) maxBottom=r.bottom;
+      }
+      var h=maxBottom>0?maxBottom:document.documentElement.scrollHeight;
+      parent.postMessage({type:'gomail-frame-h',h:h},'*');
+    }catch(ex){parent.postMessage({type:'gomail-frame-h',h:0},'*');}
+  }
+  document.addEventListener('DOMContentLoaded',_reportH);
+  window.addEventListener('load',_reportH);
+  new MutationObserver(_reportH).observe(document.documentElement,{subtree:true,childList:true,attributes:true});
+  if(window.ResizeObserver) new ResizeObserver(_reportH).observe(document.documentElement);
+  [50,150,400,900,1800,3000].forEach(function(ms){ setTimeout(_reportH, ms); });
+  document.addEventListener('click',function(e){
+    var el=e.target; while(el&&el.tagName!=='A') el=el.parentElement;
+    if(!el) return;
+    var href=el.getAttribute('href');
+    if(!href||href.startsWith('#')||href.startsWith('mailto:')) return;
+    e.preventDefault(); e.stopPropagation();
+    parent.postMessage({type:'gomail-open-url',url:href},'*');
+  },true);
+<\/script>`;
+const sandboxAttr = 'allow-scripts allow-popups allow-popups-to-escape-sandbox';
 
-  document.title = (msg.subject || '(no subject)') + ' — GoWebMail';
+window.addEventListener('message', e => {
+  if (e.data?.type === 'gomail-frame-h' && e.data.h > 50) {
+    const frame = document.getElementById('msg-frame');
+    if (frame) frame.style.height = (e.data.h + 24) + 'px';
+  } else if (e.data?.type === 'gomail-open-url' && e.data.url) {
+    window.open(e.data.url, '_blank', 'noopener,noreferrer');
+  }
+});
+
+function render(msg, showRemoteContent) {
+  window._msg = msg;
+  const allowed = showRemoteContent || isRemoteContentAllowed(msg.from_email);
 
   const atts = msg.attachments || [];
   const attHtml = atts.length ? `
@@ -52,6 +122,28 @@ async function load() {
         border:1px solid var(--border2);border-radius:6px;font-size:12px;color:var(--text);text-decoration:none">
         📎 ${esc(a.filename)} <span style="color:var(--muted)">(${(a.size/1024).toFixed(0)}KB)</span></a>`).join('')}
     </div>` : '';
+
+  let bodyHtml = '';
+  if (msg.body_html) {
+    let html = stripUnresolvedCID(stripEmbeddedFrames(msg.body_html));
+    if (!allowed) {
+      const alwaysAllowBtn = remoteImagePolicy === 'never' ? '' :
+        `<button class="rcb-btn" onclick="whitelistSender('${esc(msg.from_email)}')">Always allow from ${esc(msg.from_email)}</button>`;
+      bodyHtml = `<div class="remote-content-banner">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>
+        Remote images blocked.
+        <button class="rcb-btn" onclick="render(window._msg,true)">Load images</button>
+        ${alwaysAllowBtn}
+      </div>`;
+      html = stripRemoteImages(html);
+    }
+    const srcdoc = (cssReset + heightScript + html).replace(/"/g,'&quot;');
+    bodyHtml += `<div style="border:1px solid var(--border);border-radius:8px;overflow:hidden;margin-bottom:12px">
+      <iframe id="msg-frame" title="Message content" sandbox="${sandboxAttr}" style="width:100%;border:none;min-height:200px;display:block" srcdoc="${srcdoc}"></iframe>
+    </div>`;
+  } else {
+    bodyHtml = `<div style="border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:12px;white-space:pre-wrap">${esc(msg.body_text||'(empty)')}</div>`;
+  }
 
   document.getElementById('msg-content').innerHTML = `
     <h1 style="font-size:22px;font-weight:600;margin-bottom:16px;line-height:1.3">${esc(msg.subject || '(no subject)')}</h1>
@@ -63,31 +155,37 @@ async function load() {
       </div>
       <span style="font-size:12px;color:var(--muted);white-space:nowrap">${esc(msg.date ? new Date(msg.date).toLocaleString() : '')}</span>
     </div>
-    <div style="border:1px solid var(--border);border-radius:8px;overflow:hidden;margin-bottom:12px">
-      <iframe id="msg-iframe" sandbox="allow-same-origin" style="width:100%;border:none;min-height:400px;background:white"></iframe>
-    </div>
+    ${bodyHtml}
     ${attHtml}`;
+}
 
-  // Write body into sandboxed iframe
-  const iframe = document.getElementById('msg-iframe');
-  const doc = iframe.contentDocument || iframe.contentWindow.document;
-  doc.open();
-  doc.write(`<!DOCTYPE html><html><head><style>
-    body{font-family:sans-serif;font-size:14px;line-height:1.6;padding:16px;margin:0;color:#111;word-break:break-word}
-    img{max-width:100%;height:auto}a{color:#0078D4}
-  </style></head><body>${msg.body_html || '<pre style="white-space:pre-wrap">' + (msg.body_text||'') + '</pre>'}</body></html>`);
-  doc.close();
-  // Auto-resize iframe
-  setTimeout(() => {
-    try { iframe.style.height = (doc.documentElement.scrollHeight + 20) + 'px'; } catch(e) {}
-  }, 200);
+async function load() {
+  const [msg, folders, uiPrefs, wl] = await Promise.all([
+    api('GET', '/messages/' + msgId), api('GET', '/folders'),
+    api('GET', '/ui-prefs'), api('GET', '/remote-content-whitelist'),
+  ]);
+  if (!msg) { document.getElementById('msg-content').innerHTML = '<p style="color:var(--danger)">Message not found or not accessible.</p>'; return; }
+
+  // A draft opened here (bookmark, typed URL, old link) should open editable, not read-only.
+  const folder = (folders||[]).find(f=>f.id===msg.folder_id);
+  if (folder?.folder_type === 'drafts') { location.replace('/compose?edit_draft_id=' + msgId); return; }
+
+  remoteImagePolicy = uiPrefs?.remoteImagePolicy || 'manual';
+  if (wl?.whitelist) remoteWhitelist = new Set(wl.whitelist);
+  if (remoteImagePolicy === 'contacts') contactsCache = await api('GET', '/contacts') || [];
+
+  // Mark read
+  await api('PUT', '/messages/' + msgId + '/read', { read: true });
+
+  document.title = (msg.subject || '(no subject)') + ' — GoWebMail';
+  render(msg, false);
 }
 
 function replyFromPage() {
-  window.location = '/?action=reply&id=' + msgId;
+  window.location = '/compose?reply_id=' + msgId;
 }
 function forwardFromPage() {
-  window.location = '/?action=forward&id=' + msgId;
+  window.location = '/compose?forward_id=' + msgId;
 }
 
 load();

@@ -6,15 +6,15 @@
 <div class="app" id="app-root" data-mob-view="list">
   <!-- Mobile top bar (hidden on desktop) -->
   <div class="mob-topbar" id="mob-topbar">
-    <button class="mob-nav-btn" id="mob-nav-btn" onclick="mobShowNav()" title="Menu">
+    <button class="mob-nav-btn" id="mob-nav-btn" onclick="mobShowNav()" title="Menu" aria-label="Open navigation menu">
       <svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/></svg>
     </button>
-    <button class="mob-back-btn" id="mob-back-btn" onclick="mobBack()" title="Back" style="display:none">
+    <button class="mob-back-btn" id="mob-back-btn" onclick="mobBack()" title="Back" aria-label="Back" style="display:none">
       <svg viewBox="0 0 24 24" fill="currentColor"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
     </button>
     <span class="mob-title" id="mob-title">GoWebMail</span>
     <button class="compose-btn" onclick="openCompose()" style="margin-left:auto;padding:5px 10px;font-size:11px">+ New</button>
-    <button class="compose-btn" onclick="window.open('/compose','_blank')" style="padding:5px 8px;font-size:11px" title="Compose in new tab">↗</button>
+    <button class="compose-btn" onclick="window.open('/compose','_blank')" style="padding:5px 8px;font-size:11px" title="Compose in new tab" aria-label="Compose in new tab">↗</button>
   </div>
 
   <!-- Sidebar -->
@@ -22,7 +22,7 @@
     <div class="sidebar-header">
       <div style="display:flex;align-items:center;justify-content:space-between">
         <div style="display:flex;align-items:center;gap:8px;min-width:0">
-          <button class="icon-btn sidebar-collapse-btn" onclick="toggleSidebarCollapse()" title="Collapse sidebar" style="flex-shrink:0">
+          <button class="icon-btn sidebar-collapse-btn" onclick="toggleSidebarCollapse()" title="Collapse sidebar" aria-label="Collapse sidebar" style="flex-shrink:0">
             <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><path d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg>
           </button>
           <div class="logo">
@@ -33,7 +33,7 @@
       </div>
       <div style="display:flex;margin-top:8px">
         <button class="compose-btn" onclick="openCompose()" style="flex:1;border-radius:6px 0 0 6px">+ New</button>
-        <button class="compose-btn" onclick="toggleComposeDropdown(event)" style="border-radius:0 6px 6px 0;border-left:1px solid rgba(255,255,255,.25);padding:6px 7px" title="More options">
+        <button class="compose-btn" onclick="toggleComposeDropdown(event)" style="border-radius:0 6px 6px 0;border-left:1px solid rgba(255,255,255,.25);padding:6px 7px" title="More options" aria-label="More compose options" aria-haspopup="true">
           <svg viewBox="0 0 24 24" width="10" height="10" fill="white"><path d="M7 10l5 5 5-5z"/></svg>
         </button>
       </div>
@@ -48,6 +48,14 @@
       <div class="nav-item" id="nav-starred" onclick="selectFolder('starred','Starred')">
         <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>
         Starred
+      </div>
+      <div class="nav-item" id="nav-snoozed" onclick="selectFolder('snoozed','Snoozed')">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 20c4.42 0 8-3.58 8-8s-3.58-8-8-8-8 3.58-8 8 3.58 8 8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67V7z"/></svg>
+        Snoozed
+      </div>
+      <div class="nav-item" id="nav-scheduled" onclick="showScheduledSends()">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M20 3h-1V1h-2v2H7V1H5v2H4c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 18H4V8h16v13zm-8-9h5v5h-5z"/></svg>
+        Scheduled
       </div>
       <div class="nav-item" id="nav-contacts" onclick="showContacts()">
         <svg viewBox="0 0 24 24" fill="currentColor"><path d="M20 0H4v2h16V0zM0 4v18h24V4H0zm22 16H2V6h20v14zM12 11c1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3 1.34 3 3 3zm-6 6c0-2.21 2.69-4 6-4s6 1.79 6 4H6z"/></svg>
@@ -66,10 +74,10 @@
         <a href="/admin" id="admin-link" style="display:none;font-size:11px;color:var(--accent);text-decoration:none">Server Administration</a>
       </div>
       <div class="footer-actions">
-        <button class="icon-btn" onclick="openSettings()" title="Settings">
+        <button class="icon-btn" onclick="openSettings()" title="Settings" aria-label="Settings">
           <svg viewBox="0 0 24 24"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
         </button>
-        <button class="icon-btn" onclick="doLogout()" title="Sign out">
+        <button class="icon-btn" onclick="doLogout()" title="Sign out" aria-label="Sign out">
           <svg viewBox="0 0 24 24"><path d="M17 7l-1.41 1.41L18.17 11H8v2h10.17l-2.58 2.58L17 17l5-5zM4 5h8V3H4c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h8v-2H4V5z"/></svg>
         </button>
       </div>
@@ -83,7 +91,7 @@
   <div class="message-list-panel">
     <div class="panel-header">
       <div style="display:flex;align-items:center;gap:6px;min-width:0">
-        <button class="icon-btn" id="sidebar-expand-btn" onclick="toggleSidebarCollapse()" title="Show sidebar" style="flex-shrink:0">
+        <button class="icon-btn" id="sidebar-expand-btn" onclick="toggleSidebarCollapse()" title="Show sidebar" aria-label="Show sidebar" style="flex-shrink:0">
           <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><path d="M8.59 16.59L13.17 12 8.59 7.41 10 6l6 6-6 6z"/></svg>
         </button>
         <span class="panel-title" id="panel-title">Unified Inbox</span>
@@ -91,7 +99,7 @@
       <div style="display:flex;align-items:center;gap:6px">
         <span class="panel-count" id="panel-count"></span>
         <div class="filter-dropdown" id="view-dropdown">
-          <button class="filter-dropdown-btn" id="view-dropdown-btn" title="View settings" onclick="toggleViewDropdown(event)">
+          <button class="filter-dropdown-btn" id="view-dropdown-btn" title="View settings" onclick="toggleViewDropdown(event)" aria-haspopup="true" aria-expanded="false">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg>
             <span>View</span>
           </button>
@@ -111,14 +119,14 @@
           </div>
         </div>
         <div class="filter-dropdown" id="labels-dropdown">
-          <button class="filter-dropdown-btn" id="labels-dropdown-btn" title="Labels" onclick="toggleLabelsDropdown(event)">
+          <button class="filter-dropdown-btn" id="labels-dropdown-btn" title="Labels" onclick="toggleLabelsDropdown(event)" aria-haspopup="true" aria-expanded="false">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M17.63 5.84C17.27 5.33 16.67 5 16 5L5 5.01C3.9 5.01 3 5.9 3 7v10c0 1.1.9 1.99 2 1.99L16 19c.67 0 1.27-.33 1.63-.84L22 12l-4.37-6.16z"/></svg>
             <span>Labels</span>
           </button>
           <div class="filter-dropdown-menu" id="labels-dropdown-menu" style="display:none;min-width:210px"></div>
         </div>
         <div class="filter-dropdown" id="filter-dropdown">
-          <button class="filter-dropdown-btn" id="filter-dropdown-btn" title="Filter &amp; sort" onclick="var m=document.getElementById('filter-dropdown-menu');m.style.display=m.style.display==='block'?'none':'block';event.stopPropagation()">
+          <button class="filter-dropdown-btn" id="filter-dropdown-btn" title="Filter &amp; sort" aria-haspopup="true" aria-expanded="false" onclick="var m=document.getElementById('filter-dropdown-menu');var exp=m.style.display==='block';m.style.display=exp?'none':'block';this.setAttribute('aria-expanded',String(!exp));event.stopPropagation()">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M10 18h4v-2h-4v2zM3 6v2h18V6H3zm3 7h12v-2H6v2z"/></svg>
             <span id="filter-label">Filter</span>
           </button>
@@ -139,9 +147,9 @@
       <div style="display:flex;gap:6px;align-items:center">
         <div class="search-wrap" style="flex:1">
           <svg viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
-          <input class="search-input" type="text" id="search-input" placeholder="Search emails..." oninput="handleSearch(this.value)" onkeydown="if(event.key==='Enter')applySearchFilters()">
+          <input class="search-input" type="text" id="search-input" aria-label="Search emails" placeholder="Search emails..." oninput="handleSearch(this.value)" onkeydown="if(event.key==='Enter')applySearchFilters()">
         </div>
-        <button class="filter-dropdown-btn" id="search-filters-btn" title="Search filters" onclick="toggleSearchFilters(event)" style="flex-shrink:0">
+        <button class="filter-dropdown-btn" id="search-filters-btn" title="Search filters" aria-label="Search filters" aria-haspopup="true" onclick="toggleSearchFilters(event)" style="flex-shrink:0">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M10 18h4v-2h-4v2zM3 6v2h18V6H3zm3 7h12v-2H6v2z"/></svg>
         </button>
       </div>
@@ -176,15 +184,15 @@
   <!-- ── Calendar panel ──────────────────────────────────────────────────── -->
   <div id="calendar-panel" style="display:none;flex:1;flex-direction:column;overflow:hidden;background:var(--bg)">
     <div style="padding:12px 18px 10px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;flex-shrink:0">
-      <button class="icon-btn" onclick="calNav(-1)" title="Previous">&#8249;</button>
+      <button class="icon-btn" onclick="calNav(-1)" title="Previous" aria-label="Previous period">&#8249;</button>
       <span id="cal-title" style="font-family:'DM Serif Display',serif;font-size:17px;min-width:200px;text-align:center"></span>
-      <button class="icon-btn" onclick="calNav(1)" title="Next">&#8250;</button>
+      <button class="icon-btn" onclick="calNav(1)" title="Next" aria-label="Next period">&#8250;</button>
       <button class="btn-secondary" onclick="calGoToday()" style="font-size:12px;margin-left:4px">Today</button>
       <div style="margin-left:auto;display:flex;gap:4px">
         <button class="btn-secondary" id="cal-btn-month" onclick="calSetView('month')" style="font-size:12px">Month</button>
         <button class="btn-secondary" id="cal-btn-week" onclick="calSetView('week')" style="font-size:12px">Week</button>
         <button class="btn-secondary" onclick="openEventForm()" style="font-size:12px;background:var(--accent);color:white;border-color:var(--accent)">+ Event</button>
-        <button class="icon-btn" onclick="showCalDAVSettings()" title="CalDAV / sharing">
+        <button class="icon-btn" onclick="showCalDAVSettings()" title="CalDAV / sharing" aria-label="CalDAV and sharing settings">
           <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z"/></svg>
         </button>
       </div>
@@ -195,7 +203,7 @@
 </div>
 
 <!-- ── Contact form modal ──────────────────────────────────────────────────── -->
-<div class="modal-overlay" id="contact-modal">
+<div class="modal-overlay" id="contact-modal" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="contact-modal-title">
   <div class="modal" style="max-width:480px">
     <h2 id="contact-modal-title">New Contact</h2>
     <div class="modal-field"><label>Name</label><input id="cf-name" type="text" placeholder="Full name"></div>
@@ -212,7 +220,7 @@
 </div>
 
 <!-- ── Event form modal ──────────────────────────────────────────────────── -->
-<div class="modal-overlay" id="event-modal">
+<div class="modal-overlay" id="event-modal" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="event-modal-title">
   <div class="modal" style="max-width:520px">
     <h2 id="event-modal-title">New Event</h2>
     <div class="modal-field"><label>Title</label><input id="ev-title" type="text" placeholder="Event title"></div>
@@ -245,9 +253,9 @@
 </div>
 
 <!-- ── CalDAV settings modal ──────────────────────────────────────────────── -->
-<div class="modal-overlay" id="caldav-modal">
+<div class="modal-overlay" id="caldav-modal" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="caldav-modal-title">
   <div class="modal" style="max-width:560px">
-    <h2>CalDAV / Calendar Sharing</h2>
+    <h2 id="caldav-modal-title">CalDAV / Calendar Sharing</h2>
     <p style="font-size:13px;color:var(--text2);margin-bottom:14px">
       Subscribe to your GoWebMail calendar from any CalDAV client (Apple Calendar, Thunderbird, etc.) using a token URL. Tokens give read-only calendar access — no password needed.
     </p>
@@ -267,28 +275,28 @@
   <div class="compose-dialog-header" id="compose-drag-handle">
     <span class="compose-title" id="compose-title">New Message</span>
     <div style="display:flex;align-items:center;gap:2px">
-      <button class="compose-close" onclick="minimizeCompose()" title="Minimise">&#8211;</button>
-      <button class="compose-close" onclick="closeCompose()" title="Close">&#215;</button>
+      <button class="compose-close" onclick="minimizeCompose()" title="Minimise" aria-label="Minimise compose window">&#8211;</button>
+      <button class="compose-close" onclick="closeCompose()" title="Close" aria-label="Close compose window">&#215;</button>
     </div>
   </div>
   <div class="compose-body-wrap" id="compose-body-wrap">
-    <div class="compose-field"><label>From</label><select id="compose-from" onchange="onComposeFromChange()"></select></div>
-    <div class="compose-field compose-tag-field"><label>To</label><div id="compose-to" class="tag-container"></div></div>
-    <div class="compose-field compose-tag-field" id="cc-row" style="display:none"><label>CC</label><div id="compose-cc-tags" class="tag-container"></div></div>
-    <div class="compose-field compose-tag-field" id="bcc-row" style="display:none"><label>BCC</label><div id="compose-bcc-tags" class="tag-container"></div></div>
-    <div class="compose-field"><label>Subject</label><input type="text" id="compose-subject" oninput="S.draftDirty=true"></div>
-    <div class="compose-toolbar">
-      <button class="fmt-btn" title="Bold" onclick="execFmt('bold')"><b>B</b></button>
-      <button class="fmt-btn" title="Italic" onclick="execFmt('italic')"><i>I</i></button>
-      <button class="fmt-btn" title="Underline" onclick="execFmt('underline')"><u>U</u></button>
+    <div class="compose-field"><label for="compose-from">From</label><select id="compose-from" onchange="onComposeFromChange()"></select></div>
+    <div class="compose-field compose-tag-field"><label id="compose-to-label">To</label><div id="compose-to" class="tag-container" role="group" aria-labelledby="compose-to-label"></div></div>
+    <div class="compose-field compose-tag-field" id="cc-row" style="display:none"><label id="compose-cc-label">CC</label><div id="compose-cc-tags" class="tag-container" role="group" aria-labelledby="compose-cc-label"></div></div>
+    <div class="compose-field compose-tag-field" id="bcc-row" style="display:none"><label id="compose-bcc-label">BCC</label><div id="compose-bcc-tags" class="tag-container" role="group" aria-labelledby="compose-bcc-label"></div></div>
+    <div class="compose-field"><label for="compose-subject">Subject</label><input type="text" id="compose-subject" oninput="S.draftDirty=true"></div>
+    <div class="compose-toolbar" role="toolbar" aria-label="Formatting">
+      <button class="fmt-btn" title="Bold" aria-label="Bold" onclick="execFmt('bold')"><b>B</b></button>
+      <button class="fmt-btn" title="Italic" aria-label="Italic" onclick="execFmt('italic')"><i>I</i></button>
+      <button class="fmt-btn" title="Underline" aria-label="Underline" onclick="execFmt('underline')"><u>U</u></button>
       <span class="fmt-sep"></span>
-      <button class="fmt-btn" title="Bullets" onclick="execFmt('insertUnorderedList')">&#8226;&#8212;</button>
-      <button class="fmt-btn" title="Numbers" onclick="execFmt('insertOrderedList')">1&#8212;</button>
+      <button class="fmt-btn" title="Bullets" aria-label="Bulleted list" onclick="execFmt('insertUnorderedList')">&#8226;&#8212;</button>
+      <button class="fmt-btn" title="Numbers" aria-label="Numbered list" onclick="execFmt('insertOrderedList')">1&#8212;</button>
       <span class="fmt-sep"></span>
-      <button class="fmt-btn" title="Link" onclick="insertLink()">&#128279;</button>
-      <button class="fmt-btn" title="Clear format" onclick="execFmt('removeFormat')">T&#x20D7;</button>
+      <button class="fmt-btn" title="Link" aria-label="Insert link" onclick="insertLink()">&#128279;</button>
+      <button class="fmt-btn" title="Clear format" aria-label="Clear formatting" onclick="execFmt('removeFormat')">T&#x20D7;</button>
     </div>
-    <div id="compose-editor" contenteditable="true" class="compose-editor" placeholder="Write your message..."></div>
+    <div id="compose-editor" contenteditable="true" role="textbox" aria-multiline="true" aria-label="Message body" class="compose-editor" placeholder="Write your message..."></div>
     <div id="compose-attach-list" class="compose-attach-list"></div>
     <div class="compose-footer">
       <button class="send-btn" id="send-btn" onclick="sendMessage()">Send</button>
@@ -297,6 +305,7 @@
         <button class="btn-secondary" style="font-size:12px" onclick="showBCCRow()">+BCC</button>
         <button class="btn-secondary" style="font-size:12px" onclick="triggerAttach()">&#128206; Attach</button>
         <button class="btn-secondary" style="font-size:12px" onclick="saveDraft()">&#9998; Draft</button>
+        <button class="btn-secondary" style="font-size:12px" onclick="openSendLater()">&#128339; Send later</button>
       </div>
       <input type="file" id="compose-attach-input" multiple style="display:none" onchange="handleAttachFiles(this)">
     </div>
@@ -317,7 +326,7 @@
 </div>
 
 <!-- ── Inline confirm (replaces browser confirm()) ───────────────────────── -->
-<div class="inline-confirm" id="inline-confirm">
+<div class="inline-confirm" id="inline-confirm" role="alertdialog" aria-modal="true" aria-describedby="inline-confirm-msg">
   <p id="inline-confirm-msg" style="margin:0 0 14px;font-size:13px;line-height:1.5"></p>
   <div style="display:flex;gap:8px;justify-content:flex-end">
     <button class="btn-secondary" style="font-size:12px" id="inline-confirm-cancel">Cancel</button>
@@ -326,10 +335,10 @@
 </div>
 
 <!-- ── Inline prompt (replaces browser prompt()) ─────────────────────────── -->
-<div class="inline-confirm" id="inline-prompt">
+<div class="inline-confirm" id="inline-prompt" role="dialog" aria-modal="true" aria-describedby="inline-prompt-msg">
   <p id="inline-prompt-msg" style="margin:0 0 10px;font-size:13px;line-height:1.5"></p>
   <div class="modal-field">
-    <input type="text" id="inline-prompt-input"
+    <input type="text" id="inline-prompt-input" aria-labelledby="inline-prompt-msg"
            onkeydown="if(event.key==='Enter'){document.getElementById('inline-prompt-ok').click();}else if(event.key==='Escape'){document.getElementById('inline-prompt-cancel').click();}">
   </div>
   <div style="display:flex;gap:8px;justify-content:flex-end">
@@ -338,9 +347,22 @@
   </div>
 </div>
 
+<!-- ── Inline date/time prompt (snooze / send later) ──────────────────────── -->
+<div class="inline-confirm" id="inline-datetime" role="dialog" aria-modal="true" aria-describedby="inline-datetime-msg">
+  <p id="inline-datetime-msg" style="margin:0 0 10px;font-size:13px;line-height:1.5"></p>
+  <div class="datetime-presets" id="inline-datetime-presets" role="group" aria-label="Quick presets"></div>
+  <div class="modal-field">
+    <input type="datetime-local" id="inline-datetime-input" aria-labelledby="inline-datetime-msg">
+  </div>
+  <div style="display:flex;gap:8px;justify-content:flex-end">
+    <button class="btn-secondary" style="font-size:12px" id="inline-datetime-cancel">Cancel</button>
+    <button class="btn-primary"   style="font-size:12px" id="inline-datetime-ok">Set</button>
+  </div>
+</div>
+
 <!-- ── Draft close confirm (save / delete / keep editing) ─────────────────── -->
-<div class="inline-confirm" id="draft-close-confirm">
-  <p style="margin:0 0 14px;font-size:13px;line-height:1.5">Save this message as a draft before closing?</p>
+<div class="inline-confirm" id="draft-close-confirm" role="alertdialog" aria-modal="true" aria-describedby="draft-close-confirm-msg">
+  <p id="draft-close-confirm-msg" style="margin:0 0 14px;font-size:13px;line-height:1.5">Save this message as a draft before closing?</p>
   <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap">
     <button class="btn-secondary" style="font-size:12px" id="draft-close-cancel">Keep editing</button>
     <button class="btn-danger"    style="font-size:12px" id="draft-close-delete">Delete draft</button>
@@ -348,10 +370,21 @@
   </div>
 </div>
 
+<!-- ── Scheduled Sends Modal ───────────────────────────────────────────────── -->
+<div class="modal-overlay" id="scheduled-sends-modal" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="scheduled-sends-modal-title">
+  <div class="modal" style="max-width:520px">
+    <h2 id="scheduled-sends-modal-title">Scheduled sends</h2>
+    <div id="scheduled-sends-list"></div>
+    <div class="modal-actions">
+      <button class="modal-cancel" onclick="closeModal('scheduled-sends-modal')">Close</button>
+    </div>
+  </div>
+</div>
+
 <!-- ── Add Account Modal ──────────────────────────────────────────────────── -->
-<div class="modal-overlay" id="add-account-modal">
+<div class="modal-overlay" id="add-account-modal" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="add-account-modal-title">
   <div class="modal">
-    <h2>Connect an account</h2>
+    <h2 id="add-account-modal-title">Connect an account</h2>
     <p>Connect Gmail or Outlook via OAuth, or any email via IMAP/SMTP.</p>
     <div class="provider-btns">
       <button class="provider-btn" id="btn-gmail" onclick="connectOAuth('gmail')">
@@ -416,7 +449,7 @@
 </div>
 
 <!-- ── Label Editor Modal (create/rename/recolor) ────────────────────────────── -->
-<div class="modal-overlay" id="label-editor-modal">
+<div class="modal-overlay" id="label-editor-modal" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="label-editor-title">
   <div class="modal" style="max-width:360px">
     <h2 id="label-editor-title">New Label</h2>
     <input type="hidden" id="label-editor-id">
@@ -434,9 +467,9 @@
 </div>
 
 <!-- ── Edit Account Modal ─────────────────────────────────────────────────── -->
-<div class="modal-overlay" id="edit-account-modal">
+<div class="modal-overlay" id="edit-account-modal" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="edit-account-modal-title">
   <div class="modal">
-    <h2>Account Settings</h2>
+    <h2 id="edit-account-modal-title">Account Settings</h2>
     <p id="edit-account-email" style="font-weight:500;color:var(--text);margin-bottom:16px"></p>
     <input type="hidden" id="edit-account-id">
     <div class="modal-field"><label>Display Name</label><input type="text" id="edit-name"></div>
@@ -499,23 +532,23 @@
 </div>
 
 <!-- ── Settings Modal ─────────────────────────────────────────────────────── -->
-<div class="modal-overlay" id="settings-modal">
+<div class="modal-overlay" id="settings-modal" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="settings-modal-title">
   <div class="modal" style="width:820px;max-width:95vw;height:640px;max-height:90vh;padding:0;display:flex;flex-direction:column">
     <div style="display:flex;align-items:center;justify-content:space-between;padding:22px 24px 16px">
-      <h2 style="margin-bottom:0">Settings</h2>
-      <button onclick="closeModal('settings-modal')" class="icon-btn"><svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg></button>
+      <h2 id="settings-modal-title" style="margin-bottom:0">Settings</h2>
+      <button onclick="closeModal('settings-modal')" class="icon-btn" aria-label="Close settings"><svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg></button>
     </div>
     <div style="display:flex;align-items:stretch;min-height:0;flex:1;border-top:1px solid var(--border)">
-      <div class="settings-nav">
-        <button data-tab="accounts" class="active" onclick="showSettingsTab('accounts')">Accounts</button>
-        <button data-tab="account" onclick="showSettingsTab('account')">Profile</button>
-        <button data-tab="rules" onclick="showSettingsTab('rules')">Rules</button>
-        <button data-tab="signatures" onclick="showSettingsTab('signatures')">Signatures</button>
-        <button data-tab="certs" onclick="showSettingsTab('certs')">Certificates</button>
+      <div class="settings-nav" role="tablist" aria-label="Settings sections">
+        <button data-tab="accounts" class="active" role="tab" aria-selected="true" onclick="showSettingsTab('accounts')">Accounts</button>
+        <button data-tab="account" role="tab" aria-selected="false" onclick="showSettingsTab('account')">Profile</button>
+        <button data-tab="rules" role="tab" aria-selected="false" onclick="showSettingsTab('rules')">Rules</button>
+        <button data-tab="signatures" role="tab" aria-selected="false" onclick="showSettingsTab('signatures')">Signatures</button>
+        <button data-tab="certs" role="tab" aria-selected="false" onclick="showSettingsTab('certs')">Certificates</button>
       </div>
       <div style="flex:1;min-width:0;overflow-y:auto;padding:20px 24px">
 
-      <div class="settings-panel active" data-tab="accounts">
+      <div class="settings-panel active" data-tab="accounts" role="tabpanel">
         <div class="settings-group">
           <div class="settings-group-title">Connected mailboxes</div>
           <div style="font-size:12px;color:var(--muted);margin-bottom:10px">Manage sync, credentials, CalDAV/CardDAV and per-account settings for each connected mailbox.</div>
@@ -527,7 +560,7 @@
         </div>
       </div>
 
-      <div class="settings-panel" data-tab="account">
+      <div class="settings-panel" data-tab="account" role="tabpanel">
         <div class="settings-group">
           <div class="settings-group-title">Profile</div>
           <div class="modal-field">
@@ -568,6 +601,24 @@
         </div>
 
         <div class="settings-group">
+          <div class="settings-group-title">Remote Images</div>
+          <div style="font-size:13px;color:var(--muted);margin-bottom:12px">Control when images and other remote content in emails load automatically. Blocking prevents senders from using tracking pixels to detect that you've opened a message.</div>
+          <div class="modal-field">
+            <label for="remote-image-policy-select">Policy</label>
+            <select id="remote-image-policy-select" onchange="saveRemoteImagePolicy()" style="width:100%;padding:8px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;outline:none">
+              <option value="always">Always render images</option>
+              <option value="contacts">Only from Contacts</option>
+              <option value="never">Never</option>
+              <option value="manual">Manually (needs allowing)</option>
+            </select>
+          </div>
+          <div class="modal-field">
+            <label>Allowed senders</label>
+            <div id="remote-whitelist-list" style="font-size:12px;color:var(--muted)">Loading…</div>
+          </div>
+        </div>
+
+        <div class="settings-group">
           <div class="settings-group-title">Change Password</div>
           <div class="modal-field"><label>Current Password</label><input type="password" id="cur-pw"></div>
           <div class="modal-field"><label>New Password</label><input type="password" id="new-pw" placeholder="Min. 8 characters"></div>
@@ -603,7 +654,7 @@
         </div>
       </div>
 
-      <div class="settings-panel" data-tab="rules">
+      <div class="settings-panel" data-tab="rules" role="tabpanel">
         <div class="settings-group">
           <div class="settings-group-title">Rules apply to</div>
           <select id="rules-account-select" onchange="loadRules()" style="width:100%;padding:8px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;outline:none"></select>
@@ -642,12 +693,33 @@
         </div>
       </div>
 
-      <div class="settings-panel" data-tab="signatures">
+      <div class="settings-panel" data-tab="signatures" role="tabpanel">
         <div class="settings-group">
-          <div class="settings-group-title">Add Signature</div>
-          <div class="modal-field"><label>Name</label><input type="text" id="sig-name" placeholder="e.g. Work"></div>
-          <div class="modal-field"><label>Content (HTML)</label><textarea id="sig-content" rows="4" style="width:100%" placeholder="Best regards,&#10;Your Name"></textarea></div>
-          <button class="btn-primary" onclick="saveSignature()">Add Signature</button>
+          <div class="settings-group-title" id="sig-form-title">Add Signature</div>
+          <div class="modal-field"><label for="sig-name">Name</label><input type="text" id="sig-name" placeholder="e.g. Work"></div>
+          <div class="modal-field">
+            <label for="sig-content">Content</label>
+            <div class="compose-toolbar" role="toolbar" aria-label="Signature formatting" style="margin-bottom:6px">
+              <button type="button" class="fmt-btn" title="Bold" aria-label="Bold" onclick="execSigFmt('bold')"><b>B</b></button>
+              <button type="button" class="fmt-btn" title="Italic" aria-label="Italic" onclick="execSigFmt('italic')"><i>I</i></button>
+              <button type="button" class="fmt-btn" title="Underline" aria-label="Underline" onclick="execSigFmt('underline')"><u>U</u></button>
+              <span class="fmt-sep"></span>
+              <label class="fmt-btn" title="Text color" aria-label="Text color" style="cursor:pointer;position:relative">
+                🎨<input type="color" id="sig-color-input" style="position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer" onchange="execSigFmt('foreColor', this.value)">
+              </label>
+              <span class="fmt-sep"></span>
+              <button type="button" class="fmt-btn" title="Link" aria-label="Insert link" onclick="insertLink('sig-content')">&#128279;</button>
+              <button type="button" class="fmt-btn" title="Image" aria-label="Insert image" onclick="document.getElementById('sig-image-input').click()">&#128247;</button>
+              <button type="button" class="fmt-btn" title="Clear format" aria-label="Clear formatting" onclick="execSigFmt('removeFormat')">T&#x20D7;</button>
+              <input type="file" id="sig-image-input" accept="image/*" style="display:none" onchange="insertSigImage(this)">
+            </div>
+            <div id="sig-content" contenteditable="true" role="textbox" aria-multiline="true" aria-label="Signature content"
+                 style="width:100%;min-height:110px;padding:10px;background:var(--surface3);border:1px solid var(--border2);border-radius:6px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;line-height:1.5;overflow-y:auto"></div>
+          </div>
+          <div style="display:flex;gap:8px">
+            <button class="btn-primary" id="sig-save-btn" onclick="saveSignature()">Add Signature</button>
+            <button class="btn-secondary" id="sig-cancel-btn" onclick="cancelSignatureEdit()" style="display:none">Cancel</button>
+          </div>
         </div>
         <div class="settings-group">
           <div class="settings-group-title">Your Signatures</div>
@@ -660,7 +732,7 @@
         </div>
       </div>
 
-      <div class="settings-panel" data-tab="certs">
+      <div class="settings-panel" data-tab="certs" role="tabpanel">
         <div class="settings-group">
           <div class="settings-group-title">Certificates apply to</div>
           <select id="certs-account-select" onchange="loadCerts()" style="width:100%;padding:8px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;outline:none"></select>
@@ -776,10 +848,10 @@
 
 <!-- Context menu -->
 <div class="ctx-menu" id="ctx-menu"></div>
-<div class="toast-container" id="toast-container"></div>
+<div class="toast-container" id="toast-container" role="status" aria-live="polite" aria-atomic="true"></div>
 {{end}}
 
 {{define "scripts"}}
-<script src="/static/js/app.js?v=70"></script>
-<script src="/static/js/contacts_calendar.js?v=70"></script>
+<script src="/static/js/app.js?v=91"></script>
+<script src="/static/js/contacts_calendar.js?v=79"></script>
 {{end}}

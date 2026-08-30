@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
@@ -194,6 +195,9 @@ func (d *DB) Migrate() error {
 		// instead of always matching the combined search_text blob.
 		`ALTER TABLE messages ADD COLUMN search_subject TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE messages ADD COLUMN search_body TEXT NOT NULL DEFAULT ''`,
+		// Snooze: NULL = not snoozed; a future timestamp hides the message from normal
+		// folder views until it passes, at which point the background sweep clears it.
+		`ALTER TABLE messages ADD COLUMN snoozed_until DATETIME`,
 	}
 	for _, stmt := range alterStmts {
 		d.sql.Exec(stmt) // ignore "duplicate column" errors intentionally
@@ -440,6 +444,32 @@ func (d *DB) Migrate() error {
 		PRIMARY KEY (message_id, label_id)
 	)`); err != nil {
 		return fmt.Errorf("create message_labels: %w", err)
+	}
+
+	// Send-later: a fully-composed message held until send_at, delivered by the background
+	// sweep in main.go via the same send path as an immediate send. to/cc/bcc/forward_from_ids
+	// are JSON arrays in plain TEXT (matching messages.to_list's existing convention);
+	// subject/body are AES-encrypted like messages.subject already is. No raw file attachments
+	// in v1 — only forwarded-message .eml attachments (forward_from_ids), since those need no
+	// blob storage between scheduling and send time.
+	if _, err := d.sql.Exec(`CREATE TABLE IF NOT EXISTS scheduled_sends (
+		id               INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id          INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		account_id       INTEGER NOT NULL REFERENCES email_accounts(id) ON DELETE CASCADE,
+		to_list          TEXT    NOT NULL DEFAULT '',
+		cc_list          TEXT    NOT NULL DEFAULT '',
+		bcc_list         TEXT    NOT NULL DEFAULT '',
+		subject          TEXT    NOT NULL DEFAULT '',
+		body_html        TEXT    NOT NULL DEFAULT '',
+		body_text        TEXT    NOT NULL DEFAULT '',
+		forward_from_ids TEXT    NOT NULL DEFAULT '',
+		send_at          DATETIME NOT NULL,
+		created_at       DATETIME DEFAULT (datetime('now'))
+	)`); err != nil {
+		return fmt.Errorf("create scheduled_sends: %w", err)
+	}
+	if _, err := d.sql.Exec(`CREATE INDEX IF NOT EXISTS idx_scheduled_sends_due ON scheduled_sends(send_at)`); err != nil {
+		return fmt.Errorf("create idx_scheduled_sends_due: %w", err)
 	}
 
 	if _, err := d.sql.Exec(`CREATE TABLE IF NOT EXISTS trusted_certs (
@@ -1628,7 +1658,7 @@ func (d *DB) ListMessages(userID int64, folderIDs []int64, accountID int64, page
 	offset := (page - 1) * pageSize
 	args := []interface{}{userID}
 
-	where := "a.user_id=?"
+	where := "a.user_id=? AND (m.snoozed_until IS NULL OR m.snoozed_until <= datetime('now'))"
 	if accountID > 0 {
 		where += " AND m.account_id=?"
 		args = append(args, accountID)
@@ -1948,6 +1978,14 @@ func (d *DB) AddRemoteContentWhitelist(userID int64, sender string) error {
 	return err
 }
 
+func (d *DB) DeleteRemoteContentWhitelist(userID int64, sender string) error {
+	_, err := d.sql.Exec(
+		`DELETE FROM remote_content_whitelist WHERE user_id=? AND sender=?`,
+		userID, sender,
+	)
+	return err
+}
+
 func (d *DB) IsRemoteContentAllowed(userID int64, sender string) (bool, error) {
 	var count int
 	err := d.sql.QueryRow(
@@ -2126,6 +2164,204 @@ func (d *DB) ListStarredMessages(userID int64, page, pageSize int) (*models.Page
 	}, nil
 }
 
+// ---- Snooze ----
+
+// SnoozeMessage hides a message from normal folder views until `until`, scoped to accounts
+// owned by userID.
+func (d *DB) SnoozeMessage(id, userID int64, until time.Time) error {
+	_, err := d.sql.Exec(`
+		UPDATE messages SET snoozed_until=?
+		WHERE id=? AND account_id IN (SELECT id FROM email_accounts WHERE user_id=?)`,
+		until.UTC().Format("2006-01-02 15:04:05"), id, userID)
+	return err
+}
+
+// UnsnoozeMessage clears a message's snooze early, scoped to accounts owned by userID.
+func (d *DB) UnsnoozeMessage(id, userID int64) error {
+	_, err := d.sql.Exec(`
+		UPDATE messages SET snoozed_until=NULL
+		WHERE id=? AND account_id IN (SELECT id FROM email_accounts WHERE user_id=?)`,
+		id, userID)
+	return err
+}
+
+// ListSnoozedMessages returns messages currently snoozed (snoozed_until in the future),
+// soonest-to-wake first.
+func (d *DB) ListSnoozedMessages(userID int64, page, pageSize int) (*models.PagedMessages, error) {
+	offset := (page - 1) * pageSize
+	const where = "a.user_id=? AND m.snoozed_until IS NOT NULL AND m.snoozed_until > datetime('now')"
+	var total int
+	d.sql.QueryRow(`SELECT COUNT(*) FROM messages m JOIN email_accounts a ON a.id=m.account_id WHERE `+where, userID).Scan(&total)
+
+	rows, err := d.sql.Query(`
+		SELECT m.id, m.account_id, a.email_address, a.color, m.folder_id, f.name,
+		       m.subject, m.from_name, m.from_email, m.body_text,
+		       m.date, m.is_read, m.is_starred, m.has_attachment, m.snoozed_until
+		FROM messages m
+		JOIN email_accounts a ON a.id = m.account_id
+		JOIN folders f ON f.id = m.folder_id
+		WHERE `+where+`
+		ORDER BY m.snoozed_until ASC
+		LIMIT ? OFFSET ?`, userID, pageSize, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var summaries []models.MessageSummary
+	for rows.Next() {
+		s := models.MessageSummary{}
+		var subjectEnc, fromNameEnc, fromEmailEnc, bodyTextEnc string
+		var snoozedUntil sql.NullTime
+		if err := rows.Scan(
+			&s.ID, &s.AccountID, &s.AccountEmail, &s.AccountColor, &s.FolderID, &s.FolderName,
+			&subjectEnc, &fromNameEnc, &fromEmailEnc, &bodyTextEnc,
+			&s.Date, &s.IsRead, &s.IsStarred, &s.HasAttachment, &snoozedUntil,
+		); err != nil {
+			return nil, err
+		}
+		s.Subject, _ = d.enc.Decrypt(subjectEnc)
+		s.FromName, _ = d.enc.Decrypt(fromNameEnc)
+		s.FromEmail, _ = d.enc.Decrypt(fromEmailEnc)
+		bodyText, _ := d.enc.Decrypt(bodyTextEnc)
+		if len(bodyText) > 120 {
+			bodyText = bodyText[:120] + "…"
+		}
+		s.Preview = bodyText
+		if snoozedUntil.Valid {
+			s.SnoozedUntil = &snoozedUntil.Time
+		}
+		summaries = append(summaries, s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	d.attachLabels(summaries)
+	return &models.PagedMessages{
+		Messages: summaries,
+		Total:    total,
+		Page:     page,
+		PageSize: pageSize,
+		HasMore:  offset+len(summaries) < total,
+	}, nil
+}
+
+// WakeExpiredSnoozes clears snoozed_until on every message whose snooze has passed, marks
+// them unread (the conventional "snooze brought it back" signal), and returns the set of
+// folder IDs that need their unread counts recomputed. Called by the background sweep.
+func (d *DB) WakeExpiredSnoozes() ([]int64, error) {
+	rows, err := d.sql.Query(`SELECT DISTINCT folder_id FROM messages WHERE snoozed_until IS NOT NULL AND snoozed_until <= datetime('now')`)
+	if err != nil {
+		return nil, err
+	}
+	var folderIDs []int64
+	for rows.Next() {
+		var fid int64
+		if err := rows.Scan(&fid); err == nil {
+			folderIDs = append(folderIDs, fid)
+		}
+	}
+	rows.Close()
+	if len(folderIDs) == 0 {
+		return nil, nil
+	}
+	if _, err := d.sql.Exec(`UPDATE messages SET snoozed_until=NULL, is_read=0 WHERE snoozed_until IS NOT NULL AND snoozed_until <= datetime('now')`); err != nil {
+		return nil, err
+	}
+	return folderIDs, nil
+}
+
+// ---- Send-later (scheduled sends) ----
+
+// CreateScheduledSend stores a fully-composed message to be sent at s.SendAt by the
+// background sweep. Returns the new row's ID.
+func (d *DB) CreateScheduledSend(s *models.ScheduledSend) (int64, error) {
+	toJSON, _ := json.Marshal(s.To)
+	ccJSON, _ := json.Marshal(s.CC)
+	bccJSON, _ := json.Marshal(s.BCC)
+	fwdJSON, _ := json.Marshal(s.ForwardFromIDs)
+	subjectEnc, err := d.enc.Encrypt(s.Subject)
+	if err != nil {
+		return 0, err
+	}
+	bodyHTMLEnc, err := d.enc.Encrypt(s.BodyHTML)
+	if err != nil {
+		return 0, err
+	}
+	bodyTextEnc, err := d.enc.Encrypt(s.BodyText)
+	if err != nil {
+		return 0, err
+	}
+	res, err := d.sql.Exec(`
+		INSERT INTO scheduled_sends (user_id, account_id, to_list, cc_list, bcc_list, subject, body_html, body_text, forward_from_ids, send_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?)`,
+		s.UserID, s.AccountID, string(toJSON), string(ccJSON), string(bccJSON),
+		subjectEnc, bodyHTMLEnc, bodyTextEnc, string(fwdJSON),
+		s.SendAt.UTC().Format("2006-01-02 15:04:05"),
+	)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+// ListScheduledSends returns userID's pending scheduled sends, soonest first.
+func (d *DB) ListScheduledSends(userID int64) ([]*models.ScheduledSend, error) {
+	rows, err := d.sql.Query(`
+		SELECT id, user_id, account_id, to_list, cc_list, bcc_list, subject, body_html, body_text, forward_from_ids, send_at, created_at
+		FROM scheduled_sends WHERE user_id=? ORDER BY send_at ASC`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return d.scanScheduledSends(rows)
+}
+
+// ListDueScheduledSends returns every scheduled send (across all users) whose send_at has
+// passed. Called by the background sweep.
+func (d *DB) ListDueScheduledSends() ([]*models.ScheduledSend, error) {
+	rows, err := d.sql.Query(`
+		SELECT id, user_id, account_id, to_list, cc_list, bcc_list, subject, body_html, body_text, forward_from_ids, send_at, created_at
+		FROM scheduled_sends WHERE send_at <= datetime('now') ORDER BY send_at ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return d.scanScheduledSends(rows)
+}
+
+func (d *DB) scanScheduledSends(rows *sql.Rows) ([]*models.ScheduledSend, error) {
+	var out []*models.ScheduledSend
+	for rows.Next() {
+		s := &models.ScheduledSend{}
+		var toJSON, ccJSON, bccJSON, fwdJSON, subjectEnc, bodyHTMLEnc, bodyTextEnc string
+		if err := rows.Scan(&s.ID, &s.UserID, &s.AccountID, &toJSON, &ccJSON, &bccJSON,
+			&subjectEnc, &bodyHTMLEnc, &bodyTextEnc, &fwdJSON, &s.SendAt, &s.CreatedAt); err != nil {
+			return nil, err
+		}
+		json.Unmarshal([]byte(toJSON), &s.To)
+		json.Unmarshal([]byte(ccJSON), &s.CC)
+		json.Unmarshal([]byte(bccJSON), &s.BCC)
+		json.Unmarshal([]byte(fwdJSON), &s.ForwardFromIDs)
+		s.Subject, _ = d.enc.Decrypt(subjectEnc)
+		s.BodyHTML, _ = d.enc.Decrypt(bodyHTMLEnc)
+		s.BodyText, _ = d.enc.Decrypt(bodyTextEnc)
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// DeleteScheduledSend cancels a pending scheduled send, scoped to userID. Also used by the
+// background sweep (without a user check) to remove a row once it's been sent.
+func (d *DB) DeleteScheduledSend(id, userID int64) error {
+	var err error
+	if userID > 0 {
+		_, err = d.sql.Exec(`DELETE FROM scheduled_sends WHERE id=? AND user_id=?`, id, userID)
+	} else {
+		_, err = d.sql.Exec(`DELETE FROM scheduled_sends WHERE id=?`, id)
+	}
+	return err
+}
+
 // ---- Pending IMAP ops queue ----
 
 // PendingIMAPOp represents an IMAP write operation that needs to be applied to the server.
@@ -2228,6 +2464,15 @@ func (d *DB) PurgeDeletedMessages(folderID int64, serverUIDs []uint32) (int, err
 	return int(n), nil
 }
 
+// DeleteMessageByRemoteUID removes a single locally-cached message by its provider id —
+// used when a draft autosave replaces the server-side copy under a new id/UID (IMAP/JMAP
+// delete-then-recreate) so the stale local row doesn't linger until the next full sync's
+// purge step runs.
+func (d *DB) DeleteMessageByRemoteUID(folderID int64, remoteUID string) error {
+	_, err := d.sql.Exec(`DELETE FROM messages WHERE folder_id=? AND remote_uid=?`, folderID, remoteUID)
+	return err
+}
+
 // DeleteAllFolderMessages removes all messages from a folder (used on UIDVALIDITY change).
 func (d *DB) DeleteAllFolderMessages(folderID int64) {
 	d.sql.Exec(`DELETE FROM messages WHERE folder_id=?`, folderID)
@@ -2291,6 +2536,30 @@ func boolToInt(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+// ListMessageIDsByFolder returns every message ID in a folder, newest first, scoped to
+// folders owned by userID. Used by folder export (bulk mbox/zip download).
+func (d *DB) ListMessageIDsByFolder(folderID, userID int64) ([]int64, error) {
+	rows, err := d.sql.Query(`
+		SELECT m.id FROM messages m
+		JOIN folders f ON f.id = m.folder_id
+		JOIN email_accounts a ON a.id = f.account_id
+		WHERE m.folder_id=? AND a.user_id=?
+		ORDER BY m.date DESC`, folderID, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 // EmptyFolder deletes all messages in a folder (Trash/Spam).

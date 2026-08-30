@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 
 	"github.com/ghostersk/gowebmail/internal/db"
 	"github.com/ghostersk/gowebmail/internal/email"
@@ -84,7 +85,6 @@ func splitAndTrim(s string) []string {
 }
 
 func trimLower(s string) string {
-	// minimal trim, avoids pulling in strings just for this
 	start, end := 0, len(s)
 	for start < end && (s[start] == ' ' || s[start] == '\t') {
 		start++
@@ -92,7 +92,7 @@ func trimLower(s string) string {
 	for end > start && (s[end-1] == ' ' || s[end-1] == '\t') {
 		end--
 	}
-	return s[start:end]
+	return strings.ToLower(s[start:end])
 }
 
 func parseUID(s string) uint32 {

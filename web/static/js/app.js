@@ -6,7 +6,7 @@ const S = {
   folders: [], messages: [], totalMessages: 0, labels: [],
   currentPage: 1, currentFolder: 'unified', currentFolderName: 'Unified Inbox',
   currentMessage: null, selectedMessageId: null,
-  searchQuery: '', composeMode: 'new', composeReplyToId: null, composeForwardFromId: null,
+  searchQuery: '', composeMode: 'new', composeReplyToId: null,
   filterUnread: false, filterAttachment: false,
   sortOrder: 'date-desc', // 'date-desc' | 'date-asc' | 'size-desc'
   uiPrefs: {}, // server-persisted UI preferences (collapsed accounts/folders etc.)
@@ -114,11 +114,13 @@ function toggleViewDropdown(e) {
   if (!menu) return;
   const isOpen = menu.style.display !== 'none';
   menu.style.display = isOpen ? 'none' : 'block';
+  document.getElementById('view-dropdown-btn')?.setAttribute('aria-expanded', String(!isOpen));
   if (!isOpen) setTimeout(() => document.addEventListener('click', closeViewDropdown, { once: true }), 0);
 }
 function closeViewDropdown() {
   const menu = document.getElementById('view-dropdown-menu');
   if (menu) menu.style.display = 'none';
+  document.getElementById('view-dropdown-btn')?.setAttribute('aria-expanded', 'false');
 }
 
 // ── Boot ───────────────────────────────────────────────────────────────────
@@ -136,6 +138,7 @@ async function init() {
   if (wl?.whitelist) S.remoteWhitelist = new Set(wl.whitelist);
   if (uiPrefsRaw && typeof uiPrefsRaw === 'object') S.uiPrefs = uiPrefsRaw;
   applyViewPrefs();
+  ensureContactsCache(); // warms the cache isRemoteContentAllowed()'s "Only from Contacts" check reads synchronously
 
   await loadAccounts();
   await loadFolders();
@@ -155,30 +158,30 @@ async function init() {
   }
   if (p.get('error')) { toast('Connection failed: '+p.get('error'), 'error'); history.replaceState({},'','/'); }
 
-  // Handle actions from full-page message/compose views
-  if (p.get('action') === 'reply' && p.get('id')) {
-    history.replaceState({},'','/');
-    const id = parseInt(p.get('id'));
-    // Load the message then open reply
-    setTimeout(async () => {
-      const msg = await api('GET', '/messages/'+id);
-      if (msg) { S.currentMessage = msg; openReplyTo(id); }
-    }, 500);
-  }
-  if (p.get('action') === 'forward' && p.get('id')) {
-    history.replaceState({},'','/');
-    const id = parseInt(p.get('id'));
-    setTimeout(async () => {
-      const msg = await api('GET', '/messages/'+id);
-      if (msg) { S.currentMessage = msg; openForward(); }
-    }, 500);
-  }
-
   document.addEventListener('keydown', e => {
     if (['INPUT','TEXTAREA','SELECT'].includes(e.target.tagName)) return;
     if (e.target.contentEditable === 'true') return;
-    if ((e.metaKey||e.ctrlKey) && e.key==='n') { e.preventDefault(); openCompose(); }
-    if ((e.metaKey||e.ctrlKey) && e.key==='k') { e.preventDefault(); document.getElementById('search-input').focus(); }
+    if ((e.metaKey||e.ctrlKey) && e.key==='n') { e.preventDefault(); openCompose(); return; }
+    if ((e.metaKey||e.ctrlKey) && e.key==='k') { e.preventDefault(); document.getElementById('search-input').focus(); return; }
+    if (e.metaKey||e.ctrlKey||e.altKey) return; // don't shadow browser/OS shortcuts below
+
+    if (e.key==='j' || e.key==='k') {
+      e.preventDefault();
+      const msgs = getFilteredSortedMsgs();
+      if (!msgs.length) return;
+      let idx = msgs.findIndex(m=>m.id===S.selectedMessageId);
+      idx = e.key==='j' ? Math.min(idx+1, msgs.length-1) : Math.max(idx-1, 0);
+      openMessage(msgs[idx].id);
+    } else if (e.key==='r' && S.currentMessage) {
+      e.preventDefault(); openReplyTo(S.currentMessage.id);
+    } else if (e.key==='f' && S.currentMessage) {
+      e.preventDefault(); openForward();
+    } else if ((e.key==='#'||e.key==='Delete') && S.currentMessage) {
+      e.preventDefault(); deleteMessage(S.currentMessage.id);
+    } else if (e.key==='Escape') {
+      if (S.composeVisible) { e.preventDefault(); closeCompose(); }
+      else if (S.currentMessage) { e.preventDefault(); resetDetail(); renderMessageList(); mobBack(); }
+    }
   });
 
   initComposeDragResize();
@@ -259,7 +262,11 @@ function getSignatureHTML(accountId, forReply) {
 // live if the From-account changes mid-compose, without touching the rest of the body.
 function signatureBlockHTML(accountId, forReply) {
   const html = getSignatureHTML(accountId, forReply);
-  return `<div id="sig-block">${html ? '<br>' + html : ''}</div>`;
+  // A block-level "<div><br></div>" renders as exactly one blank line in every browser;
+  // a bare <br><br> doesn't — its rendered height depends on what precedes/follows it
+  // (e.g. it collapses to nothing right before another block element), which is exactly
+  // the inconsistency this was written to avoid.
+  return `<div id="sig-block">${html ? '<div><br></div>' + html : ''}</div>`;
 }
 
 // Bound to #compose-from's change event — swaps just the signature block.
@@ -573,6 +580,29 @@ function inlineConfirm(message, onOk, onCancel) {
   cancel.onclick = () => { cleanup(); onCancel && onCancel(); };
 }
 
+// ── Undo toast: run onCommit after `duration` unless the user clicks Undo first ──
+function undoToast(msg, {onUndo, onCommit, duration=5000}) {
+  let container = document.getElementById('toast-container');
+  if (!container) {
+    container = document.createElement('div');
+    container.id = 'toast-container';
+    container.className = 'toast-container';
+    document.body.appendChild(container);
+  }
+  const el = document.createElement('div');
+  el.className = 'toast toast-undo';
+  const span = document.createElement('span');
+  span.textContent = msg;
+  const btn = document.createElement('button');
+  btn.type = 'button'; btn.className = 'toast-undo-btn'; btn.textContent = 'Undo';
+  el.appendChild(span); el.appendChild(btn);
+  container.appendChild(el);
+  let done = false;
+  const dismiss = () => { el.style.opacity='0'; el.style.transition='opacity .3s'; setTimeout(()=>el.remove(),300); };
+  const timer = setTimeout(() => { if(done) return; done=true; dismiss(); onCommit && onCommit(); }, duration);
+  btn.onclick = () => { if(done) return; done=true; clearTimeout(timer); dismiss(); onUndo && onUndo(); };
+}
+
 // ── Inline prompt (replaces browser prompt()) ──────────────────────────────
 function inlinePrompt(message, onOk, defaultValue) {
   const el     = document.getElementById('inline-prompt');
@@ -587,6 +617,46 @@ function inlinePrompt(message, onOk, defaultValue) {
   const cleanup = () => { el.classList.remove('open'); ok.onclick=null; cancel.onclick=null; };
   ok.onclick     = () => { const v=input.value.trim(); if(!v) return; cleanup(); onOk && onOk(v); };
   cancel.onclick = () => { cleanup(); };
+}
+
+// ── Inline date/time prompt (snooze / send later) ──────────────────────────
+function inlineDateTimePrompt(message, onOk, okLabel) {
+  const el       = document.getElementById('inline-datetime');
+  const msg      = document.getElementById('inline-datetime-msg');
+  const input    = document.getElementById('inline-datetime-input');
+  const presetsEl= document.getElementById('inline-datetime-presets');
+  const ok       = document.getElementById('inline-datetime-ok');
+  const cancel   = document.getElementById('inline-datetime-cancel');
+  msg.textContent = message;
+  ok.textContent = okLabel || 'Set';
+
+  const pad = n => String(n).padStart(2,'0');
+  const toLocalInput = d => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  const now = new Date();
+  input.min = toLocalInput(new Date(now.getTime()+60000));
+
+  const presets = [
+    ['Later today', () => { const d=new Date(); d.setHours(18,0,0,0); if(d<=now) d.setDate(d.getDate()+1); return d; }],
+    ['Tomorrow 9am', () => { const d=new Date(); d.setDate(d.getDate()+1); d.setHours(9,0,0,0); return d; }],
+    ['Next week', () => { const d=new Date(); d.setDate(d.getDate()+(((8-d.getDay())%7)||7)); d.setHours(9,0,0,0); return d; }],
+  ];
+  presetsEl.innerHTML = presets.map(([label],i)=>`<button type="button" class="datetime-preset-btn" data-i="${i}">${label}</button>`).join('');
+  presetsEl.querySelectorAll('.datetime-preset-btn').forEach((btn,i)=>{
+    btn.onclick = () => { input.value = toLocalInput(presets[i][1]()); };
+  });
+  input.value = toLocalInput(presets[1][1]());
+
+  el.classList.add('open');
+  setTimeout(() => input.focus(), 50);
+  const cleanup = () => { el.classList.remove('open'); ok.onclick=null; cancel.onclick=null; };
+  ok.onclick = () => {
+    if (!input.value) return;
+    const d = new Date(input.value);
+    if (isNaN(d.getTime()) || d <= new Date()) { toast('Pick a time in the future','error'); return; }
+    cleanup();
+    onOk(d.toISOString());
+  };
+  cancel.onclick = () => cleanup();
 }
 
 // ── Folders ────────────────────────────────────────────────────────────────
@@ -774,6 +844,13 @@ function showFolderMenu(e, folderId) {
     <div class="ctx-item" onclick="toggleFolderSync(${folderId});closeMenu()">${syncLabel}</div>
     ${enableAllEntry}
     <div class="ctx-item" onclick="markFolderAllRead(${folderId});closeMenu()">✓ Mark all as read</div>
+    <div class="ctx-item ctx-has-sub">⬇ Export folder
+      <span class="ctx-sub-arrow">›</span>
+      <div class="ctx-submenu">
+        <div class="ctx-item ctx-sub-item" onclick="exportFolder(${folderId},'zip');closeMenu()">as .zip (.eml files)</div>
+        <div class="ctx-item ctx-sub-item" onclick="exportFolder(${folderId},'mbox');closeMenu()">as .mbox</div>
+      </div>
+    </div>
     <div class="ctx-sep"></div>
     ${moveEntry}
     ${emptyEntry}
@@ -803,6 +880,10 @@ async function syncFolderNow(folderId) {
   const r=await api('POST','/folders/'+folderId+'/sync');
   if (r?.ok) { toast('Synced '+(r.synced||0)+' messages','success'); loadFolders(); loadMessages(); }
   else toast(r?.error||'Sync failed','error');
+}
+
+function exportFolder(folderId, format) {
+  window.open('/api/folders/'+folderId+'/export?format='+format, '_blank');
 }
 
 async function markFolderAllRead(folderId) {
@@ -945,11 +1026,26 @@ function toggleLabelsDropdown(e) {
   if (!menu) return;
   const isOpen = menu.style.display !== 'none';
   menu.style.display = isOpen ? 'none' : 'block';
+  document.getElementById('labels-dropdown-btn')?.setAttribute('aria-expanded', String(!isOpen));
   if (!isOpen) setTimeout(() => document.addEventListener('click', closeLabelsDropdown, { once: true }), 0);
 }
 function closeLabelsDropdown() {
   const menu = document.getElementById('labels-dropdown-menu');
   if (menu) menu.style.display = 'none';
+  document.getElementById('labels-dropdown-btn')?.setAttribute('aria-expanded', 'false');
+}
+
+function toggleThreadPanel(e) {
+  if (e) e.stopPropagation();
+  const panel = document.getElementById('thread-panel');
+  if (!panel) return;
+  const isOpen = panel.style.display !== 'none';
+  panel.style.display = isOpen ? 'none' : 'block';
+  if (!isOpen) setTimeout(() => document.addEventListener('click', closeThreadPanel, { once: true }), 0);
+}
+function closeThreadPanel() {
+  const panel = document.getElementById('thread-panel');
+  if (panel) panel.style.display = 'none';
 }
 
 function selectLabel(labelId, name) {
@@ -1049,6 +1145,7 @@ function selectFolder(folderId, folderName) {
   document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
   const navEl=folderId==='unified'?document.getElementById('nav-unified')
     :folderId==='starred'?document.getElementById('nav-starred')
+    :folderId==='snoozed'?document.getElementById('nav-snoozed')
     :document.getElementById('nav-f'+folderId);
   if (navEl) navEl.classList.add('active');
   mobCloseNav();
@@ -1160,6 +1257,7 @@ async function loadMessages(append) {
   }
   else if (S.currentFolder==='unified') result=await api('GET',`/messages/unified?page=${S.currentPage}&page_size=50`);
   else if (S.currentFolder==='starred') result=await api('GET',`/messages/starred?page=${S.currentPage}&page_size=50`);
+  else if (S.currentFolder==='snoozed') result=await api('GET',`/messages/snoozed?page=${S.currentPage}&page_size=50`);
   else if (String(S.currentFolder).startsWith('label:')) result=await api('GET',`/messages/by-label/${String(S.currentFolder).slice(6)}?page=${S.currentPage}&page_size=50`);
   else result=await api('GET',`/messages?folder_id=${S.currentFolder}&page=${S.currentPage}&page_size=50`);
   if (!result){list.innerHTML='<div class="empty-state"><p>Failed to load</p></div>';return;}
@@ -1203,18 +1301,44 @@ function setSortOrder(order) { setFilter(order); }
 // ── Multi-select state ────────────────────────────────────────
 if (!window.SEL) window.SEL = { ids: new Set(), lastIdx: -1 };
 
+// ── Conversation grouping ─────────────────────────────────────────────────
+// No per-provider thread id is populated anywhere in the sync engine (Graph/JMAP have one
+// natively, plain IMAP doesn't), so this groups by normalized subject within the same
+// account — good enough for "N messages" grouping without touching sync or schema. Only
+// grouped within whatever page(s) are currently loaded, not across the whole mailbox.
+function normalizeSubject(s) {
+  let t = (s||'').trim(), prev;
+  do { prev = t; t = t.replace(/^(re|fwd?|fw)\s*:\s*/i, '').trim(); } while (t !== prev);
+  return t.toLowerCase();
+}
+// messageId -> sibling summaries {id,from,date,is_read} for every message that's part of a
+// multi-message thread — populated by groupThreads(), read by renderMessageDetail().
+let threadSiblingsById = {};
+function groupThreads(msgs) {
+  const groups = new Map(); // key -> messages[], insertion order preserved (already sorted)
+  for (const m of msgs) {
+    const subj = normalizeSubject(m.subject);
+    // Blank/no-subject messages never group together — that'd lump unrelated emails.
+    const key = subj ? (m.account_id||0)+'|'+subj : Symbol(m.id);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(m);
+  }
+  threadSiblingsById = {};
+  const out = [];
+  for (const group of groups.values()) {
+    if (group.length > 1) {
+      const siblings = group.map(g=>({id:g.id, from:g.from_name||g.from_email, date:g.date, is_read:g.is_read}));
+      for (const g of group) threadSiblingsById[g.id] = siblings;
+    }
+    const rep = group[0]; // groups are built from an already date-sorted list
+    out.push(group.length > 1 ? {...rep, _threadCount: group.length} : rep);
+  }
+  return out;
+}
+
 function renderMessageList() {
   const list=document.getElementById('message-list');
-  let msgs = [...S.messages];
-
-  // Filter
-  if (S.filterUnread) msgs = msgs.filter(m => !m.is_read);
-  if (S.filterAttachment) msgs = msgs.filter(m => m.has_attachment);
-
-  // Sort
-  if (S.sortOrder === 'date-asc') msgs.sort((a,b) => new Date(a.date)-new Date(b.date));
-  else if (S.sortOrder === 'size-desc') msgs.sort((a,b) => (b.size||0)-(a.size||0));
-  else msgs.sort((a,b) => new Date(b.date)-new Date(a.date));
+  const msgs = getFilteredSortedMsgs();
 
   if (!msgs.length){
     const emptyMsg = S.filterUnread ? 'No unread messages' : S.filterAttachment ? 'No messages with attachments' : 'No messages';
@@ -1240,7 +1364,7 @@ function renderMessageList() {
       </div>
       <div class="msg-line2">
         <span class="msg-text" title="${esc(m.subject||'(no subject)')}">
-          <span class="msg-subject">${esc(m.subject||'(no subject)')}</span>${m.preview?` — <span class="msg-preview">${esc(m.preview)}</span>`:''}
+          <span class="msg-subject">${esc(m.subject||'(no subject)')}</span>${m._threadCount?` <span class="msg-thread-count">${m._threadCount}</span>`:''}${m.preview?` — <span class="msg-preview">${esc(m.preview)}</span>`:''}
         </span>
         <span class="msg-icons">
           ${m.size?`<span class="msg-size">${formatSize(m.size)}</span>`:''}
@@ -1292,7 +1416,7 @@ function getFilteredSortedMsgs() {
   if (S.sortOrder==='date-asc') msgs.sort((a,b)=>new Date(a.date)-new Date(b.date));
   else if (S.sortOrder==='size-desc') msgs.sort((a,b)=>(b.size||0)-(a.size||0));
   else msgs.sort((a,b)=>new Date(b.date)-new Date(a.date));
-  return msgs;
+  return groupThreads(msgs);
 }
 
 function handleMsgDragStart(e, id) {
@@ -1310,6 +1434,7 @@ function updateBulkBar() {
     bar.innerHTML=`<span id="bulk-count"></span>
       <button onclick="bulkMarkRead(true)" style="font-size:11px;padding:2px 8px;background:rgba(255,255,255,.2);border:none;border-radius:4px;color:#fff;cursor:pointer">Mark read</button>
       <button onclick="bulkMarkRead(false)" style="font-size:11px;padding:2px 8px;background:rgba(255,255,255,.2);border:none;border-radius:4px;color:#fff;cursor:pointer">Mark unread</button>
+      <button onclick="bulkForwardAsAttachment()" style="font-size:11px;padding:2px 8px;background:rgba(255,255,255,.2);border:none;border-radius:4px;color:#fff;cursor:pointer">✉️ Forward as attachment</button>
       <button onclick="bulkDelete()" style="font-size:11px;padding:2px 8px;background:rgba(255,255,255,.2);border:none;border-radius:4px;color:#fff;cursor:pointer">Delete</button>
       <button onclick="SEL.ids.clear();renderMessageList()" style="margin-left:auto;font-size:11px;padding:2px 8px;background:rgba(255,255,255,.2);border:none;border-radius:4px;color:#fff;cursor:pointer">✕ Clear</button>`;
     document.getElementById('message-list').before(bar);
@@ -1328,17 +1453,32 @@ async function bulkMarkRead(read) {
   SEL.ids.clear(); renderMessageList(); loadFolders();
 }
 
-async function bulkDelete() {
-  const count = SEL.ids.size;
-  inlineConfirm(
-    `Delete ${count} message${count===1?'':'s'}? This cannot be undone.`,
-    async () => {
-      const ids = [...SEL.ids];
-      await Promise.all(ids.map(id=>api('DELETE','/messages/'+id)));
-      ids.forEach(id=>{S.messages=S.messages.filter(m=>m.id!==id);});
-      SEL.ids.clear(); renderMessageList(); loadFolders();
-    }
-  );
+// Opens one new compose with every selected message attached as .eml.
+function bulkForwardAsAttachment() {
+  const ids = [...SEL.ids];
+  if (!ids.length) return;
+  openCompose({ mode:'forward', title:'Forward as Attachment',
+    subject: ids.length===1 ? 'Fwd: '+(S.messages.find(m=>m.id===ids[0])?.subject||'') : `Fwd: ${ids.length} messages`,
+    body:'' });
+  ids.forEach(id=>attachMessageAsEML(id));
+  SEL.ids.clear(); renderMessageList();
+}
+
+function bulkDelete() {
+  const ids = [...SEL.ids];
+  if (!ids.length) return;
+  const removed = S.messages.filter(m=>ids.includes(m.id));
+  S.messages = S.messages.filter(m=>!ids.includes(m.id));
+  if (S.currentMessage && ids.includes(S.currentMessage.id)) resetDetail();
+  SEL.ids.clear(); renderMessageList();
+  undoToast(`${ids.length} message${ids.length===1?'':'s'} deleted`, {
+    onUndo: () => { S.messages = S.messages.concat(removed); renderMessageList(); },
+    onCommit: async () => {
+      const results = await Promise.all(ids.map(id=>api('DELETE','/messages/'+id)));
+      if (results.some(r=>!r?.ok)) toast('Some messages failed to delete','error');
+      loadFolders();
+    },
+  });
 }
 
 function loadMoreMessages(){ S.currentPage++; loadMessages(true); }
@@ -1350,6 +1490,7 @@ async function openMessage(id) {
   detail.innerHTML='<div class="spinner" style="margin-top:100px"></div>';
   const msg=await api('GET','/messages/'+id);
   if (!msg){detail.innerHTML='<div class="no-message"><p>Failed to load</p></div>';return;}
+  if (isDraftFolder(msg.folder_id)) { resumeDraft(msg); return; }
   S.currentMessage=msg;
   renderMessageDetail(msg, false);
   const li=S.messages.find(m=>m.id===id);
@@ -1358,6 +1499,29 @@ async function openMessage(id) {
     // Sync read status to server (enqueues IMAP op via backend)
     api('PUT','/messages/'+id+'/read',{read:true});
   }
+}
+
+// Opening a message that lives in a Drafts folder resumes editing it (in the compose modal,
+// pre-filled) rather than showing it read-only — otherwise a saved draft is a dead end, which
+// defeats the point of "save it for later". S.draftId is seeded from the message's remote_uid
+// (the same IMAP UID / Graph id / JMAP id SaveDraft/DiscardDraft already key off of), so the
+// next autosave replaces this exact draft in place instead of creating a duplicate.
+function isDraftFolder(folderId) {
+  return S.folders?.find(f=>f.id===folderId)?.folder_type==='drafts';
+}
+function resumeDraft(msg) {
+  const toList=(msg.to||'').split(',').map(s=>s.trim()).filter(Boolean);
+  const ccList=(msg.cc||'').split(',').map(s=>s.trim()).filter(Boolean);
+  const bccList=(msg.bcc||'').split(',').map(s=>s.trim()).filter(Boolean);
+  openCompose({
+    mode:'new', title:'Edit Draft', subject:msg.subject||'',
+    accountId:msg.account_id, skipSignature:true, body:quotedBodyHTML(msg),
+  });
+  toList.forEach(a=>addTag('compose-to', a));
+  if (ccList.length) { showCCRow(); ccList.forEach(a=>addTag('compose-cc-tags', a)); }
+  if (bccList.length) { showBCCRow(); bccList.forEach(a=>addTag('compose-bcc-tags', a)); }
+  S.draftId=msg.remote_uid||'';
+  S.draftDirty=false;
 }
 
 // ── External link navigation whitelist ───────────────────────────────────────
@@ -1387,20 +1551,101 @@ function confirmExternalNav(url) {
   overlay.onclick = e => { if(e.target===overlay) overlay.remove(); };
 }
 
+// ── HTML body sanitizing helpers (shared by the reading pane and reply/forward quoting) ──
+function stripUnresolvedCID(h){ return h.replace(/src\s*=\s*(['"])cid:[^'"]*\1/gi,'src=""').replace(/src\s*=\s*cid:\S+/gi,'src=""'); }
+function stripEmbeddedFrames(h){ return h.replace(/<iframe[\s\S]*?<\/iframe>/gi,'').replace(/<iframe[^>]*>/gi,''); }
+function stripRemoteImages(h){
+  return h.replace(/<img(\s[^>]*?)src\s*=\s*(['"])(https?:\/\/[^'"]+)\2/gi,'<img$1src="" data-blocked-src="$3"')
+          .replace(/url\s*\(\s*(['"]?)https?:\/\/[^)'"]+\1\s*\)/gi,'url()')
+          .replace(/<link[^>]*>/gi,'').replace(/<script[\s\S]*?<\/script>/gi,'');
+}
+
+// True if fromEmail appears in the cached contacts list (loaded once, warmed at boot — see
+// ensureContactsCache). Used only by the "Only from Contacts" remote-image policy, so a
+// not-yet-loaded cache fails closed (not a contact) rather than open.
+function isContactEmail(fromEmail) {
+  if (!fromEmail || !contactsCache) return false;
+  const e = fromEmail.toLowerCase();
+  return contactsCache.some(c => (c.email||'').toLowerCase() === e);
+}
+
+// Settings → Profile → Remote Images policy, plus the per-sender whitelist. "always"/"never"
+// ignore the whitelist entirely (a blanket policy shouldn't be second-guessed by leftover
+// per-sender entries from a time the policy was different); "contacts" and "manual" both
+// still honor it, since it's how a sender gets permanently trusted under either.
+function isRemoteContentAllowed(fromEmail) {
+  const policy = uiPrefsGet('remoteImagePolicy', 'manual');
+  if (policy === 'always') return true;
+  if (policy === 'never') return false;
+  if (policy === 'contacts') return isContactEmail(fromEmail) || S.remoteWhitelist.has(fromEmail);
+  return S.remoteWhitelist.has(fromEmail); // manual (default)
+}
+
+// Body HTML for a quoted reply/forward: same treatment as the reading pane — cid: refs and
+// iframes stripped always, remote images blocked unless allowed by policy. The underlying
+// content isn't lost (stripRemoteImages keeps the real URL in data-blocked-src), it just
+// can't trigger a network fetch the user never approved by ending up in a live, unsandboxed
+// contenteditable (unlike the reading pane, which renders in a sandboxed iframe).
+function quotedBodyHTML(msg) {
+  if (!msg.body_html) return '<pre>'+esc(msg.body_text||'')+'</pre>';
+  let html = stripUnresolvedCID(stripEmbeddedFrames(msg.body_html));
+  if (!isRemoteContentAllowed(msg.from_email)) html = stripRemoteImages(html);
+  return html;
+}
+
+// Inverse of stripRemoteImages: the recipient of a sent reply/forward — or the account itself,
+// reopening a saved draft — should see the quoted images normally, so the real URL goes out
+// even though it never got fetched in our own browser while composing.
+function restoreBlockedImages(html) {
+  return html.replace(/src=""\s+data-blocked-src="([^"]*)"/gi, 'src="$1"');
+}
+
 function renderMessageDetail(msg, showRemoteContent) {
   const detail=document.getElementById('message-detail');
-  const allowed=showRemoteContent||S.remoteWhitelist.has(msg.from_email);
+  const allowed=showRemoteContent||isRemoteContentAllowed(msg.from_email);
 
   const cssReset = `<style>html,body{background:#ffffff!important;color:#1a1a1a!important;` +
     `font-family:Arial,sans-serif;font-size:14px;line-height:1.5;margin:8px}a{color:#1a5fb4}` +
     `img{max-width:100%;height:auto}iframe{display:none!important}</style>`;
 
-  // Injected into srcdoc: reports height + intercepts all link clicks → postMessage to parent
+  // Injected into srcdoc: reports height + intercepts all link clicks → postMessage to parent.
+  //
+  // _reportH() measures the bottom of the lowest leaf element that actually carries visible
+  // text or an image, not document.documentElement.scrollHeight — email templates routinely
+  // end in structural filler (an empty spacer cell, Outlook-only conditional markup real
+  // browsers don't fully discard, trailing table rows) that scrollHeight faithfully counts as
+  // "content" even though nothing is there to read, which is exactly the wall of dead space
+  // this is fixing. Falls back to scrollHeight only if no such element is found at all.
+  //
+  // scrollHeight can also genuinely read 0 on the first call or two — the nested srcdoc
+  // document's own layout settles a beat after DOMContentLoaded/load fire, and if nothing
+  // changes the DOM afterward, the MutationObserver never gets a second chance to correct it.
+  // ResizeObserver catches the moment layout actually changes; the backoff poll is a plain
+  // safety net on top of both.
   const heightScript = `<script>
-    function _reportH(){parent.postMessage({type:'gomail-frame-h',h:document.documentElement.scrollHeight},'*');}
+    function _reportH(){
+      try{
+        var maxBottom=0;
+        var all=document.body?document.body.getElementsByTagName('*'):[];
+        for(var i=0;i<all.length;i++){
+          var el=all[i];
+          if(el.children.length>0) continue; // only leaf elements carry real visible pixels
+          var cs=getComputedStyle(el);
+          if(cs.display==='none'||cs.visibility==='hidden'||parseFloat(cs.opacity||'1')===0) continue;
+          var hasText=(el.textContent||'').replace(/[\\s\\u00A0]/g,'').length>0;
+          if(!hasText && el.tagName!=='IMG') continue;
+          var r=el.getBoundingClientRect();
+          if(r.bottom>maxBottom) maxBottom=r.bottom;
+        }
+        var h=maxBottom>0?maxBottom:document.documentElement.scrollHeight;
+        parent.postMessage({type:'gomail-frame-h',h:h},'*');
+      }catch(ex){parent.postMessage({type:'gomail-frame-h',h:0},'*');}
+    }
     document.addEventListener('DOMContentLoaded',_reportH);
     window.addEventListener('load',_reportH);
     new MutationObserver(_reportH).observe(document.documentElement,{subtree:true,childList:true,attributes:true});
+    if(window.ResizeObserver) new ResizeObserver(_reportH).observe(document.documentElement);
+    [50,150,400,900,1800,3000].forEach(function(ms){ setTimeout(_reportH, ms); });
     document.addEventListener('click',function(e){
       var el=e.target; while(el&&el.tagName!=='A') el=el.parentElement;
       if(!el) return;
@@ -1413,14 +1658,6 @@ function renderMessageDetail(msg, showRemoteContent) {
 
   const sandboxAttr = 'allow-scripts allow-popups allow-popups-to-escape-sandbox';
 
-  function stripUnresolvedCID(h){ return h.replace(/src\s*=\s*(['"])cid:[^'"]*\1/gi,'src=""').replace(/src\s*=\s*cid:\S+/gi,'src=""'); }
-  function stripEmbeddedFrames(h){ return h.replace(/<iframe[\s\S]*?<\/iframe>/gi,'').replace(/<iframe[^>]*>/gi,''); }
-  function stripRemoteImages(h){
-    return h.replace(/<img(\s[^>]*?)src\s*=\s*(['"])(https?:\/\/[^'"]+)\2/gi,'<img$1src="" data-blocked-src="$3"')
-            .replace(/url\s*\(\s*(['"]?)https?:\/\/[^)'"]+\1\s*\)/gi,'url()')
-            .replace(/<link[^>]*>/gi,'').replace(/<script[\s\S]*?<\/script>/gi,'');
-  }
-
   let bodyHtml='';
   if (msg.body_html) {
     let html = stripUnresolvedCID(stripEmbeddedFrames(msg.body_html));
@@ -1431,13 +1668,18 @@ function renderMessageDetail(msg, showRemoteContent) {
         srcdoc="${srcdoc.replace(/"/g,'&quot;')}"></iframe>`;
     } else {
       const stripped = stripRemoteImages(html);
+      // "Always allow" permanently whitelists the sender — doesn't make sense to offer under
+      // a blanket "never" policy, so only the one-time "Load images" escape hatch shows there.
+      const policy = uiPrefsGet('remoteImagePolicy', 'manual');
+      const alwaysAllowBtn = policy === 'never' ? '' :
+        `<button class="rcb-btn" onclick="whitelistSender('${esc(msg.from_email)}')">Always allow from ${esc(msg.from_email)}</button>`;
       bodyHtml=`<div class="remote-content-banner">
         <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>
         Remote images blocked.
         <button class="rcb-btn" onclick="renderMessageDetail(S.currentMessage,true)">Load images</button>
-        <button class="rcb-btn" onclick="whitelistSender('${esc(msg.from_email)}')">Always allow from ${esc(msg.from_email)}</button>
+        ${alwaysAllowBtn}
       </div>
-      <iframe id="msg-frame" sandbox="${sandboxAttr}"
+      <iframe id="msg-frame" title="Message content" sandbox="${sandboxAttr}"
         style="width:100%;border:none;min-height:200px;display:block"
         srcdoc="${(cssReset + heightScript + stripped).replace(/"/g,'&quot;')}"></iframe>`;
     }
@@ -1459,6 +1701,29 @@ function renderMessageDetail(msg, showRemoteContent) {
     }).join('');
     const dlAll=`<button class="attachment-chip" onclick="downloadAllAttachments(${msg.id})" style="cursor:pointer;border:1px solid var(--border)">⬇ <span>Download all</span></button>`;
     attachHtml=`<div class="attachments-bar">${dlAll}${chips}</div>`;
+  }
+
+  // Other messages in this thread (same normalized subject, same account) — grouped
+  // client-side by renderMessageList()'s groupThreads(), so only reflects loaded pages.
+  // Rendered as a collapsed dropdown off an action button, not inline — inline was pushing
+  // the actual message body down and shrinking the reading area.
+  let threadBtnHtml='';
+  const siblings=threadSiblingsById[msg.id];
+  if (siblings?.length>1) {
+    const rows=siblings.map(s=>`
+      <div class="thread-sibling-row${s.id===msg.id?' active':''}${s.is_read?'':' unread'}" onclick="openMessage(${s.id})">
+        <span class="msg-unread-dot" title="${s.is_read?'':'Unread'}"></span>
+        <span class="thread-sibling-from">${esc(s.from||'')}</span>
+        <span class="thread-sibling-date">${formatDate(s.date)}</span>
+      </div>`).join('');
+    threadBtnHtml=`
+      <div class="thread-btn-wrap">
+        <button class="action-btn" onclick="toggleThreadPanel(event)">🧵 Thread (${siblings.length})</button>
+        <div class="thread-dropdown" id="thread-panel" style="display:none">
+          <div class="thread-siblings-title">${siblings.length} messages in this thread</div>
+          ${rows}
+        </div>
+      </div>`;
   }
 
 
@@ -1486,8 +1751,10 @@ function renderMessageDetail(msg, showRemoteContent) {
       <button class="action-btn" onclick="openReply()">↩ Reply</button>
       <button class="action-btn" onclick="openForward()">↪ Forward</button>
       <button class="action-btn" onclick="openForwardAsAttachment()" title="Forward the original message as an .eml file attachment">↪ Fwd as Attachment</button>
+      ${threadBtnHtml}
       <button class="action-btn" onclick="toggleStar(${msg.id})">${msg.is_starred?'★ Unstar':'☆ Star'}</button>
       <button class="action-btn" onclick="markRead(${msg.id},${!msg.is_read})">${msg.is_read?'Mark unread':'Mark read'}</button>
+      <button class="action-btn" onclick="${S.currentFolder==='snoozed'?'unsnoozeMessage':'snoozeMessage'}(${msg.id})">⏰ ${S.currentFolder==='snoozed'?'Unsnooze':'Snooze'}</button>
       <button class="action-btn" onclick="showMessageHeaders(${msg.id})">⋮ Headers</button>
       <button class="action-btn" onclick="downloadEML(${msg.id})">⬇ Download</button>
       <button class="action-btn danger" onclick="deleteMessage(${msg.id})">🗑 Delete</button>
@@ -1500,11 +1767,13 @@ function renderMessageDetail(msg, showRemoteContent) {
   if (msg.body_html) {
     const frame = document.getElementById('msg-frame');
     if (frame) {
-      // Clean up any previous listener
+      // Clean up any previous listener/fallback timer
       if (window._frameMsgHandler) window.removeEventListener('message', window._frameMsgHandler);
-      let lastH = 0;
+      if (window._frameFallbackTimer) clearTimeout(window._frameFallbackTimer);
+      let lastH = 0, gotValidHeight = false;
       window._frameMsgHandler = (e) => {
         if (e.data?.type === 'gomail-frame-h' && e.data.h > 50) {
+          gotValidHeight = true;
           const h = e.data.h + 24;
           if (Math.abs(h - lastH) > 4) {
             lastH = h;
@@ -1515,6 +1784,12 @@ function renderMessageDetail(msg, showRemoteContent) {
         }
       };
       window.addEventListener('message', window._frameMsgHandler);
+      // Every retry in heightScript reported 0/invalid — rather than leave the reader stuck
+      // at the 200px minimum with real content scrolling inside a cramped box, fall back to a
+      // generous height so the message is actually readable without the auto-fit ever working.
+      window._frameFallbackTimer = setTimeout(() => {
+        if (!gotValidHeight) frame.style.height = '600px';
+      }, 3500);
     }
   }
 }
@@ -1596,15 +1871,23 @@ function showMessageMenu(e, id) {
       <span class="ctx-sub-arrow">›</span>
       <div class="ctx-submenu">${labelItems}</div>
     </div>` : '';
+  const attachEntry = S.composeVisible
+    ? `<div class="ctx-item" onclick="attachMessageAsEML(${id});closeMenu()">✉️ Attach as .eml to open message</div>` : '';
+  const snoozeEntry = S.currentFolder==='snoozed'
+    ? `<div class="ctx-item" onclick="unsnoozeMessage(${id});closeMenu()">⏰ Unsnooze</div>`
+    : `<div class="ctx-item" onclick="snoozeMessage(${id});closeMenu()">⏰ Snooze</div>`;
+  const newTabUrl = isDraftFolder(msg?.folder_id) ? '/compose?edit_draft_id='+id : '/message/'+id;
   showCtxMenu(e,`
-    <div class="ctx-item" onclick="window.open('/message/${id}','_blank');closeMenu()">↗ Open in new tab</div>
+    <div class="ctx-item" onclick="window.open('${newTabUrl}','_blank');closeMenu()">↗ Open in new tab</div>
     <div class="ctx-sep"></div>
     <div class="ctx-item" onclick="openReplyTo(${id});closeMenu()">↩ Reply</div>
     <div class="ctx-item" onclick="toggleStar(${id});closeMenu()">${msg?.is_starred?'★ Unstar':'☆ Star'}</div>
     <div class="ctx-item" onclick="markRead(${id},${msg?.is_read?'false':'true'});closeMenu()">${msg?.is_read?'Mark unread':'Mark read'}</div>
+    ${snoozeEntry}
     <div class="ctx-sep"></div>
     ${moveSub}
     ${labelSub}
+    ${attachEntry}
     <div class="ctx-item" onclick="showMessageHeaders(${id});closeMenu()">⋮ View headers</div>
     <div class="ctx-item" onclick="downloadEML(${id});closeMenu()">⬇ Download .eml</div>
     <div class="ctx-sep"></div>
@@ -1636,13 +1919,43 @@ async function moveMessage(msgId, folderId, silent=false) {
   inlineConfirm(`Move this message to "${folder?.name||'selected folder'}"?`, doMove);
 }
 
-async function deleteMessage(id) {
-  inlineConfirm('Delete this message?', async () => {
-    const r=await api('DELETE','/messages/'+id);
-    if(r?.ok){toast('Deleted','success');S.messages=S.messages.filter(m=>m.id!==id);renderMessageList();
-      if(S.currentMessage?.id===id)resetDetail();loadFolders();}
-    else toast('Delete failed','error');
+function deleteMessage(id) {
+  const idx = S.messages.findIndex(m=>m.id===id);
+  if (idx===-1) return;
+  const [msg] = S.messages.splice(idx,1);
+  const wasCurrent = S.currentMessage?.id===id;
+  renderMessageList();
+  if (wasCurrent) resetDetail();
+  undoToast('Message deleted', {
+    onUndo: () => { S.messages.splice(idx,0,msg); renderMessageList(); },
+    onCommit: async () => {
+      const r=await api('DELETE','/messages/'+id);
+      if(r?.ok){loadFolders();}
+      else { toast('Delete failed','error'); S.messages.splice(idx,0,msg); renderMessageList(); }
+    },
   });
+}
+
+function snoozeMessage(id) {
+  inlineDateTimePrompt('Snooze until:', async (iso) => {
+    const r = await api('PUT','/messages/'+id+'/snooze', {until: iso});
+    if (r?.ok) {
+      toast('Message snoozed','success');
+      S.messages = S.messages.filter(m=>m.id!==id);
+      renderMessageList();
+      if (S.currentMessage?.id===id) resetDetail();
+      loadFolders();
+    } else toast('Snooze failed','error');
+  }, 'Snooze');
+}
+
+async function unsnoozeMessage(id) {
+  const r = await api('DELETE','/messages/'+id+'/snooze');
+  if (r?.ok) {
+    toast('Unsnoozed','success');
+    if (S.currentFolder==='snoozed') { S.messages=S.messages.filter(m=>m.id!==id); renderMessageList(); if(S.currentMessage?.id===id) resetDetail(); }
+    loadFolders();
+  } else toast('Failed','error');
 }
 
 function resetDetail() {
@@ -1687,9 +2000,12 @@ function openCompose(opts={}) {
   const editor=document.getElementById('compose-editor');
   const fromAccountId=parseInt(document.getElementById('compose-from')?.value||0);
   const forReply=S.composeMode!=='new';
-  editor.innerHTML=(opts.body||'') + (opts.skipSignature?'':signatureBlockHTML(fromAccountId, forReply));
+  const sig=opts.skipSignature?'':signatureBlockHTML(fromAccountId, forReply);
+  // Signature goes between the typing area and the quoted original message (opts.quoteHtml),
+  // not after it — otherwise it'd end up below everything the sender quoted back.
+  editor.innerHTML=(opts.body||'') + sig + (opts.quoteHtml||'');
   S.draftDirty=false;
-  S.draftUID=0; // IMAP UID of this compose session's autosaved draft, once one exists
+  S.draftId=''; // this compose session's autosaved draft id, once one exists (provider-specific)
   updateAttachList();
   showCompose();
   setTimeout(()=>{ const inp=document.querySelector('#compose-to .tag-input'); if(inp) inp.focus(); },80);
@@ -1719,7 +2035,7 @@ function closeCompose(skipCheck) {
   // Only interrupt closing when there's something to decide about: unsaved edits, or a
   // draft that autosave already wrote to the server (which "keep editing" should leave
   // in place, but a bare close-without-asking would silently orphan).
-  if (!skipCheck && (S.draftDirty || S.draftUID)) {
+  if (!skipCheck && (S.draftDirty || S.draftId)) {
     const el = document.getElementById('draft-close-confirm');
     const cancelBtn = document.getElementById('draft-close-cancel');
     const deleteBtn = document.getElementById('draft-close-delete');
@@ -1746,14 +2062,22 @@ function showBCCRow() { document.getElementById('bcc-row').style.display='flex';
 
 function openReply() { if (S.currentMessage) openReplyTo(S.currentMessage.id); }
 
-function openReplyTo(msgId) {
-  const msg=(S.currentMessage?.id===msgId)?S.currentMessage:S.messages.find(m=>m.id===msgId);
+async function openReplyTo(msgId) {
+  let msg=(S.currentMessage?.id===msgId)?S.currentMessage:S.messages.find(m=>m.id===msgId);
   if (!msg) return;
+  if (msg.body_html===undefined && msg.body_text===undefined) {
+    // Came from the message-list summary (MessageSummary has no body fields at all) — e.g.
+    // the context-menu "Reply" on a message that was never opened. Fetch the real thing so
+    // the quote isn't blank.
+    const full = await api('GET', '/messages/'+msgId);
+    if (!full) return;
+    msg = full;
+  }
   openCompose({
     mode:'reply', replyId:msgId, title:'Reply',
     accountId: msg.account_id||null,
     subject:msg.subject&&!msg.subject.startsWith('Re:')?'Re: '+msg.subject:(msg.subject||''),
-    body:`<br><br><div class="quote-divider">—— Original message ——</div><blockquote>${msg.body_html||('<pre>'+esc(msg.body_text||'')+'</pre>')}</blockquote>`,
+    quoteHtml:`<div><br></div><div class="quote-divider">—— Original message ——</div><blockquote>${quotedBodyHTML(msg)}</blockquote>`,
   });
   addTag('compose-to', msg.from_email||'');
 }
@@ -1761,31 +2085,40 @@ function openReplyTo(msgId) {
 function openForward() {
   if (!S.currentMessage) return;
   const msg=S.currentMessage;
-  S.composeForwardFromId=msg.id;
   openCompose({
     mode:'forward', forwardId:msg.id, title:'Forward',
     accountId: msg.account_id||null,
     subject:'Fwd: '+(msg.subject||''),
-    body:`<br><br><div class="quote-divider">—— Forwarded message ——<br>From: ${esc(msg.from_email||'')}</div><blockquote>${msg.body_html||('<pre>'+esc(msg.body_text||'')+'</pre>')}</blockquote>`,
+    quoteHtml:`<div><br></div><div class="quote-divider">—— Forwarded message ——<br>From: ${esc(msg.from_email||'')}</div><blockquote>${quotedBodyHTML(msg)}</blockquote>`,
   });
 }
 
+// Opens a fresh compose with the current message attached as .eml. Once open, more emails
+// can be attached the same way — via drag-and-drop from the list, or the message context
+// menu's "Attach as .eml" entry — since attaching isn't tied to a dedicated compose mode.
 function openForwardAsAttachment() {
   if (!S.currentMessage) return;
   const msg=S.currentMessage;
-  S.composeForwardFromId=msg.id;
   openCompose({
-    mode:'forward-attachment', forwardId:msg.id, title:'Forward as Attachment',
+    mode:'forward', title:'Forward as Attachment',
     accountId: msg.account_id||null,
     subject:'Fwd: '+(msg.subject||''),
     body:'',
   });
-  // Add a visual placeholder chip (the actual EML is fetched server-side)
-  composeAttachments=[{name: sanitizeSubject(msg.subject||'message')+'.eml', size:0, isForward:true}];
-  updateAttachList();
+  attachMessageAsEML(msg.id);
 }
 
 function sanitizeSubject(s){return s.replace(/[/\\:*?"<>|]/g,'_').slice(0,60)||'message';}
+
+// ── Contact autocomplete cache (shared across all tag fields) ──────────────
+let contactsCache=null, contactsCachePromise=null;
+function ensureContactsCache() {
+  if (contactsCache) return Promise.resolve(contactsCache);
+  if (!contactsCachePromise) {
+    contactsCachePromise = api('GET','/contacts').then(d=>contactsCache=d||[]).catch(()=>contactsCache=[]);
+  }
+  return contactsCachePromise;
+}
 
 // ── Email Tag Input ────────────────────────────────────────────────────────
 function initTagField(containerId) {
@@ -1803,14 +2136,55 @@ function initTagField(containerId) {
   inp.setAttribute('spellcheck','false');
   container.appendChild(inp);
 
+  let suggestBox=null, suggestItems=[], suggestIndex=-1;
+  const closeSuggest = () => { if(suggestBox){suggestBox.remove(); suggestBox=null;} suggestItems=[]; suggestIndex=-1; };
+  const pickSuggest = (c) => { addTag(containerId, c.email); inp.value=''; closeSuggest(); };
+  const renderSuggest = () => {
+    if(suggestBox) suggestBox.remove();
+    if(!suggestItems.length) { suggestBox=null; return; }
+    suggestBox=document.createElement('div');
+    suggestBox.className='contact-suggest';
+    suggestItems.forEach((c,i)=>{
+      const row=document.createElement('div');
+      row.className='contact-suggest-row'+(i===suggestIndex?' active':'');
+      row.innerHTML=`<span class="contact-suggest-name">${esc(c.display_name||c.email)}</span><span class="contact-suggest-email">${esc(c.email)}</span>`;
+      row.onmousedown=e=>{ e.preventDefault(); pickSuggest(c); };
+      suggestBox.appendChild(row);
+    });
+    container.parentElement.appendChild(suggestBox);
+  };
+
   const commit = () => {
     const v=inp.value.trim().replace(/[,;\s]+$/,'');
     if(v){ addTag(containerId,v); inp.value=''; }
+    closeSuggest();
   };
 
+  inp.addEventListener('input', async ()=>{
+    S.draftDirty=true;
+    const v=inp.value.trim().toLowerCase();
+    if(!v){ closeSuggest(); return; }
+    const contacts=await ensureContactsCache();
+    const existing=new Set(getTagValues(containerId).map(e=>e.toLowerCase()));
+    suggestItems=contacts.filter(c=>c.email && !existing.has(c.email.toLowerCase()) &&
+      (c.email.toLowerCase().includes(v) || (c.display_name||'').toLowerCase().includes(v))).slice(0,6);
+    suggestIndex=-1;
+    renderSuggest();
+  });
+
   inp.addEventListener('keydown', e=>{
-    if(e.key==='Enter'||e.key===','||e.key===';') { e.preventDefault(); commit(); }
-    else if(e.key===' ') {
+    if(suggestBox && suggestItems.length && (e.key==='ArrowDown'||e.key==='ArrowUp')) {
+      e.preventDefault();
+      suggestIndex = e.key==='ArrowDown' ? Math.min(suggestIndex+1, suggestItems.length-1) : Math.max(suggestIndex-1, -1);
+      renderSuggest();
+      return;
+    }
+    if(e.key==='Escape' && suggestBox) { e.preventDefault(); closeSuggest(); return; }
+    if(e.key==='Enter'||e.key===','||e.key===';') {
+      e.preventDefault();
+      if(suggestBox && suggestIndex>=0) pickSuggest(suggestItems[suggestIndex]);
+      else commit();
+    } else if(e.key===' ') {
       // Space commits only if value looks like an email
       const v=inp.value.trim();
       if(v && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) { e.preventDefault(); commit(); }
@@ -1868,24 +2242,27 @@ async function saveDraft(silent) {
   const meta={
     account_id:accountId,
     to:getTagValues('compose-to'),
+    cc:getTagValues('compose-cc-tags'),
+    bcc:getTagValues('compose-bcc-tags'),
     subject:document.getElementById('compose-subject').value,
-    body_html:editor.innerHTML.trim(),
+    body_html:restoreBlockedImages(editor.innerHTML.trim()),
     body_text:editor.innerText.trim(),
-    draft_uid:S.draftUID||0,
+    draft_id:S.draftId||'',
   };
   const r=await api('POST','/draft',meta);
-  if(r?.ok){ S.draftUID=r.draft_uid||S.draftUID; if(!silent) toast('Draft saved','success'); else toast('Draft auto-saved to server','success'); }
+  if(r?.ok){ S.draftId=r.draft_id||S.draftId; if(!silent) toast('Draft saved','success'); else toast('Draft auto-saved to server','success'); loadFolders(); }
   else if(!silent) toast(r?.error||'Draft save failed','error');
 }
 
-// Deletes the draft that autosave already wrote to the server for this compose session
-// (identified by its IMAP UID). No-op if nothing was ever saved.
+// Deletes the draft that autosave already wrote to the server for this compose session.
+// No-op if nothing was ever saved.
 async function discardDraft() {
-  if (!S.draftUID) return;
+  if (!S.draftId) return;
   const accountId=parseInt(document.getElementById('compose-from')?.value||0);
   if (!accountId) return;
-  await api('POST','/draft/discard',{account_id:accountId, draft_uid:S.draftUID});
-  S.draftUID=0;
+  await api('POST','/draft/discard',{account_id:accountId, draft_id:S.draftId});
+  S.draftId='';
+  loadFolders();
 }
 
 // ── Compose formatting ─────────────────────────────────────────────────────
@@ -1893,20 +2270,29 @@ function execFmt(cmd,val) { document.getElementById('compose-editor').focus(); d
 function triggerAttach() { document.getElementById('compose-attach-input').click(); }
 function handleAttachFiles(input) { for(const file of input.files) composeAttachments.push({file,name:file.name,size:file.size}); input.value=''; updateAttachList(); S.draftDirty=true; }
 function removeAttachment(i) {
-  // Don't remove EML forward placeholder (isForward) from UI; it's handled server-side
-  if(composeAttachments[i]?.isForward && S.composeMode==='forward-attachment'){
-    toast('The original message will be attached when sent','info'); return;
-  }
   composeAttachments.splice(i,1); updateAttachList();
 }
 function updateAttachList() {
   const el=document.getElementById('compose-attach-list');
   if(!composeAttachments.length){el.innerHTML='';return;}
   el.innerHTML=composeAttachments.map((a,i)=>`<div class="attachment-chip">
-    📎 <span>${esc(a.name)}</span>
+    ${a.isForward?'✉️':'📎'} <span>${esc(a.name)}</span>
     <span style="color:var(--muted);font-size:10px">${a.size?formatSize(a.size):''}</span>
     <button onclick="removeAttachment(${i})" class="tag-remove" type="button">×</button>
   </div>`).join('');
+}
+
+// Attaches an existing email as a .eml file to whichever compose is currently open — used
+// by "Forward as Attachment", the message context menu, and dragging a row onto compose.
+// Multiple messages can be attached this way to the same compose session.
+function attachMessageAsEML(msgId) {
+  if (!S.composeVisible) { toast('Open a message to compose first','error'); return; }
+  if (composeAttachments.some(a=>a.isForward && a.msgId===msgId)) { toast('Already attached','info'); return; }
+  const msg = S.messages.find(m=>m.id===msgId) || (S.currentMessage?.id===msgId?S.currentMessage:null);
+  composeAttachments.push({name: sanitizeSubject(msg?.subject||'message')+'.eml', size:0, isForward:true, msgId});
+  updateAttachList();
+  S.draftDirty=true;
+  toast('Email attached','success');
 }
 
 // ── Compose drag-and-drop attachments ──────────────────────────────────────
@@ -1927,6 +2313,12 @@ function initComposeDragDrop() {
       for(const file of e.dataTransfer.files) composeAttachments.push({file,name:file.name,size:file.size});
       updateAttachList(); S.draftDirty=true;
       toast(`${e.dataTransfer.files.length} file(s) attached`,'success');
+      return;
+    }
+    // A message row dragged from the list (handleMsgDragStart sets its id as text/plain).
+    const msgId=parseInt(e.dataTransfer?.getData('text/plain'));
+    if (msgId && (S.messages.some(m=>m.id===msgId) || S.currentMessage?.id===msgId)) {
+      attachMessageAsEML(msgId);
     }
   });
 }
@@ -1936,13 +2328,12 @@ async function sendMessage() {
   const to=getTagValues('compose-to');
   if(!accountId||!to.length){toast('From account and To address required','error');return;}
   const editor=document.getElementById('compose-editor');
-  const bodyHTML=editor.innerHTML.trim(), bodyText=editor.innerText.trim();
+  const bodyHTML=restoreBlockedImages(editor.innerHTML.trim()), bodyText=editor.innerText.trim();
   const btn=document.getElementById('send-btn');
   btn.disabled=true; btn.textContent='Sending…';
 
   const endpoint=S.composeMode==='reply'?'/reply'
     :S.composeMode==='forward'?'/forward'
-    :S.composeMode==='forward-attachment'?'/forward-attachment'
     :'/send';
 
   const meta={
@@ -1952,14 +2343,12 @@ async function sendMessage() {
     subject:document.getElementById('compose-subject').value,
     body_text:bodyText, body_html:bodyHTML,
     in_reply_to_id:S.composeMode==='reply'?S.composeReplyToId:0,
-    forward_from_id:(S.composeMode==='forward'||S.composeMode==='forward-attachment')?S.composeForwardFromId:0,
+    forward_from_ids:composeAttachments.filter(a=>a.isForward).map(a=>a.msgId),
   };
 
   let r;
-  // Use FormData when there are real file attachments, OR when forwarding as attachment
-  // (server needs multipart so it can read forward_from_id from meta and fetch the EML itself)
   const hasRealFiles = composeAttachments.some(a => a.file instanceof Blob);
-  const needsFormData = hasRealFiles || S.composeMode === 'forward-attachment';
+  const needsFormData = hasRealFiles;
   if(needsFormData){
     const fd=new FormData();
     fd.append('meta', JSON.stringify(meta));
@@ -1981,11 +2370,67 @@ async function sendMessage() {
   if(r?.ok){
     toast('Message sent!','success');
     clearDraftAutosave();
+    await discardDraft(); // remove the autosaved Drafts-folder copy now that it's actually sent
     _closeCompose();
     // Refresh after a short delay so the syncer has time to pick up the sent message
     setTimeout(async () => { await loadFolders(); await loadMessages(); }, 2500);
   }
   else toast(r?.error||'Send failed','error');
+}
+
+function openSendLater() {
+  const accountId=parseInt(document.getElementById('compose-from')?.value||0);
+  const to=getTagValues('compose-to');
+  if(!accountId||!to.length){toast('From account and To address required','error');return;}
+  if (composeAttachments.some(a => a.file instanceof Blob)) {
+    toast("Send later doesn't support file attachments yet — forwarded messages are fine",'error');
+    return;
+  }
+  const editor=document.getElementById('compose-editor');
+  const meta={
+    account_id:accountId, to,
+    cc:getTagValues('compose-cc-tags'),
+    bcc:getTagValues('compose-bcc-tags'),
+    subject:document.getElementById('compose-subject').value,
+    body_text:editor.innerText.trim(), body_html:restoreBlockedImages(editor.innerHTML.trim()),
+    forward_from_ids:composeAttachments.filter(a=>a.isForward).map(a=>a.msgId),
+  };
+  inlineDateTimePrompt('Send at:', async (iso) => {
+    meta.send_at = iso;
+    const r = await api('POST','/send-later', meta);
+    if (r?.ok) {
+      toast('Message scheduled','success');
+      clearDraftAutosave();
+      await discardDraft();
+      _closeCompose();
+    } else toast(r?.error||'Failed to schedule','error');
+  }, 'Schedule');
+}
+
+async function showScheduledSends() {
+  openModal('scheduled-sends-modal');
+  const list = document.getElementById('scheduled-sends-list');
+  list.innerHTML = '<div class="spinner" style="margin:30px auto"></div>';
+  const items = await api('GET','/scheduled-sends');
+  if (!items || !items.length) {
+    list.innerHTML = '<p style="color:var(--muted);font-size:13px;text-align:center;padding:20px 0">No scheduled sends.</p>';
+    return;
+  }
+  list.innerHTML = items.map(s => `
+    <div class="acct-row" style="align-items:flex-start">
+      <div style="flex:1;min-width:0">
+        <div style="font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(s.subject||'(no subject)')}</div>
+        <div style="font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">To: ${esc((s.to||[]).join(', '))}</div>
+        <div style="font-size:11px;color:var(--accent)">Sends ${formatDate(s.send_at)}</div>
+      </div>
+      <button class="btn-secondary" style="font-size:11px;flex-shrink:0" onclick="cancelScheduledSend(${s.id})">Cancel</button>
+    </div>`).join('');
+}
+
+async function cancelScheduledSend(id) {
+  const r = await api('DELETE','/scheduled-sends/'+id);
+  if (r?.ok) { toast('Scheduled send cancelled','success'); showScheduledSends(); }
+  else toast('Cancel failed','error');
 }
 
 // ── Compose drag + all-edge resize ─────────────────────────────────────────
@@ -2077,6 +2522,8 @@ async function openSettings() {
   openModal('settings-modal');
   showSettingsTab('accounts');
   loadSyncInterval();
+  loadRemoteImagePolicy();
+  loadRemoteWhitelist();
   renderMFAPanel();
   loadIPRules();
   populateSettingsAccountSelects();
@@ -2092,7 +2539,11 @@ async function openSettings() {
 let _settingsTabsLoaded = {};
 
 function showSettingsTab(tab) {
-  document.querySelectorAll('.settings-nav button').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+  document.querySelectorAll('.settings-nav button').forEach(b => {
+    const active = b.dataset.tab === tab;
+    b.classList.toggle('active', active);
+    b.setAttribute('aria-selected', String(active));
+  });
   document.querySelectorAll('.settings-panel').forEach(p => p.classList.toggle('active', p.dataset.tab === tab));
   if (_settingsTabsLoaded[tab]) return;
   _settingsTabsLoaded[tab] = true;
@@ -2201,6 +2652,8 @@ async function deleteRule(id, accountId) {
 }
 
 // ── Settings: Signatures ─────────────────────────────────────────────────
+let editingSignatureId = null;
+
 function renderSignaturesList() {
   const el = document.getElementById('signatures-list');
   if (!S.signatures.length) { el.innerHTML = '<p style="color:var(--muted);font-size:13px">No signatures yet.</p>'; return; }
@@ -2208,25 +2661,71 @@ function renderSignaturesList() {
     <div class="settings-group" style="padding-bottom:12px;margin-bottom:12px">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
         <b>${esc(s.name)}</b>
-        <button class="btn-danger" style="padding:4px 10px;font-size:12px" onclick="deleteSignature(${s.id})">Delete</button>
+        <div style="display:flex;gap:6px">
+          <button class="btn-secondary" style="padding:4px 10px;font-size:12px" onclick="editSignature(${s.id})">Edit</button>
+          <button class="btn-danger" style="padding:4px 10px;font-size:12px" onclick="deleteSignature(${s.id})">Delete</button>
+        </div>
       </div>
-      <div style="font-size:13px;color:var(--text2);white-space:pre-wrap;background:var(--surface2);padding:8px;border-radius:6px">${s.content_html}</div>
+      <div style="font-size:13px;color:var(--text2);background:var(--surface2);padding:8px;border-radius:6px">${s.content_html}</div>
     </div>`).join('');
+}
+
+function execSigFmt(cmd, val) { document.getElementById('sig-content').focus(); document.execCommand(cmd, false, val || null); }
+
+function insertSigImage(input) {
+  const file = input.files[0];
+  if (!file) return;
+  if (file.size > 1024 * 1024) { toast('Image too large — keep signature images under 1MB', 'error'); input.value = ''; return; }
+  const editor = document.getElementById('sig-content');
+  const sel = window.getSelection();
+  const range = sel.rangeCount ? sel.getRangeAt(0).cloneRange() : null;
+  const reader = new FileReader();
+  reader.onload = () => {
+    editor.focus();
+    if (range) { sel.removeAllRanges(); sel.addRange(range); }
+    document.execCommand('insertHTML', false, `<img src="${reader.result}" style="max-width:100%">`);
+    input.value = '';
+  };
+  reader.readAsDataURL(file);
+}
+
+function editSignature(id) {
+  const sig = S.signatures.find(s => s.id === id);
+  if (!sig) return;
+  editingSignatureId = id;
+  document.getElementById('sig-name').value = sig.name;
+  document.getElementById('sig-content').innerHTML = sig.content_html;
+  document.getElementById('sig-form-title').textContent = 'Edit Signature';
+  document.getElementById('sig-save-btn').textContent = 'Save Changes';
+  document.getElementById('sig-cancel-btn').style.display = '';
+  document.getElementById('sig-name').scrollIntoView({ block: 'center', behavior: 'smooth' });
+}
+
+function cancelSignatureEdit() {
+  editingSignatureId = null;
+  document.getElementById('sig-name').value = '';
+  document.getElementById('sig-content').innerHTML = '';
+  document.getElementById('sig-form-title').textContent = 'Add Signature';
+  document.getElementById('sig-save-btn').textContent = 'Add Signature';
+  document.getElementById('sig-cancel-btn').style.display = 'none';
 }
 
 async function saveSignature() {
   const name = document.getElementById('sig-name').value.trim();
-  if (!name) { toast('Name required', 'err'); return; }
-  const content_html = document.getElementById('sig-content').value;
-  const r = await api('POST', '/signatures', { name, content_html });
+  if (!name) { toast('Name required', 'error'); return; }
+  const content_html = document.getElementById('sig-content').innerHTML.trim();
+  const r = editingSignatureId
+    ? await api('PUT', '/signatures/' + editingSignatureId, { name, content_html })
+    : await api('POST', '/signatures', { name, content_html });
   if (r && r.ok) {
-    toast('Signature added');
-    document.getElementById('sig-name').value = ''; document.getElementById('sig-content').value = '';
+    toast(editingSignatureId ? 'Signature updated' : 'Signature added', 'success');
+    cancelSignatureEdit();
     await loadSignatures(); renderSignaturesList(); renderSignatureDefaultsForm();
-  } else toast(r?.error || 'Failed to save', 'err');
+  } else toast(r?.error || 'Failed to save', 'error');
 }
 
 async function deleteSignature(id) {
+  if (editingSignatureId === id) cancelSignatureEdit();
   await api('DELETE', '/signatures/' + id);
   await loadSignatures(); renderSignaturesList(); renderSignatureDefaultsForm();
 }
@@ -2451,6 +2950,37 @@ async function loadSyncInterval() {
   if(r) document.getElementById('sync-interval-select').value=String(r.sync_interval||15);
 }
 
+// ── Settings: Remote image policy ───────────────────────────────────────
+function loadRemoteImagePolicy() {
+  document.getElementById('remote-image-policy-select').value = uiPrefsGet('remoteImagePolicy', 'manual');
+}
+
+function saveRemoteImagePolicy() {
+  const val = document.getElementById('remote-image-policy-select').value;
+  uiPrefsSet('remoteImagePolicy', val);
+  toast('Remote image policy saved', 'success');
+  if (S.currentMessage) renderMessageDetail(S.currentMessage, false);
+}
+
+async function loadRemoteWhitelist() {
+  const el = document.getElementById('remote-whitelist-list');
+  const r = await api('GET', '/remote-content-whitelist');
+  const list = r?.whitelist || [];
+  if (!list.length) { el.innerHTML = '<p style="color:var(--muted);font-size:12px;margin:0">No senders allowed yet.</p>'; return; }
+  el.innerHTML = `<div style="display:flex;flex-wrap:wrap;gap:6px">` + list.map(sender => `
+    <span class="email-tag">${esc(sender)}<button class="tag-remove" data-sender="${esc(sender)}" onclick="removeFromRemoteWhitelist(this.dataset.sender)" title="Remove">×</button></span>
+  `).join('') + `</div>`;
+}
+
+async function removeFromRemoteWhitelist(sender) {
+  const r = await api('DELETE', '/remote-content-whitelist?sender=' + encodeURIComponent(sender));
+  if (r?.ok) {
+    S.remoteWhitelist.delete(sender);
+    toast('Removed from allowed senders', 'success');
+    loadRemoteWhitelist();
+  } else toast('Failed to remove', 'error');
+}
+
 async function saveSyncInterval() {
   const val=parseInt(document.getElementById('sync-interval-select').value)||0;
   const r=await api('PUT','/sync-interval',{sync_interval:val});
@@ -2536,6 +3066,9 @@ async function doLogout() { await fetch('/auth/logout',{method:'POST'}); locatio
 function showCtxMenu(e, html) {
   const menu=document.getElementById('ctx-menu');
   menu.innerHTML=html; menu.classList.add('open');
+  menu.setAttribute('role','menu');
+  menu.querySelectorAll('.ctx-item').forEach(item=>item.setAttribute('role','menuitem'));
+  menu.querySelectorAll('.ctx-sep').forEach(sep=>sep.setAttribute('role','separator'));
   requestAnimationFrame(()=>{
     menu.style.left=Math.min(e.clientX,window.innerWidth-menu.offsetWidth-8)+'px';
     menu.style.top=Math.min(e.clientY,window.innerHeight-menu.offsetHeight-8)+'px';

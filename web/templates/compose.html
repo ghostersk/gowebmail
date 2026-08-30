@@ -1,56 +1,85 @@
 {{template "base" .}}
 {{define "title"}}Compose — GoWebMail{{end}}
-{{define "body_class"}}app-page{{end}}
+{{define "body_class"}}{{end}}
 
 {{define "body"}}
-<div id="compose-page" style="max-width:860px;margin:0 auto;padding:20px 16px;min-height:100vh">
-  <div style="display:flex;align-items:center;gap:12px;margin-bottom:18px;padding-bottom:14px;border-bottom:1px solid var(--border)">
-    <a href="/" style="color:var(--accent);text-decoration:none;font-size:13px;display:flex;align-items:center;gap:4px">
+<div id="compose-page" style="width:100%;box-sizing:border-box;margin:0 auto;padding:20px 32px;min-height:100vh">
+  <div style="display:flex;align-items:center;gap:12px;margin-bottom:18px;padding-bottom:14px;border-bottom:1px solid var(--border);flex-wrap:wrap">
+    <a href="/" id="cp-back-link" style="color:var(--accent);text-decoration:none;font-size:13px;display:flex;align-items:center;gap:4px">
       <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
       Back to GoWebMail
     </a>
     <span style="color:var(--border);font-size:16px">|</span>
     <span id="compose-page-title" style="font-size:14px;color:var(--text2)">New Message</span>
-    <div style="margin-left:auto;display:flex;gap:6px">
-      <button class="btn-secondary" id="save-draft-btn" onclick="saveDraft()" style="font-size:12px">Save Draft</button>
+    <div style="margin-left:auto;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+      <button class="btn-secondary" id="discard-draft-btn" style="display:none;font-size:12px;color:var(--danger)" onclick="discardDraftAndReset()">Discard draft</button>
+      <button type="button" id="cc-toggle" class="btn-secondary" style="font-size:12px" onclick="cpShowCC()">+CC</button>
+      <button type="button" id="bcc-toggle" class="btn-secondary" style="font-size:12px" onclick="cpShowBCC()">+BCC</button>
+      <button class="btn-secondary" style="font-size:12px" onclick="triggerAttach()">📎 Attach</button>
+      <button class="btn-secondary" id="save-draft-btn" onclick="saveDraft()" style="font-size:12px">💾 Save Draft</button>
+      <button class="btn-secondary" id="sendlater-btn" style="font-size:12px" onclick="toggleSendLaterPanel()">🕐 Send later</button>
       <button class="modal-submit" id="send-page-btn" onclick="sendFromPage()" style="font-size:13px;padding:7px 18px">Send</button>
+      <input type="file" id="cp-file-input" multiple style="display:none" onchange="addPageAttachments(this.files)">
     </div>
+  </div>
+
+  <div id="cp-leave-confirm" class="remote-content-banner" style="display:none;margin-bottom:14px">
+    You have a draft in progress.
+    <button class="rcb-btn" id="cp-leave-keep">Keep editing</button>
+    <button class="rcb-btn" id="cp-leave-save">Save &amp; leave</button>
+    <button class="rcb-btn" id="cp-leave-discard">Discard &amp; leave</button>
+  </div>
+
+  <div id="cp-sendlater-panel" class="remote-content-banner" style="display:none;margin-bottom:14px">
+    Send at:
+    <input type="datetime-local" id="cp-sendlater-input" style="background:var(--surface3);border:1px solid var(--border2);border-radius:6px;color:var(--text);padding:4px 8px;font-size:13px">
+    <button class="rcb-btn" onclick="confirmSendLater()">Schedule</button>
+    <button class="rcb-btn" onclick="document.getElementById('cp-sendlater-panel').style.display='none'">Cancel</button>
   </div>
 
   <div id="compose-page-form">
     <!-- From -->
     <div style="display:flex;align-items:center;border-bottom:1px solid var(--border);padding:8px 0;gap:8px">
-      <span style="font-size:12px;color:var(--muted);width:48px;flex-shrink:0">From</span>
+      <label for="cp-from" style="font-size:12px;color:var(--muted);width:48px;flex-shrink:0">From</label>
       <select id="cp-from" style="flex:1;background:transparent;border:none;color:var(--text);font-size:13px;outline:none;cursor:pointer"></select>
     </div>
     <!-- To -->
     <div style="display:flex;align-items:flex-start;border-bottom:1px solid var(--border);padding:8px 0;gap:8px">
-      <span style="font-size:12px;color:var(--muted);width:48px;flex-shrink:0;padding-top:6px">To</span>
-      <div id="cp-to-tags" class="tag-field" style="flex:1;min-height:30px"></div>
+      <span id="cp-to-label" style="font-size:12px;color:var(--muted);width:48px;flex-shrink:0;padding-top:6px">To</span>
+      <div id="cp-to-tags" class="tag-container" role="group" aria-labelledby="cp-to-label" style="flex:1;min-height:30px"></div>
     </div>
     <!-- CC -->
-    <div style="display:flex;align-items:flex-start;border-bottom:1px solid var(--border);padding:8px 0;gap:8px">
-      <span style="font-size:12px;color:var(--muted);width:48px;flex-shrink:0;padding-top:6px">CC</span>
-      <div id="cp-cc-tags" class="tag-field" style="flex:1;min-height:30px"></div>
+    <div id="cc-row" style="display:none;align-items:flex-start;border-bottom:1px solid var(--border);padding:8px 0;gap:8px">
+      <span id="cp-cc-label" style="font-size:12px;color:var(--muted);width:48px;flex-shrink:0;padding-top:6px">CC</span>
+      <div id="cp-cc-tags" class="tag-container" role="group" aria-labelledby="cp-cc-label" style="flex:1;min-height:30px"></div>
+    </div>
+    <!-- BCC -->
+    <div id="bcc-row" style="display:none;align-items:flex-start;border-bottom:1px solid var(--border);padding:8px 0;gap:8px">
+      <span id="cp-bcc-label" style="font-size:12px;color:var(--muted);width:48px;flex-shrink:0;padding-top:6px">BCC</span>
+      <div id="cp-bcc-tags" class="tag-container" role="group" aria-labelledby="cp-bcc-label" style="flex:1;min-height:30px"></div>
     </div>
     <!-- Subject -->
     <div style="display:flex;align-items:center;border-bottom:1px solid var(--border);padding:8px 0;gap:8px">
-      <span style="font-size:12px;color:var(--muted);width:48px;flex-shrink:0">Subject</span>
-      <input id="cp-subject" type="text" placeholder="Subject" style="flex:1;background:transparent;border:none;color:var(--text);font-size:14px;outline:none;font-family:'DM Sans',sans-serif">
+      <label for="cp-subject" style="font-size:12px;color:var(--muted);width:48px;flex-shrink:0">Subject</label>
+      <input id="cp-subject" type="text" placeholder="Subject" oninput="markDirty()" style="flex:1;background:transparent;border:none;color:var(--text);font-size:14px;outline:none;font-family:'DM Sans',sans-serif">
+    </div>
+    <!-- Formatting toolbar -->
+    <div class="compose-toolbar" role="toolbar" aria-label="Formatting">
+      <button class="fmt-btn" title="Bold" aria-label="Bold" onclick="execFmt('bold')"><b>B</b></button>
+      <button class="fmt-btn" title="Italic" aria-label="Italic" onclick="execFmt('italic')"><i>I</i></button>
+      <button class="fmt-btn" title="Underline" aria-label="Underline" onclick="execFmt('underline')"><u>U</u></button>
+      <span class="fmt-sep"></span>
+      <button class="fmt-btn" title="Bullets" aria-label="Bulleted list" onclick="execFmt('insertUnorderedList')">&#8226;&#8212;</button>
+      <button class="fmt-btn" title="Numbers" aria-label="Numbered list" onclick="execFmt('insertOrderedList')">1&#8212;</button>
+      <span class="fmt-sep"></span>
+      <button class="fmt-btn" title="Clear format" aria-label="Clear formatting" onclick="execFmt('removeFormat')">T&#x20D7;</button>
     </div>
     <!-- Body -->
-    <div id="cp-editor" contenteditable="true" style="min-height:400px;padding:16px 0;outline:none;font-size:14px;line-height:1.6;color:var(--text)" data-placeholder="Write your message…"></div>
-    <!-- Attachments -->
-    <div style="border-top:1px solid var(--border);padding:10px 0;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-      <label style="cursor:pointer;font-size:12px;color:var(--muted);display:flex;align-items:center;gap:4px">
-        <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><path d="M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5c0-1.38 1.12-2.5 2.5-2.5s2.5 1.12 2.5 2.5v10.5c0 .55-.45 1-1 1s-1-.45-1-1V6H10v9.5c0 1.38 1.12 2.5 2.5 2.5s2.5-1.12 2.5-2.5V5c0-2.21-1.79-4-4-4S7 2.79 7 5v12.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5V6h-1.5z"/></svg>
-        Attach file
-        <input type="file" multiple style="display:none" onchange="addPageAttachments(this.files)">
-      </label>
-      <div id="cp-att-list" style="display:flex;flex-wrap:wrap;gap:6px"></div>
-    </div>
+    <div id="cp-editor" contenteditable="true" role="textbox" aria-multiline="true" aria-label="Message body" oninput="markDirty()" style="min-height:400px;padding:16px 0;outline:none;font-size:14px;line-height:1.6;color:var(--text)" data-placeholder="Write your message…"></div>
+    <!-- Attachments (added via the "Attach" button in the header) -->
+    <div id="cp-att-list" style="border-top:1px solid var(--border);padding:10px 0;display:flex;flex-wrap:wrap;gap:6px"></div>
   </div>
-  <div id="cp-status" style="font-size:13px;color:var(--muted);margin-top:8px"></div>
+  <div id="cp-status" role="status" style="font-size:13px;color:var(--muted);margin-top:8px"></div>
 </div>
 {{end}}
 
@@ -60,7 +89,10 @@
 const params = new URLSearchParams(location.search);
 const replyId = parseInt(params.get('reply_id') || '0');
 const forwardId = parseInt(params.get('forward_id') || '0');
+const editDraftId = parseInt(params.get('edit_draft_id') || '0');
 const cpAttachments = [];
+let draftId = '', dirty = false, draftTimer = null;
+let remoteWhitelist = new Set(), remoteImagePolicy = 'manual', contactsCache = null;
 
 async function apiCall(method, path, body) {
   const opts = { method, headers: {} };
@@ -70,9 +102,44 @@ async function apiCall(method, path, body) {
   return r.ok ? r.json() : null;
 }
 
-function esc(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function esc(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function markDirty() { dirty = true; }
+function setStatus(msg, isError) {
+  const el = document.getElementById('cp-status');
+  el.textContent = msg;
+  el.style.color = isError ? 'var(--danger)' : 'var(--muted)';
+}
 
-// Tag field (simple comma/enter separated)
+// ── Remote-image policy — same rules as the reading pane (app.js / message.html) ──
+function stripUnresolvedCID(h){ return h.replace(/src\s*=\s*(['"])cid:[^'"]*\1/gi,'src=""').replace(/src\s*=\s*cid:\S+/gi,'src=""'); }
+function stripEmbeddedFrames(h){ return h.replace(/<iframe[\s\S]*?<\/iframe>/gi,'').replace(/<iframe[^>]*>/gi,''); }
+function stripRemoteImages(h){
+  return h.replace(/<img(\s[^>]*?)src\s*=\s*(['"])(https?:\/\/[^'"]+)\2/gi,'<img$1src="" data-blocked-src="$3"')
+          .replace(/url\s*\(\s*(['"]?)https?:\/\/[^)'"]+\1\s*\)/gi,'url()')
+          .replace(/<link[^>]*>/gi,'').replace(/<script[\s\S]*?<\/script>/gi,'');
+}
+function isContactEmail(fromEmail) {
+  if (!fromEmail || !contactsCache) return false;
+  const e = fromEmail.toLowerCase();
+  return contactsCache.some(c => (c.email||'').toLowerCase() === e);
+}
+function isRemoteContentAllowed(fromEmail) {
+  if (remoteImagePolicy === 'always') return true;
+  if (remoteImagePolicy === 'never') return false;
+  if (remoteImagePolicy === 'contacts') return isContactEmail(fromEmail) || remoteWhitelist.has(fromEmail);
+  return remoteWhitelist.has(fromEmail); // manual (default)
+}
+function quotedBodyHTML(msg) {
+  if (!msg.body_html) return '<pre>'+esc(msg.body_text||'')+'</pre>';
+  let html = stripUnresolvedCID(stripEmbeddedFrames(msg.body_html));
+  if (!isRemoteContentAllowed(msg.from_email)) html = stripRemoteImages(html);
+  return html;
+}
+function restoreBlockedImages(html) {
+  return html.replace(/src=""\s+data-blocked-src="([^"]*)"/gi, 'src="$1"');
+}
+
+// ── Tag fields (To/Cc/Bcc) — same visual style as the main compose modal ──
 function initTagField(id) {
   const el = document.getElementById(id);
   if (!el) return;
@@ -85,8 +152,8 @@ function initTagField(id) {
       if (v) addTagTo(id, v);
       inp.value = '';
     } else if (e.key === 'Backspace' && !inp.value) {
-      const tags = el.querySelectorAll('.tag-chip');
-      if (tags.length) tags[tags.length-1].remove();
+      const tags = el.querySelectorAll('.email-tag');
+      if (tags.length) { tags[tags.length-1].remove(); markDirty(); }
     }
   });
   inp.addEventListener('blur', () => {
@@ -96,19 +163,31 @@ function initTagField(id) {
 }
 
 function addTagTo(fieldId, email) {
+  if (!email) return;
   const el = document.getElementById(fieldId);
   const inp = el.querySelector('input');
-  const chip = document.createElement('span');
-  chip.className = 'tag-chip';
-  chip.style.cssText = 'display:inline-flex;align-items:center;gap:4px;padding:2px 8px;background:var(--accent-dim);color:var(--accent);border-radius:12px;font-size:12px;margin:2px';
-  chip.innerHTML = `${esc(email)}<span style="cursor:pointer;margin-left:2px" onclick="this.parentNode.remove()">×</span>`;
-  el.insertBefore(chip, inp);
+  const tag = document.createElement('span');
+  tag.className = 'email-tag';
+  const label = document.createElement('span');
+  label.textContent = email;
+  const remove = document.createElement('button');
+  remove.innerHTML = '×'; remove.className = 'tag-remove'; remove.type = 'button';
+  remove.onclick = e => { e.stopPropagation(); tag.remove(); markDirty(); };
+  tag.appendChild(label); tag.appendChild(remove);
+  el.insertBefore(tag, inp || null);
+  markDirty();
 }
 
 function getTagValues(fieldId) {
   const el = document.getElementById(fieldId);
-  return Array.from(el.querySelectorAll('.tag-chip')).map(c => c.textContent.replace('×','').trim()).filter(Boolean);
+  return Array.from(el.querySelectorAll('.email-tag')).map(c => c.firstChild.textContent.trim()).filter(Boolean);
 }
+
+function cpShowCC() { document.getElementById('cc-row').style.display = 'flex'; document.getElementById('cc-toggle').style.display = 'none'; }
+function cpShowBCC() { document.getElementById('bcc-row').style.display = 'flex'; document.getElementById('bcc-toggle').style.display = 'none'; }
+
+function execFmt(cmd, val) { document.getElementById('cp-editor').focus(); document.execCommand(cmd, false, val || null); }
+function triggerAttach() { document.getElementById('cp-file-input').click(); }
 
 function addPageAttachments(files) {
   for (const f of files) {
@@ -118,6 +197,7 @@ function addPageAttachments(files) {
     chip.textContent = f.name;
     document.getElementById('cp-att-list').appendChild(chip);
   }
+  markDirty();
 }
 
 async function loadAccounts() {
@@ -131,6 +211,13 @@ async function loadAccounts() {
   });
 }
 
+async function loadRemoteImagePrefs() {
+  const [uiPrefs, wl] = await Promise.all([apiCall('GET', '/ui-prefs'), apiCall('GET', '/remote-content-whitelist')]);
+  remoteImagePolicy = uiPrefs?.remoteImagePolicy || 'manual';
+  if (wl?.whitelist) remoteWhitelist = new Set(wl.whitelist);
+  if (remoteImagePolicy === 'contacts') contactsCache = await apiCall('GET', '/contacts') || [];
+}
+
 async function prefillReply() {
   if (!replyId) return;
   document.getElementById('compose-page-title').textContent = 'Reply';
@@ -142,13 +229,14 @@ async function prefillReply() {
   const editor = document.getElementById('cp-editor');
   editor.innerHTML = `<br><br><div style="border-left:3px solid #ccc;padding-left:12px;color:#666;margin-top:8px">
     <div style="font-size:12px;margin-bottom:4px">On ${msg.date ? new Date(msg.date).toLocaleString() : ''}, ${esc(msg.from_email)} wrote:</div>
-    ${msg.body_html || '<pre>' + (msg.body_text||'') + '</pre>'}
+    <div style="max-width:700px;overflow-x:auto">${quotedBodyHTML(msg)}</div>
   </div>`;
   // Set from to same account
   if (msg.account_id) {
     const sel = document.getElementById('cp-from');
     for (const opt of sel.options) { if (parseInt(opt.value) === msg.account_id) { opt.selected = true; break; } }
   }
+  dirty = false;
 }
 
 async function prefillForward() {
@@ -161,27 +249,56 @@ async function prefillForward() {
   const editor = document.getElementById('cp-editor');
   editor.innerHTML = `<br><br><div style="border-left:3px solid #ccc;padding-left:12px;color:#666;margin-top:8px">
     <div style="font-size:12px;margin-bottom:4px">---------- Forwarded message ----------<br>From: ${esc(msg.from_email)}<br>Subject: ${esc(msg.subject)}</div>
-    ${msg.body_html || '<pre>' + (msg.body_text||'') + '</pre>'}
+    <div style="max-width:700px;overflow-x:auto">${quotedBodyHTML(msg)}</div>
   </div>`;
+  if (msg.account_id) {
+    const sel = document.getElementById('cp-from');
+    for (const opt of sel.options) { if (parseInt(opt.value) === msg.account_id) { opt.selected = true; break; } }
+  }
+  dirty = false;
+}
+
+// Resuming a saved draft: unlike reply/forward, fields are populated directly (no quoting
+// wrapper) and draftId is seeded from the draft's own id so the next autosave/send/discard
+// replaces this exact draft in place instead of creating a second copy.
+async function prefillEditDraft() {
+  if (!editDraftId) return;
+  document.getElementById('compose-page-title').textContent = 'Edit Draft';
+  const msg = await apiCall('GET', '/messages/' + editDraftId);
+  if (!msg) return;
+  document.title = 'Edit Draft — GoWebMail';
+  document.getElementById('cp-subject').value = msg.subject || '';
+  (msg.to || '').split(',').map(s => s.trim()).filter(Boolean).forEach(a => addTagTo('cp-to-tags', a));
+  const ccList = (msg.cc || '').split(',').map(s => s.trim()).filter(Boolean);
+  if (ccList.length) { cpShowCC(); ccList.forEach(a => addTagTo('cp-cc-tags', a)); }
+  const bccList = (msg.bcc || '').split(',').map(s => s.trim()).filter(Boolean);
+  if (bccList.length) { cpShowBCC(); bccList.forEach(a => addTagTo('cp-bcc-tags', a)); }
+  document.getElementById('cp-editor').innerHTML = quotedBodyHTML(msg);
+  if (msg.account_id) {
+    const sel = document.getElementById('cp-from');
+    for (const opt of sel.options) { if (parseInt(opt.value) === msg.account_id) { opt.selected = true; break; } }
+  }
+  draftId = msg.remote_uid || '';
+  updateDraftUI();
+  dirty = false;
 }
 
 async function sendFromPage() {
   const btn = document.getElementById('send-page-btn');
   const accountId = parseInt(document.getElementById('cp-from').value || '0');
   const to = getTagValues('cp-to-tags');
-  if (!accountId || !to.length) { document.getElementById('cp-status').textContent = 'From account and To address required.'; return; }
+  if (!accountId || !to.length) { setStatus('From account and To address required.', true); return; }
   btn.disabled = true; btn.textContent = 'Sending…';
 
   const meta = {
     account_id: accountId,
     to,
     cc: getTagValues('cp-cc-tags'),
-    bcc: [],
+    bcc: getTagValues('cp-bcc-tags'),
     subject: document.getElementById('cp-subject').value,
-    body_html: document.getElementById('cp-editor').innerHTML,
+    body_html: restoreBlockedImages(document.getElementById('cp-editor').innerHTML.trim()),
     body_text: document.getElementById('cp-editor').innerText,
     in_reply_to_id: replyId || 0,
-    forward_from_id: forwardId || 0,
   };
 
   let r;
@@ -198,23 +315,134 @@ async function sendFromPage() {
 
   btn.disabled = false; btn.textContent = 'Send';
   if (r?.ok) {
-    document.getElementById('cp-status').innerHTML = '✓ Message sent! <a href="/" style="color:var(--accent)">Back to inbox</a>';
+    stopAutosave();
+    dirty = false;
+    await discardDraftReq(); // the autosaved Drafts-folder copy is now redundant — it's been sent
+    setStatus('✓ Message sent!');
     document.getElementById('compose-page-form').style.opacity = '0.5';
     document.getElementById('compose-page-form').style.pointerEvents = 'none';
+    document.getElementById('cp-back-link').innerHTML = '← Back to inbox';
   } else {
-    document.getElementById('cp-status').textContent = r?.error || 'Send failed.';
+    setStatus(r?.error || 'Send failed.', true);
   }
 }
 
-async function saveDraft() {
-  document.getElementById('cp-status').textContent = 'Draft saving not yet supported in standalone view.';
+// ── Send later ───────────────────────────────────────────────────────────────
+function toLocalInput(d) {
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+function toggleSendLaterPanel() {
+  const accountId = parseInt(document.getElementById('cp-from').value || '0');
+  const to = getTagValues('cp-to-tags');
+  if (!accountId || !to.length) { setStatus('From account and To address required.', true); return; }
+  if (cpAttachments.length) { setStatus("Send later doesn't support file attachments yet — forwarded messages are fine", true); return; }
+  const panel = document.getElementById('cp-sendlater-panel');
+  const isOpen = panel.style.display !== 'none';
+  panel.style.display = isOpen ? 'none' : 'flex';
+  if (!isOpen) {
+    const input = document.getElementById('cp-sendlater-input');
+    input.min = toLocalInput(new Date(Date.now() + 60000));
+    input.value = toLocalInput(new Date(Date.now() + 3600000));
+  }
+}
+async function confirmSendLater() {
+  const input = document.getElementById('cp-sendlater-input');
+  const d = new Date(input.value);
+  if (!input.value || isNaN(d.getTime()) || d <= new Date()) { setStatus('Pick a time in the future.', true); return; }
+  const accountId = parseInt(document.getElementById('cp-from').value || '0');
+  const to = getTagValues('cp-to-tags');
+  if (!accountId || !to.length) { setStatus('From account and To address required.', true); return; }
+  const meta = {
+    account_id: accountId, to,
+    cc: getTagValues('cp-cc-tags'), bcc: getTagValues('cp-bcc-tags'),
+    subject: document.getElementById('cp-subject').value,
+    body_html: restoreBlockedImages(document.getElementById('cp-editor').innerHTML.trim()),
+    body_text: document.getElementById('cp-editor').innerText,
+    send_at: d.toISOString(),
+  };
+  const r = await apiCall('POST', '/send-later', meta);
+  if (r?.ok) {
+    stopAutosave();
+    dirty = false;
+    await discardDraftReq();
+    setStatus('✓ Message scheduled!');
+    document.getElementById('cp-sendlater-panel').style.display = 'none';
+    document.getElementById('compose-page-form').style.opacity = '0.5';
+    document.getElementById('compose-page-form').style.pointerEvents = 'none';
+    document.getElementById('cp-back-link').innerHTML = '← Back to inbox';
+  } else {
+    setStatus(r?.error || 'Failed to schedule.', true);
+  }
 }
 
+// ── Draft autosave ──────────────────────────────────────────────────────────
+function startAutosave() { stopAutosave(); draftTimer = setInterval(() => { if (dirty) saveDraft(true); }, 60000); }
+function stopAutosave() { if (draftTimer) { clearInterval(draftTimer); draftTimer = null; } }
+
+function updateDraftUI() {
+  document.getElementById('discard-draft-btn').style.display = draftId ? 'inline-block' : 'none';
+}
+
+async function saveDraft(silent) {
+  dirty = false;
+  const accountId = parseInt(document.getElementById('cp-from')?.value || 0);
+  if (!accountId) { if (!silent) setStatus('Add a From account first.', true); return; }
+  const editor = document.getElementById('cp-editor');
+  const meta = {
+    account_id: accountId,
+    to: getTagValues('cp-to-tags'),
+    cc: getTagValues('cp-cc-tags'),
+    bcc: getTagValues('cp-bcc-tags'),
+    subject: document.getElementById('cp-subject').value,
+    body_html: restoreBlockedImages(editor.innerHTML.trim()),
+    body_text: editor.innerText.trim(),
+    draft_id: draftId,
+  };
+  const r = await apiCall('POST', '/draft', meta);
+  if (r?.ok) { draftId = r.draft_id || draftId; updateDraftUI(); setStatus(silent ? 'Draft auto-saved' : 'Draft saved'); }
+  else if (!silent) setStatus(r?.error || 'Draft save failed', true);
+}
+
+// Deletes the draft that autosave already wrote to the server for this compose session.
+async function discardDraftReq() {
+  if (!draftId) return;
+  const accountId = parseInt(document.getElementById('cp-from')?.value || 0);
+  if (!accountId) return;
+  await apiCall('POST', '/draft/discard', { account_id: accountId, draft_id: draftId });
+  draftId = ''; updateDraftUI();
+}
+
+async function discardDraftAndReset() {
+  await discardDraftReq();
+  setStatus('Draft discarded');
+}
+
+// ── Leaving the page with unsent work ───────────────────────────────────────
+document.getElementById('cp-back-link').addEventListener('click', e => {
+  if (dirty || draftId) {
+    e.preventDefault();
+    document.getElementById('cp-leave-confirm').style.display = 'flex';
+  }
+});
+document.getElementById('cp-leave-keep').onclick = () => { document.getElementById('cp-leave-confirm').style.display = 'none'; };
+document.getElementById('cp-leave-discard').onclick = async () => { await discardDraftReq(); location.href = '/'; };
+document.getElementById('cp-leave-save').onclick = async () => { await saveDraft(true); location.href = '/'; };
+window.addEventListener('beforeunload', e => {
+  if (dirty || draftId) { e.preventDefault(); e.returnValue = ''; }
+});
+
 // Init
-initTagField('cp-to-tags');
-initTagField('cp-cc-tags');
-loadAccounts();
-if (replyId) prefillReply();
-else if (forwardId) prefillForward();
+async function boot() {
+  initTagField('cp-to-tags');
+  initTagField('cp-cc-tags');
+  initTagField('cp-bcc-tags');
+  await Promise.all([loadAccounts(), loadRemoteImagePrefs()]);
+  if (replyId) await prefillReply();
+  else if (forwardId) await prefillForward();
+  else if (editDraftId) await prefillEditDraft();
+  startAutosave();
+}
+boot();
 </script>
 {{end}}

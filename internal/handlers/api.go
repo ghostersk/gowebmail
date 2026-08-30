@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -862,6 +864,176 @@ func (h *APIHandler) MoveMessage(w http.ResponseWriter, r *http.Request) {
 	h.writeJSON(w, map[string]bool{"ok": true})
 }
 
+// ---- Snooze ----
+// Local-only, like Labels — the message stays wherever it is on the server; snoozing just
+// hides it from normal folder views client-side-equivalent (via the DB query filter) until it
+// wakes.
+
+func (h *APIHandler) SnoozeMessage(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.GetUserID(r)
+	messageID := pathInt64(r, "id")
+	var req struct {
+		Until string `json:"until"` // RFC3339
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Until == "" {
+		h.writeError(w, http.StatusBadRequest, "until required")
+		return
+	}
+	until, err := time.Parse(time.RFC3339, req.Until)
+	if err != nil {
+		h.writeError(w, http.StatusBadRequest, "invalid until timestamp")
+		return
+	}
+	if err := h.db.SnoozeMessage(messageID, userID, until); err != nil {
+		h.writeError(w, http.StatusInternalServerError, "snooze failed")
+		return
+	}
+	h.writeJSON(w, map[string]bool{"ok": true})
+}
+
+func (h *APIHandler) UnsnoozeMessage(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.GetUserID(r)
+	messageID := pathInt64(r, "id")
+	if err := h.db.UnsnoozeMessage(messageID, userID); err != nil {
+		h.writeError(w, http.StatusInternalServerError, "unsnooze failed")
+		return
+	}
+	h.writeJSON(w, map[string]bool{"ok": true})
+}
+
+func (h *APIHandler) SnoozedMessages(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.GetUserID(r)
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	if page < 1 {
+		page = 1
+	}
+	pageSize, _ := strconv.Atoi(r.URL.Query().Get("page_size"))
+	if pageSize < 1 || pageSize > 200 {
+		pageSize = 50
+	}
+	result, err := h.db.ListSnoozedMessages(userID, page, pageSize)
+	if err != nil {
+		h.writeError(w, http.StatusInternalServerError, "failed to list snoozed")
+		return
+	}
+	h.writeJSON(w, result)
+}
+
+// ---- Send-later (scheduled sends) ----
+
+func (h *APIHandler) CreateScheduledSend(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.GetUserID(r)
+	var req struct {
+		models.ComposeRequest
+		SendAt string `json:"send_at"` // RFC3339
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.writeError(w, http.StatusBadRequest, "invalid request")
+		return
+	}
+	sendAt, err := time.Parse(time.RFC3339, req.SendAt)
+	if err != nil {
+		h.writeError(w, http.StatusBadRequest, "invalid send_at timestamp")
+		return
+	}
+	if !sendAt.After(time.Now()) {
+		h.writeError(w, http.StatusBadRequest, "send_at must be in the future")
+		return
+	}
+	if len(req.Attachments) > 0 {
+		h.writeError(w, http.StatusBadRequest, "scheduled sends don't support file attachments yet — forwarded messages (.eml) are fine")
+		return
+	}
+	account, err := h.db.GetAccount(req.AccountID)
+	if err != nil || account == nil || account.UserID != userID {
+		h.writeError(w, http.StatusBadRequest, "account not found")
+		return
+	}
+	id, err := h.db.CreateScheduledSend(&models.ScheduledSend{
+		UserID: userID, AccountID: req.AccountID,
+		To: req.To, CC: req.CC, BCC: req.BCC,
+		Subject: req.Subject, BodyHTML: req.BodyHTML, BodyText: req.BodyText,
+		ForwardFromIDs: req.ForwardFromIDs, SendAt: sendAt,
+	})
+	if err != nil {
+		h.writeError(w, http.StatusInternalServerError, "failed to schedule send")
+		return
+	}
+	h.writeJSON(w, map[string]interface{}{"ok": true, "id": id})
+}
+
+func (h *APIHandler) ListScheduledSends(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.GetUserID(r)
+	list, err := h.db.ListScheduledSends(userID)
+	if err != nil {
+		h.writeError(w, http.StatusInternalServerError, "failed to list scheduled sends")
+		return
+	}
+	if list == nil {
+		list = []*models.ScheduledSend{}
+	}
+	h.writeJSON(w, list)
+}
+
+func (h *APIHandler) CancelScheduledSend(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.GetUserID(r)
+	id := pathInt64(r, "id")
+	if err := h.db.DeleteScheduledSend(id, userID); err != nil {
+		h.writeError(w, http.StatusInternalServerError, "cancel failed")
+		return
+	}
+	h.writeJSON(w, map[string]bool{"ok": true})
+}
+
+// ProcessDueScheduledSends sends every scheduled message whose time has come. Called by a
+// ticker in main.go (not the syncer package, to avoid an import cycle: this needs
+// sendComposedMessage, which lives here in handlers).
+func (h *APIHandler) ProcessDueScheduledSends() {
+	due, err := h.db.ListDueScheduledSends()
+	if err != nil || len(due) == 0 {
+		return
+	}
+	for _, s := range due {
+		account, err := h.db.GetAccount(s.AccountID)
+		if err != nil || account == nil {
+			log.Printf("[scheduled-send] account %d not found for scheduled send %d, dropping", s.AccountID, s.ID)
+			h.db.DeleteScheduledSend(s.ID, 0)
+			continue
+		}
+		req := &models.ComposeRequest{
+			AccountID: s.AccountID, To: s.To, CC: s.CC, BCC: s.BCC,
+			Subject: s.Subject, BodyHTML: s.BodyHTML, BodyText: s.BodyText,
+			ForwardFromIDs: s.ForwardFromIDs,
+		}
+		for _, fid := range req.ForwardFromIDs {
+			raw, filename, ferr := h.fetchMessageRawEML(s.UserID, fid)
+			if ferr != nil {
+				continue
+			}
+			req.Attachments = append(req.Attachments, models.Attachment{
+				Filename: filename, ContentType: "message/rfc822", Data: raw,
+			})
+		}
+		if err := h.sendComposedMessage(s.UserID, account, req, nil); err != nil {
+			log.Printf("[scheduled-send] send failed for scheduled send %d: %v — will retry next sweep", s.ID, err)
+			continue
+		}
+		h.db.DeleteScheduledSend(s.ID, 0)
+	}
+}
+
+// WakeExpiredSnoozes clears snoozed_until on messages whose snooze has passed and refreshes
+// folder unread counts. Called by a ticker in main.go.
+func (h *APIHandler) WakeExpiredSnoozes() {
+	folderIDs, err := h.db.WakeExpiredSnoozes()
+	if err != nil || len(folderIDs) == 0 {
+		return
+	}
+	for _, fid := range folderIDs {
+		h.db.UpdateFolderCounts(fid)
+	}
+}
+
 func (h *APIHandler) DeleteMessage(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.GetUserID(r)
 	messageID := pathInt64(r, "id")
@@ -892,19 +1064,16 @@ func (h *APIHandler) DeleteMessage(w http.ResponseWriter, r *http.Request) {
 // ---- Send / Reply / Forward ----
 
 func (h *APIHandler) SendMessage(w http.ResponseWriter, r *http.Request) {
-	h.handleSend(w, r, "new")
+	h.handleSend(w, r)
 }
 func (h *APIHandler) ReplyMessage(w http.ResponseWriter, r *http.Request) {
-	h.handleSend(w, r, "reply")
+	h.handleSend(w, r)
 }
 func (h *APIHandler) ForwardMessage(w http.ResponseWriter, r *http.Request) {
-	h.handleSend(w, r, "forward")
-}
-func (h *APIHandler) ForwardAsAttachment(w http.ResponseWriter, r *http.Request) {
-	h.handleSend(w, r, "forward-attachment")
+	h.handleSend(w, r)
 }
 
-func (h *APIHandler) handleSend(w http.ResponseWriter, r *http.Request, mode string) {
+func (h *APIHandler) handleSend(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.GetUserID(r)
 
 	var req models.ComposeRequest
@@ -956,46 +1125,46 @@ func (h *APIHandler) handleSend(w http.ResponseWriter, r *http.Request, mode str
 		return
 	}
 
-	// Forward-as-attachment: fetch original message as EML and attach it
-	if mode == "forward-attachment" && req.ForwardFromID > 0 {
-		origMsg, _ := h.db.GetMessage(req.ForwardFromID, userID)
-		if origMsg != nil {
-			uid, folderPath, origAccount, iErr := h.db.GetMessageIMAPInfo(req.ForwardFromID, userID)
-			if iErr == nil && uid != 0 && origAccount != nil {
-				if c, cErr := email.Connect(context.Background(), origAccount); cErr == nil {
-					if raw, rErr := c.FetchRawByUID(folderPath, uid); rErr == nil {
-						safe := sanitizeFilename(origMsg.Subject)
-						if safe == "" {
-							safe = "message"
-						}
-						req.Attachments = append(req.Attachments, models.Attachment{
-							Filename:    safe + ".eml",
-							ContentType: "message/rfc822",
-							Data:        raw,
-						})
-					}
-					c.Close()
-				}
-			}
+	// Attach one or more original messages as .eml — independent of mode, so this works
+	// whether the user is composing new, replying, or forwarding.
+	for _, fid := range req.ForwardFromIDs {
+		raw, filename, ferr := h.fetchMessageRawEML(userID, fid)
+		if ferr != nil {
+			continue
 		}
+		req.Attachments = append(req.Attachments, models.Attachment{
+			Filename:    filename,
+			ContentType: "message/rfc822",
+			Data:        raw,
+		})
 	}
 
+	if err := h.sendComposedMessage(userID, account, &req, r); err != nil {
+		h.writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	h.writeJSON(w, map[string]bool{"ok": true})
+}
+
+// sendComposedMessage sends req on behalf of userID via account's provider (Graph API, JMAP,
+// or SMTP), triggering a post-send sync so the message appears in Sent Items. Shared by the
+// immediate send path (handleSend, r non-nil) and the scheduled-send background sweep
+// (processDueScheduledSends, r nil — there's no HTTP request to pull audit IP/UA from).
+func (h *APIHandler) sendComposedMessage(userID int64, account *models.EmailAccount, req *models.ComposeRequest, r *http.Request) error {
 	account = h.ensureAccountTokenFresh(account)
 
 	// Graph accounts (personal outlook.com) send via Graph API, not SMTP
 	if account.Provider == models.ProviderOutlookPersonal {
-		if err := graphpkg.New(account).SendMail(context.Background(), &req); err != nil {
+		if err := graphpkg.New(account).SendMail(context.Background(), req); err != nil {
 			log.Printf("Graph send failed account=%d user=%d: %v", req.AccountID, userID, err)
-			h.writeError(w, http.StatusBadGateway, err.Error())
-			return
+			return err
 		}
 		// Delay slightly so Microsoft has time to save to Sent Items before we sync
 		go func() {
 			time.Sleep(3 * time.Second)
 			h.syncer.TriggerAccountSync(account.ID)
 		}()
-		h.writeJSON(w, map[string]bool{"ok": true})
-		return
+		return nil
 	}
 
 	sendCtx, sendCancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -1004,17 +1173,19 @@ func (h *APIHandler) handleSend(w http.ResponseWriter, r *http.Request, mode str
 	if account.Provider == models.ProviderJMAP {
 		sendFn = email.SendMessageJMAP
 	}
-	if err := sendFn(sendCtx, account, &req, h.newSigner(userID)); err != nil {
+	if err := sendFn(sendCtx, account, req, h.newSigner(userID)); err != nil {
 		log.Printf("send failed account=%d user=%d: %v", req.AccountID, userID, err)
+		var ip, ua string
+		if r != nil {
+			ip, ua = middleware.ClientIP(r), r.UserAgent()
+		}
 		h.db.WriteAudit(&userID, models.AuditAppError,
-			fmt.Sprintf("send failed account:%d – %v", req.AccountID, err),
-			middleware.ClientIP(r), r.UserAgent())
-		h.writeError(w, http.StatusBadGateway, err.Error())
-		return
+			fmt.Sprintf("send failed account:%d – %v", req.AccountID, err), ip, ua)
+		return err
 	}
 	// Trigger immediate sync so the sent message appears in Sent Items
 	h.syncer.TriggerAccountSync(account.ID)
-	h.writeJSON(w, map[string]bool{"ok": true})
+	return nil
 }
 
 // ---- Folders ----
@@ -1338,23 +1509,33 @@ func (h *APIHandler) StarredMessages(w http.ResponseWriter, r *http.Request) {
 func (h *APIHandler) DownloadEML(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.GetUserID(r)
 	messageID := pathInt64(r, "id")
-	msg, err := h.db.GetMessage(messageID, userID)
-	if err != nil || msg == nil {
+	raw, filename, err := h.fetchMessageRawEML(userID, messageID)
+	if err != nil {
 		h.writeError(w, http.StatusNotFound, "message not found")
 		return
 	}
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
+	w.Header().Set("Content-Type", "message/rfc822")
+	w.Write(raw)
+}
 
-	// Try to fetch raw from IMAP first
+// fetchMessageRawEML returns a message as raw RFC 822 bytes plus a safe "<subject>.eml"
+// filename — fetched live from IMAP when possible (exact original bytes), falling back to
+// reconstructing a MIME message from the stored fields for messages with no live IMAP
+// backing (e.g. synced via Graph/JMAP). Shared by DownloadEML and forward-as-attachment.
+func (h *APIHandler) fetchMessageRawEML(userID, messageID int64) ([]byte, string, error) {
+	msg, err := h.db.GetMessage(messageID, userID)
+	if err != nil || msg == nil {
+		return nil, "", fmt.Errorf("message not found")
+	}
+	filename := sanitizeFilename(msg.Subject) + ".eml"
+
 	uid, folderPath, account, iErr := h.db.GetMessageIMAPInfo(messageID, userID)
 	if iErr == nil && uid != 0 && account != nil {
 		if c, cErr := email.Connect(context.Background(), account); cErr == nil {
 			defer c.Close()
 			if raw, rErr := c.FetchRawByUID(folderPath, uid); rErr == nil {
-				safe := sanitizeFilename(msg.Subject) + ".eml"
-				w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, safe))
-				w.Header().Set("Content-Type", "message/rfc822")
-				w.Write(raw)
-				return
+				return raw, filename, nil
 			}
 		}
 	}
@@ -1388,10 +1569,75 @@ func (h *APIHandler) DownloadEML(w http.ResponseWriter, r *http.Request) {
 		buf.WriteString("Content-Type: text/plain; charset=utf-8\r\n\r\n")
 		buf.WriteString(msg.BodyText)
 	}
-	safe := sanitizeFilename(msg.Subject) + ".eml"
-	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, safe))
-	w.Header().Set("Content-Type", "message/rfc822")
-	w.Write([]byte(buf.String()))
+	return []byte(buf.String()), filename, nil
+}
+
+// ExportFolder streams every message in a folder as a single download — either a zip of
+// .eml files (default) or an mbox file — via ?format=zip|mbox.
+func (h *APIHandler) ExportFolder(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.GetUserID(r)
+	folderID := pathInt64(r, "id")
+	format := r.URL.Query().Get("format")
+
+	folder, err := h.db.GetFolderByID(folderID)
+	if err != nil || folder == nil {
+		h.writeError(w, http.StatusNotFound, "folder not found")
+		return
+	}
+	ids, err := h.db.ListMessageIDsByFolder(folderID, userID)
+	if err != nil {
+		h.writeError(w, http.StatusInternalServerError, "failed to list messages")
+		return
+	}
+	if len(ids) == 0 {
+		h.writeError(w, http.StatusBadRequest, "folder is empty")
+		return
+	}
+	base := sanitizeFilename(folder.Name)
+
+	if format == "mbox" {
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.mbox"`, base))
+		w.Header().Set("Content-Type", "application/mbox")
+		for _, id := range ids {
+			raw, _, err := h.fetchMessageRawEML(userID, id)
+			if err != nil {
+				continue
+			}
+			writeMboxEntry(w, raw)
+		}
+		return
+	}
+
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.zip"`, base))
+	w.Header().Set("Content-Type", "application/zip")
+	zw := zip.NewWriter(w)
+	defer zw.Close()
+	for _, id := range ids {
+		raw, filename, err := h.fetchMessageRawEML(userID, id)
+		if err != nil {
+			continue
+		}
+		fw, err := zw.Create(fmt.Sprintf("%d-%s", id, filename))
+		if err != nil {
+			continue
+		}
+		fw.Write(raw)
+	}
+}
+
+// writeMboxEntry appends one message to an mboxrd-format stream: a synthetic "From " envelope
+// line, the raw message with any body line starting with "From " escaped by a leading '>'
+// (the standard mboxrd quoting rule so mail clients don't mistake it for the next envelope).
+func writeMboxEntry(w io.Writer, raw []byte) {
+	fmt.Fprintf(w, "From MAILER-DAEMON %s\n", time.Now().UTC().Format("Mon Jan _2 15:04:05 2006"))
+	for _, line := range bytes.Split(raw, []byte("\n")) {
+		if bytes.HasPrefix(line, []byte("From ")) {
+			w.Write([]byte(">"))
+		}
+		w.Write(line)
+		w.Write([]byte("\n"))
+	}
+	w.Write([]byte("\n"))
 }
 
 func sanitizeFilename(s string) string {
@@ -1439,6 +1685,20 @@ func (h *APIHandler) AddRemoteContentWhitelist(w http.ResponseWriter, r *http.Re
 	}
 	if err := h.db.AddRemoteContentWhitelist(userID, req.Sender); err != nil {
 		h.writeError(w, http.StatusInternalServerError, "failed to add to whitelist")
+		return
+	}
+	h.writeJSON(w, map[string]bool{"ok": true})
+}
+
+func (h *APIHandler) DeleteRemoteContentWhitelist(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.GetUserID(r)
+	sender := r.URL.Query().Get("sender")
+	if sender == "" {
+		h.writeError(w, http.StatusBadRequest, "sender required")
+		return
+	}
+	if err := h.db.DeleteRemoteContentWhitelist(userID, sender); err != nil {
+		h.writeError(w, http.StatusInternalServerError, "failed to remove from whitelist")
 		return
 	}
 	h.writeJSON(w, map[string]bool{"ok": true})
@@ -1658,7 +1918,59 @@ func (h *APIHandler) MarkFolderAllRead(w http.ResponseWriter, r *http.Request) {
 	h.writeJSON(w, map[string]interface{}{"ok": true, "marked": len(ops)})
 }
 
-// ---- Save draft (IMAP APPEND to Drafts) ----
+// ---- Save draft ----
+
+// draftUIDFromID parses the IMAP-path DraftID string (a decimal UID) back to a uint32.
+// A blank or invalid id just means "no previous draft" (uid 0 — AppendToDrafts appends
+// fresh rather than trying to replace something that doesn't exist).
+func draftUIDFromID(id string) uint32 {
+	n, _ := strconv.ParseUint(id, 10, 32)
+	return uint32(n)
+}
+
+// upsertLocalDraft writes the just-saved draft into the local message cache immediately,
+// instead of leaving the UI's Drafts folder showing nothing until the async background sync
+// (TriggerAccountSync, below) completes its round trip to the provider — which is what made
+// a successful save look like it silently did nothing. oldID is the previous draft id this
+// save replaced (its stale local row, if any, is removed — for IMAP/JMAP a resave gets a new
+// id, so the old row would otherwise sit as a duplicate until the next full sync's purge
+// step). Best-effort: any failure here just means the real sync fills it in a bit later.
+func (h *APIHandler) upsertLocalDraft(account *models.EmailAccount, req *models.ComposeRequest, oldID, newID string) {
+	folder, err := h.db.GetFolderByType(account.ID, "drafts")
+	if err != nil || folder == nil {
+		return
+	}
+	if oldID != "" && oldID != newID {
+		_ = h.db.DeleteMessageByRemoteUID(folder.ID, oldID)
+	}
+	if newID != "" {
+		_ = h.db.UpsertMessage(&models.Message{
+			AccountID: account.ID, FolderID: folder.ID, RemoteUID: newID,
+			Subject: req.Subject, FromName: account.DisplayName, FromEmail: account.EmailAddress,
+			ToList: strings.Join(req.To, ", "), CCList: strings.Join(req.CC, ", "), BCCList: strings.Join(req.BCC, ", "),
+			BodyText: req.BodyText, BodyHTML: req.BodyHTML,
+			Date: time.Now(), IsRead: true, IsDraft: true,
+		})
+	}
+	// Recompute the sidebar's folder-count badge from what's actually in the local table now,
+	// rather than leaving it at whatever the last full background sync happened to see — the
+	// real sync will overwrite this with the server's authoritative count shortly after anyway.
+	h.db.UpdateFolderCounts(folder.ID)
+}
+
+// deleteLocalDraft removes the local cached copy of a discarded draft immediately, mirroring
+// upsertLocalDraft — otherwise "Discard draft" looks like it did nothing until the next sync.
+func (h *APIHandler) deleteLocalDraft(account *models.EmailAccount, id string) {
+	if id == "" {
+		return
+	}
+	folder, err := h.db.GetFolderByType(account.ID, "drafts")
+	if err != nil || folder == nil {
+		return
+	}
+	_ = h.db.DeleteMessageByRemoteUID(folder.ID, id)
+	h.db.UpdateFolderCounts(folder.ID)
+}
 
 func (h *APIHandler) SaveDraft(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.GetUserID(r)
@@ -1680,50 +1992,89 @@ func (h *APIHandler) SaveDraft(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, http.StatusBadRequest, "account not found")
 		return
 	}
+	account = h.ensureAccountTokenFresh(account)
+	ctx := context.Background()
 
-	// Build the MIME message bytes
-	var buf strings.Builder
-	buf.WriteString("From: " + account.EmailAddress + "\r\n")
-	if len(req.To) > 0 {
-		buf.WriteString("To: " + strings.Join(req.To, ", ") + "\r\n")
+	// Graph (personal outlook.com) and JMAP accounts have no real IMAP Drafts folder to
+	// APPEND to — email.Connect used to be called unconditionally here and simply errored
+	// out for both, so autosave silently failed for every non-IMAP account. Dispatch by
+	// provider instead, same as sendComposedMessage.
+	switch account.Provider {
+	case models.ProviderOutlookPersonal:
+		gc := graphpkg.New(account)
+		var draftID string
+		if req.DraftID != "" {
+			draftID = req.DraftID
+			if err := gc.UpdateDraft(ctx, draftID, &req); err != nil {
+				h.writeError(w, http.StatusBadGateway, "save failed: "+err.Error())
+				return
+			}
+		} else {
+			draftID, err = gc.CreateDraft(ctx, &req)
+			if err != nil {
+				h.writeError(w, http.StatusBadGateway, "save failed: "+err.Error())
+				return
+			}
+		}
+		h.upsertLocalDraft(account, &req, req.DraftID, draftID)
+		h.syncer.TriggerAccountSync(account.ID)
+		h.writeJSON(w, map[string]interface{}{"ok": true, "draft_id": draftID})
+		return
+	case models.ProviderJMAP:
+		newID, err := email.SaveDraftJMAP(ctx, account, &req, req.DraftID)
+		if err != nil {
+			h.writeError(w, http.StatusBadGateway, "save failed: "+err.Error())
+			return
+		}
+		h.upsertLocalDraft(account, &req, req.DraftID, newID)
+		h.syncer.TriggerAccountSync(account.ID)
+		h.writeJSON(w, map[string]interface{}{"ok": true, "draft_id": newID})
+		return
 	}
-	buf.WriteString("Subject: " + req.Subject + "\r\n")
-	buf.WriteString("MIME-Version: 1.0\r\n")
-	buf.WriteString("Content-Type: text/html; charset=utf-8\r\n\r\n")
-	buf.WriteString(req.BodyHTML)
 
-	raw := []byte(buf.String())
+	raw, err := email.BuildRawMessage(account, &req, nil)
+	if err != nil {
+		h.writeError(w, http.StatusInternalServerError, "build message failed: "+err.Error())
+		return
+	}
 
-	c, err := email.Connect(context.Background(), account)
+	c, err := email.Connect(ctx, account)
 	if err != nil {
 		h.writeError(w, http.StatusBadGateway, "could not connect to mailbox")
 		return
 	}
 	defer c.Close()
-	draftsFolder, newUID, err := c.AppendToDrafts(raw, req.DraftUID)
+	draftsFolder, newUID, err := c.AppendToDrafts(raw, draftUIDFromID(req.DraftID))
 	if err != nil {
 		h.writeError(w, http.StatusBadGateway, "save failed: "+err.Error())
 		return
 	}
-	if draftsFolder != "" {
-		// Trigger a sync of the drafts folder to pick up the saved draft
-		h.syncer.TriggerAccountSync(account.ID)
+	if draftsFolder == "" {
+		h.writeError(w, http.StatusBadGateway, "no Drafts folder found for this account")
+		return
 	}
 
-	h.writeJSON(w, map[string]interface{}{"ok": true, "draft_uid": newUID})
+	draftID := ""
+	if newUID != 0 {
+		draftID = strconv.FormatUint(uint64(newUID), 10)
+	}
+	h.upsertLocalDraft(account, &req, req.DraftID, draftID)
+	// Trigger a sync of the drafts folder to reconcile with the server's real state
+	h.syncer.TriggerAccountSync(account.ID)
+
+	h.writeJSON(w, map[string]interface{}{"ok": true, "draft_id": draftID})
 }
 
-// DiscardDraft deletes a previously-autosaved draft (identified by its IMAP UID, returned
-// from an earlier SaveDraft call) from the account's Drafts folder — used when the user
-// closes a compose panel and chooses not to keep the draft that autosave already wrote to
-// the server.
+// DiscardDraft deletes a previously-autosaved draft (identified by the id returned from an
+// earlier SaveDraft call) — used when the user closes a compose panel and chooses not to
+// keep the draft that autosave already wrote to the server.
 func (h *APIHandler) DiscardDraft(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.GetUserID(r)
 	var req struct {
 		AccountID int64  `json:"account_id"`
-		DraftUID  uint32 `json:"draft_uid"`
+		DraftID   string `json:"draft_id"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.DraftUID == 0 {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.DraftID == "" {
 		h.writeError(w, http.StatusBadRequest, "invalid request")
 		return
 	}
@@ -1732,16 +2083,39 @@ func (h *APIHandler) DiscardDraft(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, http.StatusBadRequest, "account not found")
 		return
 	}
-	c, err := email.Connect(context.Background(), account)
+	account = h.ensureAccountTokenFresh(account)
+	ctx := context.Background()
+
+	switch account.Provider {
+	case models.ProviderOutlookPersonal:
+		if err := graphpkg.New(account).DeleteDraft(ctx, req.DraftID); err != nil {
+			h.writeError(w, http.StatusBadGateway, "delete failed: "+err.Error())
+			return
+		}
+		h.deleteLocalDraft(account, req.DraftID)
+		h.writeJSON(w, map[string]bool{"ok": true})
+		return
+	case models.ProviderJMAP:
+		if err := email.DeleteDraftJMAP(ctx, account, req.DraftID); err != nil {
+			h.writeError(w, http.StatusBadGateway, "delete failed: "+err.Error())
+			return
+		}
+		h.deleteLocalDraft(account, req.DraftID)
+		h.writeJSON(w, map[string]bool{"ok": true})
+		return
+	}
+
+	c, err := email.Connect(ctx, account)
 	if err != nil {
 		h.writeError(w, http.StatusBadGateway, "could not connect to mailbox")
 		return
 	}
 	defer c.Close()
-	if err := c.DiscardDraftUID(req.DraftUID); err != nil {
+	if err := c.DiscardDraftUID(draftUIDFromID(req.DraftID)); err != nil {
 		h.writeError(w, http.StatusBadGateway, "delete failed: "+err.Error())
 		return
 	}
+	h.deleteLocalDraft(account, req.DraftID)
 	h.syncer.TriggerAccountSync(account.ID)
 	h.writeJSON(w, map[string]bool{"ok": true})
 }

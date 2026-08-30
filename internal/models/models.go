@@ -197,6 +197,7 @@ type Message struct {
 	IsStarred   bool      `json:"is_starred"`
 	IsDraft     bool      `json:"is_draft"`
 	HasAttachment bool    `json:"has_attachment"`
+	SnoozedUntil *time.Time `json:"snoozed_until,omitempty"`
 	Attachments []Attachment `json:"attachments,omitempty"`
 	Labels      []Label   `json:"labels,omitempty"`
 	CreatedAt   time.Time `json:"created_at"`
@@ -218,8 +219,27 @@ type MessageSummary struct {
 	IsRead        bool      `json:"is_read"`
 	IsStarred     bool      `json:"is_starred"`
 	HasAttachment bool      `json:"has_attachment"`
+	SnoozedUntil  *time.Time `json:"snoozed_until,omitempty"`
 	Size          int64     `json:"size,omitempty"` // approximate; only populated by search results
 	Labels        []Label   `json:"labels,omitempty"`
+}
+
+// ScheduledSend is a fully-composed message held until SendAt, delivered by the background
+// sweep via the same send path as an immediate send. No raw file attachments in v1 — only
+// forwarded-message .eml attachments (ForwardFromIDs).
+type ScheduledSend struct {
+	ID             int64     `json:"id"`
+	UserID         int64     `json:"user_id"`
+	AccountID      int64     `json:"account_id"`
+	To             []string  `json:"to"`
+	CC             []string  `json:"cc,omitempty"`
+	BCC            []string  `json:"bcc,omitempty"`
+	Subject        string    `json:"subject"`
+	BodyHTML       string    `json:"body_html"`
+	BodyText       string    `json:"body_text"`
+	ForwardFromIDs []int64   `json:"forward_from_ids,omitempty"`
+	SendAt         time.Time `json:"send_at"`
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 // ---- Compose ----
@@ -234,14 +254,18 @@ type ComposeRequest struct {
 	BodyHTML    string   `json:"body_html"`
 	BodyText    string   `json:"body_text"`
 	// For reply/forward
-	InReplyToID   int64  `json:"in_reply_to_id,omitempty"`
-	ForwardFromID int64  `json:"forward_from_id,omitempty"`
+	InReplyToID int64 `json:"in_reply_to_id,omitempty"`
+	// ForwardFromIDs: each message here is fetched as a raw .eml and attached to the outgoing
+	// message — independent of mode (new/reply/forward), so a user can attach one or more
+	// original emails to any compose session, not just a dedicated "forward as attachment" one.
+	ForwardFromIDs []int64 `json:"forward_from_ids,omitempty"`
 	// Attachments: populated from multipart/form-data or inline base64
-	Attachments   []Attachment `json:"attachments,omitempty"`
-	// DraftUID is the IMAP UID of this compose session's previously-autosaved draft (0 if
-	// never saved). A resave deletes that copy before appending the new one, so repeated
-	// autosaves replace the draft in place instead of piling up duplicates.
-	DraftUID uint32 `json:"draft_uid,omitempty"`
+	Attachments []Attachment `json:"attachments,omitempty"`
+	// DraftID identifies this compose session's previously-autosaved draft ("" if never
+	// saved) — an IMAP UID, Graph message id, or JMAP email id depending on the account's
+	// provider, opaque to the caller. A resave replaces that copy in place (delete-then-
+	// recreate for IMAP/JMAP, PATCH for Graph) instead of piling up duplicates.
+	DraftID string `json:"draft_id,omitempty"`
 }
 
 // ---- Search ----

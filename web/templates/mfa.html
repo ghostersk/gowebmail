@@ -9,10 +9,10 @@
   </div>
   <h1>Two-Factor Auth</h1>
   <p class="subtitle">Enter the 6-digit code from your authenticator app</p>
-  <div id="err" class="alert error" style="display:none"></div>
+  <div id="err" class="alert error" role="alert" style="display:none"></div>
   <form method="POST" action="/auth/mfa/verify">
-    <div class="field"><label>Verification Code</label>
-      <input type="text" name="code" placeholder="000000" maxlength="6" inputmode="numeric" autocomplete="one-time-code" autofocus required
+    <div class="field"><label for="mfa-code">Verification Code</label>
+      <input id="mfa-code" type="text" name="code" placeholder="000000" maxlength="6" inputmode="numeric" autocomplete="one-time-code" autofocus required
              style="font-size:22px;letter-spacing:.3em;text-align:center">
     </div>
     <button class="btn-primary" type="submit" style="width:100%;padding:13px;font-size:15px;margin-top:8px">Verify</button>

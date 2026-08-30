@@ -30,6 +30,10 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'DM San
 .toast.error{border-color:rgba(239,68,68,.4);background:rgba(239,68,68,.08);color:#fca5a5}
 .toast.warn{border-color:rgba(245,158,11,.4);background:rgba(245,158,11,.08);color:#fde68a}
 @keyframes slideIn{from{transform:translateX(20px);opacity:0}to{transform:translateX(0);opacity:1}}
+.toast-undo{display:flex;align-items:center;gap:14px;max-width:none}
+.toast-undo-btn{background:none;border:none;color:var(--accent);font-weight:700;font-size:13px;
+  cursor:pointer;flex-shrink:0;padding:0}
+.toast-undo-btn:hover{text-decoration:underline}
 
 /* ---- Context menu ---- */
 .ctx-menu{position:fixed;z-index:200;background:var(--surface2);border:1px solid var(--border2);
@@ -265,13 +269,14 @@ body.app-page{overflow:hidden}
 .message-item.unread.active{background:var(--accent-dim)}
 .message-item.unread.active::before{display:none}
 .msg-unread-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0;background:transparent}
-.message-item.unread .msg-unread-dot{background:var(--accent);box-shadow:0 0 0 2px var(--accent-glow)}
+.message-item.unread .msg-unread-dot,.thread-sibling-row.unread .msg-unread-dot{background:var(--accent);box-shadow:0 0 0 2px var(--accent-glow)}
 /* Compact 2-line row (default): sender+date, then subject–preview with trailing icons */
 .msg-top{display:flex;align-items:center;gap:6px;margin-bottom:1px}
 .msg-date{font-size:11px;color:var(--muted);flex-shrink:0}
 .msg-line2{display:flex;align-items:center;gap:6px}
 .msg-text{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;line-height:1.4}
 .msg-subject{color:var(--text2)}
+.msg-thread-count{color:var(--muted);font-size:11px;font-weight:600}
 .msg-preview{color:var(--muted)}
 .msg-dot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
 .msg-icons{display:flex;align-items:center;gap:4px;flex-shrink:0}
@@ -491,6 +496,19 @@ body.admin-page{overflow:auto;background:var(--bg)}
 .attachment-chip:hover{background:var(--border2)}
 .attachments-bar{display:flex;align-items:center;flex-wrap:wrap;gap:6px;
   padding:8px 14px;border-bottom:1px solid var(--border)}
+.thread-btn-wrap{position:relative;display:inline-flex;align-items:center}
+.thread-dropdown{position:absolute;top:calc(100% + 6px);left:0;z-index:250;
+  background:var(--surface2);border:1px solid var(--border2);border-radius:8px;
+  box-shadow:0 8px 28px rgba(0,0,0,.5);min-width:260px;max-width:360px;
+  max-height:320px;overflow-y:auto;padding:8px}
+.thread-siblings-title{font-size:10px;text-transform:uppercase;letter-spacing:.6px;
+  color:var(--muted);margin-bottom:6px}
+.thread-sibling-row{display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:5px;
+  cursor:pointer;font-size:12px;color:var(--text2)}
+.thread-sibling-row:hover{background:var(--surface3)}
+.thread-sibling-row.active{background:var(--accent-dim);color:var(--accent)}
+.thread-sibling-from{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.thread-sibling-date{color:var(--muted);font-size:11px;flex-shrink:0}
 /* Drag-and-drop compose overlay */
 .compose-dialog.drag-over{outline:3px dashed var(--accent);outline-offset:-4px;}
 
@@ -508,6 +526,24 @@ body.admin-page{overflow:auto;background:var(--bg)}
 .tag-remove:hover{color:var(--text)}
 .tag-input{background:none;border:none;outline:none;color:var(--text);font-size:13px;
   font-family:inherit;min-width:80px;flex:1;padding:1px 0;pointer-events:all;cursor:text}
+.compose-tag-field{position:relative}
+.contact-suggest{position:absolute;top:100%;left:12px;right:12px;z-index:50;
+  background:var(--surface2);border:1px solid var(--border2);border-radius:8px;
+  box-shadow:0 8px 24px rgba(0,0,0,.25);overflow:hidden;margin-top:2px}
+.contact-suggest-row{display:flex;align-items:center;gap:8px;padding:7px 10px;
+  cursor:pointer;font-size:12px}
+.contact-suggest-row:hover,.contact-suggest-row.active{background:var(--surface3)}
+.contact-suggest-name{color:var(--text);flex-shrink:0;max-width:45%;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
+.contact-suggest-email{color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* ── Date/time presets (snooze / send later) ─────────────────────── */
+.datetime-presets{display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap}
+.datetime-preset-btn{padding:5px 10px;background:var(--surface3);border:1px solid var(--border2);
+  border-radius:14px;color:var(--text2);font-size:12px;cursor:pointer;font-family:inherit}
+.datetime-preset-btn:hover{background:var(--surface2);color:var(--text)}
+#inline-datetime-input{width:100%;padding:7px 9px;background:var(--surface3);border:1px solid var(--border2);
+  border-radius:6px;color:var(--text);font-family:inherit;font-size:13px}
 
 /* ── Settings: connected-accounts list (Accounts tab) ──────────── */
 .acct-row{display:flex;align-items:center;gap:8px;padding:9px 8px;border-radius:6px;

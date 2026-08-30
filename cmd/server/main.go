@@ -219,12 +219,15 @@ func main() {
 	api.HandleFunc("/messages/{id:[0-9]+}/read", h.API.MarkRead).Methods("PUT")
 	api.HandleFunc("/messages/{id:[0-9]+}/star", h.API.ToggleStar).Methods("PUT")
 	api.HandleFunc("/messages/{id:[0-9]+}/move", h.API.MoveMessage).Methods("PUT")
+	api.HandleFunc("/messages/{id:[0-9]+}/snooze", h.API.SnoozeMessage).Methods("PUT")
+	api.HandleFunc("/messages/{id:[0-9]+}/snooze", h.API.UnsnoozeMessage).Methods("DELETE")
 	api.HandleFunc("/messages/{id:[0-9]+}/headers", h.API.GetMessageHeaders).Methods("GET")
 	api.HandleFunc("/messages/{id:[0-9]+}/download.eml", h.API.DownloadEML).Methods("GET")
 	api.HandleFunc("/messages/{id:[0-9]+}/attachments", h.API.ListAttachments).Methods("GET")
 	api.HandleFunc("/messages/{id:[0-9]+}/attachments/{att_id:[0-9]+}", h.API.DownloadAttachment).Methods("GET")
 	api.HandleFunc("/messages/{id:[0-9]+}", h.API.DeleteMessage).Methods("DELETE")
 	api.HandleFunc("/messages/starred", h.API.StarredMessages).Methods("GET")
+	api.HandleFunc("/messages/snoozed", h.API.SnoozedMessages).Methods("GET")
 	api.HandleFunc("/messages/by-label/{id:[0-9]+}", h.API.MessagesByLabel).Methods("GET")
 	api.HandleFunc("/messages/{id:[0-9]+}/labels/{label_id:[0-9]+}", h.API.AssignLabel).Methods("POST")
 	api.HandleFunc("/messages/{id:[0-9]+}/labels/{label_id:[0-9]+}", h.API.UnassignLabel).Methods("DELETE")
@@ -236,14 +239,17 @@ func main() {
 	// Remote content whitelist
 	api.HandleFunc("/remote-content-whitelist", h.API.GetRemoteContentWhitelist).Methods("GET")
 	api.HandleFunc("/remote-content-whitelist", h.API.AddRemoteContentWhitelist).Methods("POST")
+	api.HandleFunc("/remote-content-whitelist", h.API.DeleteRemoteContentWhitelist).Methods("DELETE")
 
 	// Send
 	api.HandleFunc("/send", h.API.SendMessage).Methods("POST")
 	api.HandleFunc("/reply", h.API.ReplyMessage).Methods("POST")
 	api.HandleFunc("/forward", h.API.ForwardMessage).Methods("POST")
-	api.HandleFunc("/forward-attachment", h.API.ForwardAsAttachment).Methods("POST")
 	api.HandleFunc("/draft", h.API.SaveDraft).Methods("POST")
 	api.HandleFunc("/draft/discard", h.API.DiscardDraft).Methods("POST")
+	api.HandleFunc("/send-later", h.API.CreateScheduledSend).Methods("POST")
+	api.HandleFunc("/scheduled-sends", h.API.ListScheduledSends).Methods("GET")
+	api.HandleFunc("/scheduled-sends/{id:[0-9]+}", h.API.CancelScheduledSend).Methods("DELETE")
 
 	// Folders
 	api.HandleFunc("/folders", h.API.ListFolders).Methods("GET")
@@ -254,6 +260,7 @@ func main() {
 	api.HandleFunc("/folders/{id:[0-9]+}/move-to/{toId:[0-9]+}", h.API.MoveFolderContents).Methods("POST")
 	api.HandleFunc("/folders/{id:[0-9]+}/empty", h.API.EmptyFolder).Methods("POST")
 	api.HandleFunc("/folders/{id:[0-9]+}/mark-all-read", h.API.MarkFolderAllRead).Methods("POST")
+	api.HandleFunc("/folders/{id:[0-9]+}/export", h.API.ExportFolder).Methods("GET")
 	api.HandleFunc("/folders/{id:[0-9]+}", h.API.DeleteFolder).Methods("DELETE")
 	api.HandleFunc("/accounts/{account_id:[0-9]+}/enable-all-sync", h.API.EnableAllFolderSync).Methods("POST")
 	api.HandleFunc("/accounts/{account_id:[0-9]+}/folders", h.API.CreateFolder).Methods("POST")
@@ -347,6 +354,16 @@ func main() {
 		defer ticker.Stop()
 		for range ticker.C {
 			database.PurgeExpiredBlocks()
+		}
+	}()
+
+	// Deliver due scheduled sends and wake expired message snoozes
+	go func() {
+		ticker := time.NewTicker(1 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			h.API.ProcessDueScheduledSends()
+			h.API.WakeExpiredSnoozes()
 		}
 	}()
 

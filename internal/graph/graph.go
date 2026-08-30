@@ -412,6 +412,67 @@ func (c *Client) SendMail(ctx context.Context, req *models.ComposeRequest) error
 	return nil
 }
 
+func (c *Client) post(ctx context.Context, path string, body map[string]interface{}, out interface{}) error {
+	b, _ := json.Marshal(body)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+path, strings.NewReader(string(b)))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		errBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("graph POST %s returned %d: %s", path, resp.StatusCode, string(errBody))
+	}
+	if out == nil {
+		return nil
+	}
+	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+func draftBody(req *models.ComposeRequest) map[string]interface{} {
+	body := map[string]string{"contentType": "HTML", "content": req.BodyHTML}
+	if req.BodyHTML == "" {
+		body["contentType"] = "Text"
+		body["content"] = req.BodyText
+	}
+	return map[string]interface{}{
+		"subject":       req.Subject,
+		"body":          body,
+		"toRecipients":  graphRecipients(req.To),
+		"ccRecipients":  graphRecipients(req.CC),
+		"bccRecipients": graphRecipients(req.BCC),
+	}
+}
+
+// CreateDraft creates a new draft message (POST /me/messages, which — unlike /sendMail —
+// files into Drafts instead of sending) and returns its Graph message id.
+func (c *Client) CreateDraft(ctx context.Context, req *models.ComposeRequest) (string, error) {
+	var out struct {
+		ID string `json:"id"`
+	}
+	if err := c.post(ctx, "/messages", draftBody(req), &out); err != nil {
+		return "", err
+	}
+	return out.ID, nil
+}
+
+// UpdateDraft overwrites an existing draft's subject/body/recipients in place.
+func (c *Client) UpdateDraft(ctx context.Context, draftID string, req *models.ComposeRequest) error {
+	return c.patch(ctx, "/messages/"+draftID, draftBody(req))
+}
+
+// DeleteDraft deletes a draft message by id — used when the user closes a compose panel and
+// chooses not to keep the draft that autosave already wrote to the server.
+func (c *Client) DeleteDraft(ctx context.Context, draftID string) error {
+	return c.deleteReq(ctx, "/messages/"+draftID)
+}
+
 func graphRecipients(addrs []string) []map[string]interface{} {
 	result := []map[string]interface{}{}
 	for _, a := range addrs {
