@@ -1593,6 +1593,25 @@ func (c *Client) ListAllUIDs(mailboxName string) ([]uint32, error) {
 	return uids, nil
 }
 
+// FetchByUIDs fetches specific messages by UID, regardless of the incremental last_seen_uid
+// cursor — used by the sync reconciliation pass (see syncer.syncFolder) to recover messages
+// that exist on the server but are missing from the local cache, so a local-only data loss
+// (from any cause) self-heals on the next sync instead of leaving that message permanently
+// unreachable (incremental fetch only ever asks for UIDs newer than what it last saw).
+func (c *Client) FetchByUIDs(mailboxName string, uids []uint32) ([]*gomailModels.Message, error) {
+	if len(uids) == 0 {
+		return nil, nil
+	}
+	if _, err := c.imap.Select(mailboxName, true); err != nil {
+		return nil, fmt.Errorf("select %s: %w", mailboxName, err)
+	}
+	seqSet := new(imap.SeqSet)
+	for _, uid := range uids {
+		seqSet.AddNum(uid)
+	}
+	return c.fetchByUIDSet(seqSet)
+}
+
 // FetchNewMessages fetches only messages with UID > afterUID (incremental).
 func (c *Client) FetchNewMessages(mailboxName string, afterUID uint32) ([]*gomailModels.Message, error) {
 	mbox, err := c.imap.Select(mailboxName, true)

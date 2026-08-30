@@ -1524,6 +1524,22 @@ function isDraftFolder(folderId) {
 function isSentFolderView() {
   return S.folders?.find(f=>f.id===S.currentFolder)?.folder_type==='sent';
 }
+function isSpamFolderView() {
+  return S.folders?.find(f=>f.id===S.currentFolder)?.folder_type==='spam';
+}
+
+// Moves the message to its account's Spam folder and adds the sender to the Settings >
+// Security > Spam Block list, so future mail from them is auto-filed to Spam at sync time
+// too (see IsSpamBlocked call sites in the syncer) — not just this one message.
+async function markAsSpam(msgId) {
+  const msg = (S.currentMessage?.id===msgId) ? S.currentMessage : S.messages.find(m=>m.id===msgId);
+  if (!msg) return;
+  const spamFolder = S.folders.find(f=>f.account_id===msg.account_id && f.folder_type==='spam');
+  if (!spamFolder) { toast('No Spam folder found for this account','error'); return; }
+  if (msg.from_email) await api('POST','/spam-block',{sender:msg.from_email});
+  await moveMessage(msgId, spamFolder.id, true);
+  toast('Marked as spam — future mail from '+(msg.from_email||'this sender')+' will be blocked too','success');
+}
 function resumeDraft(msg) {
   const toList=(msg.to||'').split(',').map(s=>s.trim()).filter(Boolean);
   const ccList=(msg.cc||'').split(',').map(s=>s.trim()).filter(Boolean);
@@ -1772,6 +1788,7 @@ function renderMessageDetail(msg, showRemoteContent) {
       <button class="action-btn" onclick="${S.currentFolder==='snoozed'?'unsnoozeMessage':'snoozeMessage'}(${msg.id})">⏰ ${S.currentFolder==='snoozed'?'Unsnooze':'Snooze'}</button>
       <button class="action-btn" onclick="showMessageHeaders(${msg.id})">⋮ Headers</button>
       <button class="action-btn" onclick="downloadEML(${msg.id})">⬇ Download</button>
+      ${(isSentFolderView()||isSpamFolderView())?'':`<button class="action-btn" onclick="markAsSpam(${msg.id})" title="Move to Spam and block this sender">🚫 Mark as Spam</button>`}
       <button class="action-btn danger" onclick="deleteMessage(${msg.id})">🗑 Delete</button>
     </div>
     ${attachHtml}
@@ -1906,6 +1923,7 @@ function showMessageMenu(e, id) {
     <div class="ctx-item" onclick="showMessageHeaders(${id});closeMenu()">⋮ View headers</div>
     <div class="ctx-item" onclick="downloadEML(${id});closeMenu()">⬇ Download .eml</div>
     <div class="ctx-sep"></div>
+    ${(isSentFolderView()||isSpamFolderView())?'':`<div class="ctx-item" onclick="markAsSpam(${id});closeMenu()">🚫 Mark as spam</div>`}
     <div class="ctx-item danger" onclick="deleteMessage(${id});closeMenu()">🗑 Delete</div>`);
 }
 
@@ -3176,6 +3194,40 @@ async function loadLoginHistory(page) {
 function loginHistoryPrevPage() { if (LH.page > 1) loadLoginHistory(LH.page - 1); }
 function loginHistoryNextPage() { if (LH.hasMore) loadLoginHistory(LH.page + 1); }
 const debouncedLoadLoginHistory = debounce(() => loadLoginHistory(1), 400);
+
+// ── Spam Block (Settings > Security) ────────────────────────────────────────
+function openSpamBlock() {
+  openModal('spam-block-modal');
+  loadSpamBlock();
+}
+
+async function loadSpamBlock() {
+  const tbody = document.getElementById('sb-table-body');
+  tbody.innerHTML = '<tr><td colspan="3" style="text-align:center;padding:24px"><span class="spinner-inline"></span></td></tr>';
+  const r = await api('GET', '/spam-block');
+  const entries = r?.entries || [];
+  tbody.innerHTML = entries.length ? entries.map(e => `
+    <tr>
+      <td style="font-family:monospace;font-size:12px">${esc(e.sender)}</td>
+      <td style="font-family:monospace;font-size:11px;color:var(--muted)">${new Date(e.created_at).toLocaleString()}</td>
+      <td><button class="btn-secondary" style="font-size:11px;padding:3px 8px" onclick="removeSpamBlockEntry('${esc(e.sender)}')">Remove</button></td>
+    </tr>`).join('') : '<tr><td colspan="3" style="text-align:center;color:var(--muted);padding:24px">No blocked senders yet.</td></tr>';
+}
+
+async function addSpamBlockEntry() {
+  const input = document.getElementById('sb-add-input');
+  const sender = input.value.trim();
+  if (!sender) return;
+  const r = await api('POST', '/spam-block', { sender });
+  if (r?.ok) { input.value = ''; toast('Sender blocked', 'success'); loadSpamBlock(); }
+  else toast(r?.error || 'Failed to block sender', 'error');
+}
+
+async function removeSpamBlockEntry(sender) {
+  const r = await api('DELETE', '/spam-block?sender=' + encodeURIComponent(sender));
+  if (r?.ok) { toast('Sender unblocked', 'success'); loadSpamBlock(); }
+  else toast('Failed to remove', 'error');
+}
 
 async function doLogout() { await fetch('/auth/logout',{method:'POST'}); location.href='/auth/login'; }
 

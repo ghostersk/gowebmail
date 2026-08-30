@@ -51,9 +51,9 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'DM San
   z-index:100;display:flex;align-items:center;justify-content:center;
   opacity:0;pointer-events:none;transition:opacity .2s}
 .modal-overlay.open{opacity:1;pointer-events:all}
-/* Account add/edit modals open from inside the Settings modal and must stack above it,
-   regardless of DOM order, so Settings stays visible (and reachable) underneath. */
-#add-account-modal,#edit-account-modal{z-index:110}
+/* Modals that open from inside the Settings modal must stack above it, regardless of DOM
+   order, so Settings stays visible (and reachable) underneath. */
+#add-account-modal,#edit-account-modal,#login-history-modal,#spam-block-modal{z-index:110}
 .modal{width:480px;max-height:90vh;overflow-y:auto;background:var(--surface2);
   border:1px solid var(--border2);border-radius:10px;padding:22px;
   transform:scale(.95);transition:transform .2s}

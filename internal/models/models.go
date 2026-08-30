@@ -136,6 +136,13 @@ type Label struct {
 	Color  string `json:"color"` // hex, e.g. "#5b8def"
 }
 
+// SpamBlockEntry pairs a blocked sender address with when it was added — Settings >
+// Security > Spam Block.
+type SpamBlockEntry struct {
+	Sender    string    `json:"sender"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 // Folder represents a mailbox folder or Gmail label.
 type Folder struct {
 	ID        int64  `json:"id"`

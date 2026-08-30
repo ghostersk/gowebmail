@@ -101,6 +101,32 @@ func parseUID(s string) uint32 {
 	return uid
 }
 
+// ---- Spam blocklist (Settings > Security > Spam Block) ----
+// A user-managed list of blocked senders, separate from the Rules engine so it gets its own
+// simple add/remove UI instead of the generic condition/action rule builder — but enforced
+// the same way the Rules engine's mark_as_spam action already is: move to the account's Spam
+// folder. Applied to every provider's newly-synced messages, mirroring where matchRule runs.
+
+func (s *Scheduler) moveToSpamIMAP(account *models.EmailAccount, dbFolder *models.Folder, msg *models.Message) {
+	junk, err := s.db.GetFolderByType(account.ID, "spam")
+	if err != nil || junk == nil {
+		return
+	}
+	uid := parseUID(msg.RemoteUID)
+	s.db.EnqueueIMAPOp(&db.PendingIMAPOp{AccountID: account.ID, OpType: "move", RemoteUID: uid, FolderPath: dbFolder.FullPath, Extra: junk.FullPath})
+	s.TriggerAccountSync(account.ID)
+}
+
+func (s *Scheduler) moveToSpamGraph(gc *graph.Client, account *models.EmailAccount, msg *models.Message) {
+	junk, err := s.db.GetFolderByType(account.ID, "spam")
+	if err != nil || junk == nil {
+		return
+	}
+	if err := gc.MoveMessage(context.Background(), msg.RemoteUID, junk.FullPath); err != nil {
+		log.Printf("[spam-block] graph move: %v", err)
+	}
+}
+
 // ---- IMAP path ----
 
 func (s *Scheduler) applyRuleIMAP(c *email.Client, account *models.EmailAccount, dbFolder *models.Folder, msg *models.Message, rule *models.Rule) {

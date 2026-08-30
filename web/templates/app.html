@@ -434,6 +434,27 @@
   </div>
 </div>
 
+<!-- ── Spam Block modal ───────────────────────────────────────────────────── -->
+<div class="modal-overlay" id="spam-block-modal" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="spam-block-modal-title">
+  <div class="modal" style="width:min(700px,92vw);max-width:none;max-height:90vh;display:flex;flex-direction:column">
+    <h2 id="spam-block-modal-title">Spam Block</h2>
+    <p>Mail from these senders is automatically moved to Spam when it arrives — no notification is shown for it. Enter either a full email address, or just a domain (e.g. "example.com") to block every address at that domain and its subdomains.</p>
+    <div style="display:flex;gap:8px;margin-bottom:14px">
+      <input type="text" id="sb-add-input" placeholder="Email address or domain (e.g. example.com)…" style="flex:1;padding:8px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:13px;outline:none">
+      <button class="btn-primary" onclick="addSpamBlockEntry()">Block</button>
+    </div>
+    <div style="flex:1;overflow-y:auto;border:1px solid var(--border);border-radius:8px;min-height:200px">
+      <table class="data-table">
+        <thead><tr><th>Sender</th><th>Blocked since</th><th></th></tr></thead>
+        <tbody id="sb-table-body"></tbody>
+      </table>
+    </div>
+    <div class="modal-actions">
+      <button class="modal-cancel" onclick="closeModal('spam-block-modal')">Close</button>
+    </div>
+  </div>
+</div>
+
 <!-- ── Add Account Modal ──────────────────────────────────────────────────── -->
 <div class="modal-overlay" id="add-account-modal" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="add-account-modal-title">
   <div class="modal">
@@ -688,6 +709,12 @@
           <div class="settings-group-title">Login History</div>
           <div style="font-size:13px;color:var(--muted);margin-bottom:12px">View login attempts for your account only — successful and failed, with timestamps and source IPs.</div>
           <button class="btn-secondary" onclick="openLoginHistory()">View Login History</button>
+        </div>
+
+        <div class="settings-group">
+          <div class="settings-group-title">Spam Block</div>
+          <div style="font-size:13px;color:var(--muted);margin-bottom:12px">Senders blocked here are automatically moved to Spam as soon as new mail from them arrives, across all your connected accounts — no notification is shown for it.</div>
+          <button class="btn-secondary" onclick="openSpamBlock()">Manage Spam Block List</button>
         </div>
       </div>
 

@@ -519,7 +519,9 @@ func (s *Scheduler) syncFolder(c *email.Client, account *models.EmailAccount, db
 			if len(msg.Attachments) > 0 && msg.ID > 0 {
 				_ = s.db.SaveAttachmentMeta(msg.ID, msg.Attachments)
 			}
-			if rule := matchRule(msg, account.EmailAddress, activeRules); rule != nil {
+			if dbFolder.FolderType != "spam" && s.db.IsSpamBlocked(account.UserID, msg.FromEmail) {
+				s.moveToSpamIMAP(account, dbFolder, msg)
+			} else if rule := matchRule(msg, account.EmailAddress, activeRules); rule != nil {
 				s.applyRuleIMAP(c, account, dbFolder, msg, rule)
 			}
 		}
@@ -546,6 +548,41 @@ func (s *Scheduler) syncFolder(c *email.Client, account *models.EmailAccount, db
 		purged, _ := s.db.PurgeDeletedMessages(dbFolder.ID, serverUIDs)
 		if purged > 0 {
 			log.Printf("[sync] purged %d server-deleted messages from %s/%s", purged, account.EmailAddress, dbFolder.FullPath)
+		}
+
+		// 4. Reconcile the other direction: any UID the server has that we don't (from any
+		// past cause of local data loss — a bug, a crash mid-write, manual intervention) is
+		// re-fetched here, so the local cache always self-heals back to matching the server
+		// instead of staying permanently drifted — the incremental fetch in step 1 alone can
+		// never recover these, since it only ever asks for UIDs newer than last_seen_uid.
+		if localUIDs, lerr := s.db.GetLocalUIDSet(dbFolder.ID); lerr == nil {
+			var missing []uint32
+			for _, uid := range serverUIDs {
+				if !localUIDs[fmt.Sprintf("%d", uid)] {
+					missing = append(missing, uid)
+				}
+			}
+			if len(missing) > 0 {
+				recovered, rerr := c.FetchByUIDs(dbFolder.FullPath, missing)
+				if rerr != nil {
+					log.Printf("[sync] recover missing %s/%s: %v", account.EmailAddress, dbFolder.FullPath, rerr)
+				} else {
+					n := 0
+					for _, msg := range recovered {
+						msg.FolderID = dbFolder.ID
+						if dbErr := s.db.UpsertMessage(msg); dbErr == nil {
+							n++
+							if len(msg.Attachments) > 0 && msg.ID > 0 {
+								_ = s.db.SaveAttachmentMeta(msg.ID, msg.Attachments)
+							}
+						}
+					}
+					if n > 0 {
+						log.Printf("[sync] recovered %d message(s) missing from local cache in %s/%s", n, account.EmailAddress, dbFolder.FullPath)
+						newMessages += n
+					}
+				}
+			}
 		}
 	}
 
@@ -615,7 +652,10 @@ func (s *Scheduler) drainPendingOps(account *models.EmailAccount) {
 
 		if applyErr != nil {
 			log.Printf("[ops:%s] %s uid=%d folder=%s: %v", account.EmailAddress, op.OpType, op.RemoteUID, op.FolderPath, applyErr)
-			s.db.IncrementPendingOpAttempts(op.ID)
+			if abandoned := s.db.IncrementPendingOpAttempts(op.ID); abandoned {
+				log.Printf("[ops:%s] giving up on %s uid=%d folder=%s after repeated failures: %v", account.EmailAddress, op.OpType, op.RemoteUID, op.FolderPath, applyErr)
+				s.db.SetAccountError(account.ID, fmt.Sprintf("a %s operation failed repeatedly and was abandoned: %v", op.OpType, applyErr))
+			}
 		} else {
 			s.db.DeletePendingOp(op.ID)
 		}
@@ -912,7 +952,9 @@ func (s *Scheduler) graphDeltaSync(account *models.EmailAccount) {
 				totalNew++
 				// NOTE: msg.BodyText is never populated here (body is fetched lazily on open,
 				// by design, for perf) — a rule's "body" condition never matches on this path.
-				if rule := matchRule(msg, account.EmailAddress, activeRules); rule != nil {
+				if dbFolderSaved.FolderType != "spam" && s.db.IsSpamBlocked(account.UserID, msg.FromEmail) {
+					s.moveToSpamGraph(gc, account, msg)
+				} else if rule := matchRule(msg, account.EmailAddress, activeRules); rule != nil {
 					s.applyRuleGraph(gc, account, msg, rule)
 				}
 			}

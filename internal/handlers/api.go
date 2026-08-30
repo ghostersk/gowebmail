@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -1034,17 +1035,18 @@ func (h *APIHandler) WakeExpiredSnoozes() {
 	}
 }
 
-func (h *APIHandler) DeleteMessage(w http.ResponseWriter, r *http.Request) {
-	userID := middleware.GetUserID(r)
-	messageID := pathInt64(r, "id")
-
+// deleteMessageEverywhere deletes messageID from the local cache and, best-effort, from the
+// mail provider itself (an immediate Graph/JMAP delete call, or an enqueued IMAP delete op
+// applied on the next drain) — shared by the single-message delete handler and EmptyFolder
+// (bulk), so emptying Trash/Spam actually removes mail from the server instead of only
+// hiding it locally (which made deleted messages come back on the next sync).
+func (h *APIHandler) deleteMessageEverywhere(userID, messageID int64) error {
 	// Get message info before deleting from DB
 	remoteID, _, remoteAcc, remoteErr := h.db.GetMessageGraphInfo(messageID, userID)
 	uid, folderPath, account, imapErr := h.db.GetMessageIMAPInfo(messageID, userID)
 
 	if err := h.db.DeleteMessage(messageID, userID); err != nil {
-		h.writeError(w, http.StatusInternalServerError, "delete failed")
-		return
+		return err
 	}
 
 	if remoteErr == nil && remoteAcc != nil && remoteAcc.Provider == models.ProviderOutlookPersonal {
@@ -1057,6 +1059,16 @@ func (h *APIHandler) DeleteMessage(w http.ResponseWriter, r *http.Request) {
 			RemoteUID: uid, FolderPath: folderPath,
 		})
 		h.syncer.TriggerAccountSync(account.ID)
+	}
+	return nil
+}
+
+func (h *APIHandler) DeleteMessage(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.GetUserID(r)
+	messageID := pathInt64(r, "id")
+	if err := h.deleteMessageEverywhere(userID, messageID); err != nil {
+		h.writeError(w, http.StatusInternalServerError, "delete failed")
+		return
 	}
 	h.writeJSON(w, map[string]bool{"ok": true})
 }
@@ -1744,6 +1756,68 @@ func (h *APIHandler) DeleteRemoteContentWhitelist(w http.ResponseWriter, r *http
 	h.writeJSON(w, map[string]bool{"ok": true})
 }
 
+// ---- Spam Blocklist (Settings > Security > Spam Block) ----
+
+func (h *APIHandler) ListSpamBlock(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.GetUserID(r)
+	list, err := h.db.ListSpamBlock(userID)
+	if err != nil {
+		h.writeError(w, http.StatusInternalServerError, "failed to get spam blocklist")
+		return
+	}
+	if list == nil {
+		list = []models.SpamBlockEntry{}
+	}
+	h.writeJSON(w, map[string]interface{}{"entries": list})
+}
+
+// A blocklist entry must be either a real email address or a bare domain (e.g. "example.com",
+// which IsSpamBlocked then also matches against subdomains) — never arbitrary text, which
+// could never match a sender and would just sit in the list doing nothing.
+var (
+	spamBlockEmailRe  = regexp.MustCompile(`^[^\s@]+@[^\s@]+\.[^\s@]+$`)
+	spamBlockDomainRe = regexp.MustCompile(`(?i)^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$`)
+)
+
+func isValidSpamBlockEntry(s string) bool {
+	return spamBlockEmailRe.MatchString(s) || spamBlockDomainRe.MatchString(s)
+}
+
+func (h *APIHandler) AddSpamBlock(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.GetUserID(r)
+	var req struct {
+		Sender string `json:"sender"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Sender == "" {
+		h.writeError(w, http.StatusBadRequest, "sender required")
+		return
+	}
+	sender := strings.ToLower(strings.TrimSpace(req.Sender))
+	if !isValidSpamBlockEntry(sender) {
+		h.writeError(w, http.StatusBadRequest, "enter a valid email address or domain (e.g. example.com)")
+		return
+	}
+	if err := h.db.AddSpamBlock(userID, sender); err != nil {
+		h.writeError(w, http.StatusInternalServerError, "failed to add to spam blocklist")
+		return
+	}
+	h.writeJSON(w, map[string]bool{"ok": true})
+}
+
+func (h *APIHandler) DeleteSpamBlock(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.GetUserID(r)
+	sender := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("sender")))
+	if sender == "" {
+		h.writeError(w, http.StatusBadRequest, "sender required")
+		return
+	}
+	if err := h.db.DeleteSpamBlock(userID, sender); err != nil {
+		h.writeError(w, http.StatusInternalServerError, "failed to remove from spam blocklist")
+		return
+	}
+	h.writeJSON(w, map[string]bool{"ok": true})
+}
+
 // ---- Empty folder (Trash/Spam) ----
 
 func (h *APIHandler) EmptyFolder(w http.ResponseWriter, r *http.Request) {
@@ -1761,10 +1835,16 @@ func (h *APIHandler) EmptyFolder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	n, err := h.db.EmptyFolder(folderID, userID)
+	ids, err := h.db.ListMessageIDsInFolder(folderID, userID)
 	if err != nil {
-		h.writeError(w, http.StatusInternalServerError, "failed to empty folder")
+		h.writeError(w, http.StatusInternalServerError, "failed to list messages")
 		return
+	}
+	n := 0
+	for _, id := range ids {
+		if err := h.deleteMessageEverywhere(userID, id); err == nil {
+			n++
+		}
 	}
 	h.db.UpdateFolderCounts(folderID)
 	h.writeJSON(w, map[string]interface{}{"ok": true, "deleted": n})

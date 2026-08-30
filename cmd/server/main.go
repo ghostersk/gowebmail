@@ -241,6 +241,11 @@ func main() {
 	api.HandleFunc("/remote-content-whitelist", h.API.AddRemoteContentWhitelist).Methods("POST")
 	api.HandleFunc("/remote-content-whitelist", h.API.DeleteRemoteContentWhitelist).Methods("DELETE")
 
+	// Spam blocklist
+	api.HandleFunc("/spam-block", h.API.ListSpamBlock).Methods("GET")
+	api.HandleFunc("/spam-block", h.API.AddSpamBlock).Methods("POST")
+	api.HandleFunc("/spam-block", h.API.DeleteSpamBlock).Methods("DELETE")
+
 	// Send
 	api.HandleFunc("/send", h.API.SendMessage).Methods("POST")
 	api.HandleFunc("/reply", h.API.ReplyMessage).Methods("POST")

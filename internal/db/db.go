@@ -158,6 +158,13 @@ func (d *DB) Migrate() error {
 			created_at DATETIME DEFAULT (datetime('now')),
 			UNIQUE(user_id, sender)
 		)`,
+		`CREATE TABLE IF NOT EXISTS spam_blocklist (
+			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			sender     TEXT    NOT NULL,
+			created_at DATETIME DEFAULT (datetime('now')),
+			UNIQUE(user_id, sender)
+		)`,
 	}
 
 	for _, stmt := range stmts {
@@ -2058,6 +2065,90 @@ func (d *DB) IsRemoteContentAllowed(userID int64, sender string) (bool, error) {
 	return count > 0, err
 }
 
+// ---- Spam Blocklist (Settings > Security > Spam Block) ----
+// A blocked sender is enforced at sync time (see syncer.IsSpamBlocked call sites): any new
+// message from a blocked address gets moved to the account's Spam folder automatically,
+// the same way the Rules engine's mark_as_spam action does — this is a separate, purpose-
+// built list rather than a generic Rule so it gets its own simple add/remove UI.
+
+func (d *DB) ListSpamBlock(userID int64) ([]models.SpamBlockEntry, error) {
+	rows, err := d.sql.Query(
+		`SELECT sender, created_at FROM spam_blocklist WHERE user_id=? ORDER BY created_at DESC`,
+		userID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var list []models.SpamBlockEntry
+	for rows.Next() {
+		var e models.SpamBlockEntry
+		if err := rows.Scan(&e.Sender, &e.CreatedAt); err == nil {
+			list = append(list, e)
+		}
+	}
+	return list, rows.Err()
+}
+
+func (d *DB) AddSpamBlock(userID int64, sender string) error {
+	_, err := d.sql.Exec(
+		`INSERT OR IGNORE INTO spam_blocklist (user_id, sender) VALUES (?, ?)`,
+		userID, sender,
+	)
+	return err
+}
+
+func (d *DB) DeleteSpamBlock(userID int64, sender string) error {
+	_, err := d.sql.Exec(
+		`DELETE FROM spam_blocklist WHERE user_id=? AND sender=?`,
+		userID, sender,
+	)
+	return err
+}
+
+// IsSpamBlocked reports whether sender is on userID's spam blocklist. Errors are treated as
+// "not blocked" (fail open) since this gates an automatic mail-moving side effect during
+// sync — a transient DB hiccup shouldn't misfile someone's legitimate mail.
+// IsSpamBlocked reports whether sender matches userID's spam blocklist — either an exact
+// blocked email address, or (for a blocklist entry with no "@", i.e. a bare domain like
+// "example.com") the sender's address being @ that domain or any subdomain of it.
+// Errors are treated as "not blocked" (fail open) since this gates an automatic mail-moving
+// side effect during sync — a transient DB hiccup shouldn't misfile someone's legitimate mail.
+func (d *DB) IsSpamBlocked(userID int64, sender string) bool {
+	if sender == "" {
+		return false
+	}
+	sender = strings.ToLower(strings.TrimSpace(sender))
+	at := strings.LastIndex(sender, "@")
+	if at < 0 {
+		return false
+	}
+	senderDomain := sender[at+1:]
+
+	rows, err := d.sql.Query(`SELECT sender FROM spam_blocklist WHERE user_id=?`, userID)
+	if err != nil {
+		return false
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var pattern string
+		if err := rows.Scan(&pattern); err != nil {
+			continue
+		}
+		pattern = strings.ToLower(pattern)
+		if strings.Contains(pattern, "@") {
+			if pattern == sender {
+				return true
+			}
+			continue
+		}
+		if senderDomain == pattern || strings.HasSuffix(senderDomain, "."+pattern) {
+			return true
+		}
+	}
+	return false
+}
+
 // SetFolderVisibility sets is_hidden and sync_enabled for a folder owned by the user.
 func (d *DB) SetFolderVisibility(folderID, userID int64, isHidden, syncEnabled bool) error {
 	ih, se := 0, 0
@@ -2473,10 +2564,18 @@ func (d *DB) DeletePendingOp(id int64) error {
 	return err
 }
 
-// IncrementPendingOpAttempts bumps attempt count; ops with >5 attempts are abandoned.
-func (d *DB) IncrementPendingOpAttempts(id int64) {
+// IncrementPendingOpAttempts bumps attempt count; ops with >5 attempts are abandoned (dropped
+// from the queue entirely). Returns true when this call was the one that abandoned it, so the
+// caller can surface that as a visible account error instead of silently losing the operation
+// (e.g. a delete/move that never actually reaches the server, with no sign anything went wrong).
+func (d *DB) IncrementPendingOpAttempts(id int64) (abandoned bool) {
 	d.sql.Exec(`UPDATE pending_imap_ops SET attempts=attempts+1 WHERE id=?`, id)
-	d.sql.Exec(`DELETE FROM pending_imap_ops WHERE id=? AND attempts>5`, id)
+	res, _ := d.sql.Exec(`DELETE FROM pending_imap_ops WHERE id=? AND attempts>5`, id)
+	if res == nil {
+		return false
+	}
+	n, _ := res.RowsAffected()
+	return n > 0
 }
 
 // CountPendingOps returns number of queued ops for an account (for logging).
@@ -2498,6 +2597,26 @@ func (d *DB) GetFolderSyncState(folderID int64) (uidValidity, lastSeenUID uint32
 // SetFolderSyncState persists uid_validity and last_seen_uid after a successful sync.
 func (d *DB) SetFolderSyncState(folderID int64, uidValidity, lastSeenUID uint32) {
 	d.sql.Exec(`UPDATE folders SET uid_validity=?, last_seen_uid=? WHERE id=?`, uidValidity, lastSeenUID, folderID)
+}
+
+// GetLocalUIDSet returns the set of remote_uid values already stored locally for a folder —
+// used alongside PurgeDeletedMessages to reconcile the other direction: UIDs the server has
+// that the local cache is missing (from any past cause of local data loss), so the sync can
+// re-fetch exactly those instead of relying solely on the last_seen_uid incremental cursor.
+func (d *DB) GetLocalUIDSet(folderID int64) (map[string]bool, error) {
+	rows, err := d.sql.Query(`SELECT remote_uid FROM messages WHERE folder_id=?`, folderID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	set := map[string]bool{}
+	for rows.Next() {
+		var uid string
+		if err := rows.Scan(&uid); err == nil {
+			set[uid] = true
+		}
+	}
+	return set, rows.Err()
 }
 
 // PurgeDeletedMessages removes local messages whose remote_uid is no longer
@@ -2627,18 +2746,30 @@ func (d *DB) ListMessageIDsByFolder(folderID, userID int64) ([]int64, error) {
 
 // EmptyFolder deletes all messages in a folder (Trash/Spam).
 // Returns count deleted.
-func (d *DB) EmptyFolder(folderID, userID int64) (int, error) {
-	res, err := d.sql.Exec(`
-		DELETE FROM messages WHERE folder_id=?
-		AND folder_id IN (SELECT id FROM folders WHERE account_id IN
-			(SELECT id FROM email_accounts WHERE user_id=?))`,
+// ListMessageIDsInFolder returns the ids of every message in folderID owned by userID — used
+// by EmptyFolder to delete each one through the same per-message path (deleteMessageEverywhere
+// in api.go) that a regular single delete uses, so "Empty Trash/Spam" actually removes mail
+// from the provider instead of only clearing the local cache.
+func (d *DB) ListMessageIDsInFolder(folderID, userID int64) ([]int64, error) {
+	rows, err := d.sql.Query(`
+		SELECT m.id FROM messages m
+		JOIN folders f ON f.id = m.folder_id
+		JOIN email_accounts a ON a.id = f.account_id
+		WHERE m.folder_id=? AND a.user_id=?`,
 		folderID, userID,
 	)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	n, _ := res.RowsAffected()
-	return int(n), nil
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err == nil {
+			ids = append(ids, id)
+		}
+	}
+	return ids, rows.Err()
 }
 
 // EnableAllFolderSync enables sync for all currently-disabled folders belonging
