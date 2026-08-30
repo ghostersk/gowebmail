@@ -2242,6 +2242,19 @@ func (d *DB) GetMessageIMAPInfo(messageID, userID int64) (remoteUID uint32, fold
 	return remoteUID, folder.FullPath, account, err
 }
 
+// GetMessageFolderID returns the local folder id a message currently belongs to — used to
+// recompute that folder's sidebar count immediately after deleting the message, instead of
+// leaving it stale until the next background sync happens to run.
+func (d *DB) GetMessageFolderID(messageID, userID int64) (int64, error) {
+	var folderID int64
+	err := d.sql.QueryRow(`
+		SELECT m.folder_id FROM messages m
+		JOIN email_accounts a ON a.id = m.account_id
+		WHERE m.id=? AND a.user_id=?`, messageID, userID,
+	).Scan(&folderID)
+	return folderID, err
+}
+
 // GetMessageGraphInfo returns the Graph message ID (remote_uid as string), folder ID string,
 // and account for a Graph-backed message. Used by handlers for outlook_personal accounts.
 func (d *DB) GetMessageGraphInfo(messageID, userID int64) (graphMsgID string, folderGraphID string, account *models.EmailAccount, err error) {

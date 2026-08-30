@@ -144,10 +144,12 @@ async function init() {
   await loadFolders();
   await loadLabels();
   await loadMessages();
-  // Seed poller ID so we don't notify on initial load
-  if (S.messages.length > 0) {
-    POLLER.lastKnownID = Math.max(...S.messages.map(m=>m.id));
-  }
+  // Seed the poller from the same query /api/poll itself uses for "newest inbox message id"
+  // (not from whatever happens to be in the currently-loaded, paginated/date-sorted message
+  // list — that view can under-represent the true max id, which previously made every page
+  // load fire a false "new mail" notification for mail that had already been seen).
+  const seedPoll = await api('GET', '/poll?since=0');
+  if (seedPoll) POLLER.lastKnownID = seedPoll.newest_id || 0;
 
   const p = new URLSearchParams(location.search);
   if (p.get('connected')) {

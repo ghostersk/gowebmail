@@ -1044,9 +1044,17 @@ func (h *APIHandler) deleteMessageEverywhere(userID, messageID int64) error {
 	// Get message info before deleting from DB
 	remoteID, _, remoteAcc, remoteErr := h.db.GetMessageGraphInfo(messageID, userID)
 	uid, folderPath, account, imapErr := h.db.GetMessageIMAPInfo(messageID, userID)
+	folderID, folderErr := h.db.GetMessageFolderID(messageID, userID)
 
 	if err := h.db.DeleteMessage(messageID, userID); err != nil {
 		return err
+	}
+	// Recompute the sidebar's folder-count badge right away from what's actually left in the
+	// local table, rather than leaving it at the pre-delete count until the next background
+	// sync happens to run — the eventual real sync (once the server-side delete/move below
+	// actually lands) will overwrite this with the authoritative count anyway.
+	if folderErr == nil {
+		h.db.UpdateFolderCounts(folderID)
 	}
 
 	if remoteErr == nil && remoteAcc != nil && remoteAcc.Provider == models.ProviderOutlookPersonal {
