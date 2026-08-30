@@ -463,11 +463,14 @@ func (c *Client) FetchMessages(mailboxName string, days int) ([]*gomailModels.Me
 }
 
 func (c *Client) fetchBySeqSet(seqSet *imap.SeqSet) ([]*gomailModels.Message, error) {
-	// Fetch FetchRFC822 (full raw message) so we can properly parse MIME
+	// Full raw message, needed for proper MIME parsing — fetched via BODY.PEEK[] (not the
+	// plain RFC822/BODY[] item) so reading it during a background sync doesn't implicitly
+	// mark the message \Seen on the server before the user has actually opened it.
+	peekBody := &imap.BodySectionName{Peek: true}
 	items := []imap.FetchItem{
 		imap.FetchUid, imap.FetchEnvelope,
 		imap.FetchFlags, imap.FetchBodyStructure,
-		imap.FetchRFC822, // full message including headers – needed for proper MIME parsing
+		peekBody.FetchItem(),
 	}
 
 	ch := make(chan *imap.Message, 64)
@@ -491,10 +494,11 @@ func (c *Client) fetchBySeqSet(seqSet *imap.SeqSet) ([]*gomailModels.Message, er
 
 // fetchByUIDSet fetches messages by UID set (used when UIDs are returned from UidSearch).
 func (c *Client) fetchByUIDSet(seqSet *imap.SeqSet) ([]*gomailModels.Message, error) {
+	peekBody := &imap.BodySectionName{Peek: true} // see fetchBySeqSet — avoids implicitly marking \Seen
 	items := []imap.FetchItem{
 		imap.FetchUid, imap.FetchEnvelope,
 		imap.FetchFlags, imap.FetchBodyStructure,
-		imap.FetchRFC822,
+		peekBody.FetchItem(),
 	}
 
 	ch := make(chan *imap.Message, 64)
@@ -1603,10 +1607,11 @@ func (c *Client) FetchNewMessages(mailboxName string, afterUID uint32) ([]*gomai
 	seqSet := new(imap.SeqSet)
 	seqSet.AddRange(afterUID+1, ^uint32(0)) // afterUID+1 to * (max)
 
+	peekBody := &imap.BodySectionName{Peek: true} // see fetchBySeqSet — avoids implicitly marking \Seen
 	items := []imap.FetchItem{
 		imap.FetchUid, imap.FetchEnvelope,
 		imap.FetchFlags, imap.FetchBodyStructure,
-		imap.FetchRFC822,
+		peekBody.FetchItem(),
 	}
 
 	ch := make(chan *imap.Message, 64)

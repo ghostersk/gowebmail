@@ -2524,6 +2524,7 @@ async function openSettings() {
   loadSyncInterval();
   loadRemoteImagePolicy();
   loadRemoteWhitelist();
+  loadNotificationSetting();
   renderMFAPanel();
   loadIPRules();
   populateSettingsAccountSelects();
@@ -2962,6 +2963,56 @@ function saveRemoteImagePolicy() {
   if (S.currentMessage) renderMessageDetail(S.currentMessage, false);
 }
 
+// ── Notifications (Settings > General) ──────────────────────────────────────
+function loadNotificationSetting() {
+  const cb = document.getElementById('notifications-toggle');
+  if (cb) cb.checked = uiPrefsGet('notificationsEnabled', false);
+  updateNotificationStatus();
+}
+
+function updateNotificationStatus() {
+  const el = document.getElementById('notifications-status');
+  if (!el) return;
+  if (!('Notification' in window)) { el.textContent = 'Not supported in this browser.'; return; }
+  if (Notification.permission === 'denied') { el.textContent = 'Blocked for this site in your browser settings — allow it there, then try again.'; return; }
+  el.textContent = '';
+}
+
+// Turning this on is the ONLY place the browser's notification-permission prompt gets
+// triggered (see startPoller) — never on page load unasked. Turning it off can't revoke a
+// permission the browser already granted, so it just stops the poller from using it.
+async function toggleNotifications(enabled) {
+  const cb = document.getElementById('notifications-toggle');
+  if (!enabled) {
+    uiPrefsSet('notificationsEnabled', false);
+    POLLER.notifGranted = false;
+    updateNotificationStatus();
+    return;
+  }
+  if (!('Notification' in window)) {
+    toast('Notifications are not supported in this browser', 'error');
+    if (cb) cb.checked = false;
+    return;
+  }
+  if (Notification.permission === 'denied') {
+    toast('Notifications are blocked for this site in your browser settings', 'error');
+    if (cb) cb.checked = false;
+    updateNotificationStatus();
+    return;
+  }
+  const perm = Notification.permission === 'default' ? await Notification.requestPermission() : Notification.permission;
+  if (perm === 'granted') {
+    uiPrefsSet('notificationsEnabled', true);
+    POLLER.notifGranted = true;
+    toast('Notifications enabled', 'success');
+  } else {
+    if (cb) cb.checked = false;
+    uiPrefsSet('notificationsEnabled', false);
+    toast('Notification permission was not granted', 'error');
+  }
+  updateNotificationStatus();
+}
+
 async function loadRemoteWhitelist() {
   const el = document.getElementById('remote-whitelist-list');
   const r = await api('GET', '/remote-content-whitelist');
@@ -3060,6 +3111,57 @@ async function saveIPRules() {
   else toast(r?.error || 'Save failed', 'error');
 }
 
+// ── Login History (Settings > Security) ─────────────────────────────────────
+// Server-side filtered/sorted/paginated — always scoped to the logged-in user by the
+// GET /api/login-history handler itself (never a param this code could tamper with).
+const LH = { page: 1, hasMore: false };
+
+function openLoginHistory() {
+  openModal('login-history-modal');
+  loadLoginHistory(1);
+}
+
+async function loadLoginHistory(page) {
+  LH.page = page;
+  const params = new URLSearchParams({ page, page_size: 25 });
+  const dateFrom = document.getElementById('lh-date-from').value;
+  const dateTo = document.getElementById('lh-date-to').value;
+  const status = document.getElementById('lh-status').value;
+  const ip = document.getElementById('lh-ip').value.trim();
+  const sort = document.getElementById('lh-sort').value;
+  if (dateFrom) params.set('date_from', dateFrom);
+  if (dateTo) params.set('date_to', dateTo);
+  if (status) params.set('success', status);
+  if (ip) params.set('ip', ip);
+  if (sort) params.set('sort', sort);
+
+  const tbody = document.getElementById('lh-table-body');
+  tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;padding:24px"><span class="spinner-inline"></span></td></tr>';
+  const r = await api('GET', '/login-history?' + params.toString());
+  if (!r) {
+    tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:var(--danger);padding:20px">Failed to load login history.</td></tr>';
+    return;
+  }
+
+  LH.hasMore = !!r.has_more;
+  const logs = r.logs || [];
+  tbody.innerHTML = logs.length ? logs.map(l => `
+    <tr>
+      <td style="font-family:monospace;font-size:11px;color:var(--muted)">${new Date(l.created_at).toLocaleString()}</td>
+      <td><span class="badge ${l.event==='login'?'green':'red'}">${l.event==='login'?'Success':'Failed'}</span></td>
+      <td style="font-family:monospace;font-size:11px">${esc(l.ip_address||'—')}</td>
+      <td style="color:var(--muted);font-size:12px">${esc(l.detail||'')}</td>
+    </tr>`).join('') : '<tr><td colspan="4" style="text-align:center;color:var(--muted);padding:24px">No login attempts found.</td></tr>';
+
+  document.getElementById('lh-page-info').textContent = `Page ${page} · ${r.total||0} total`;
+  document.getElementById('lh-prev-btn').disabled = page <= 1;
+  document.getElementById('lh-next-btn').disabled = !LH.hasMore;
+}
+
+function loginHistoryPrevPage() { if (LH.page > 1) loadLoginHistory(LH.page - 1); }
+function loginHistoryNextPage() { if (LH.hasMore) loadLoginHistory(LH.page + 1); }
+const debouncedLoadLoginHistory = debounce(() => loadLoginHistory(1), 400);
+
 async function doLogout() { await fetch('/auth/logout',{method:'POST'}); location.href='/auth/login'; }
 
 // ── Context menu helper ────────────────────────────────────────────────────
@@ -3134,14 +3236,11 @@ const POLLER = {
 };
 
 async function startPoller() {
-  // Request browser notification permission (non-blocking)
-  if ('Notification' in window && Notification.permission === 'default') {
-    Notification.requestPermission().then(p => {
-      POLLER.notifGranted = p === 'granted';
-    });
-  } else if ('Notification' in window) {
-    POLLER.notifGranted = Notification.permission === 'granted';
-  }
+  // Notification permission is only ever requested from the explicit Settings > General
+  // toggle (toggleNotifications) — never on load — so this just reflects whatever the user
+  // already opted into and the browser already granted.
+  POLLER.notifGranted = uiPrefsGet('notificationsEnabled', false)
+    && 'Notification' in window && Notification.permission === 'granted';
 
   POLLER.active = true;
   schedulePoll();

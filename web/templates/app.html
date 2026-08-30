@@ -381,6 +381,59 @@
   </div>
 </div>
 
+<!-- ── Login History modal ────────────────────────────────────────────────── -->
+<div class="modal-overlay" id="login-history-modal" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="login-history-modal-title">
+  <div class="modal" style="width:min(1000px,92vw);max-width:none;max-height:90vh;display:flex;flex-direction:column">
+    <h2 id="login-history-modal-title">Login History</h2>
+    <p>Login attempts for your account only.</p>
+    <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-bottom:14px">
+      <div class="modal-field" style="margin-bottom:0">
+        <label for="lh-date-from">From</label>
+        <input type="date" id="lh-date-from" onchange="loadLoginHistory(1)">
+      </div>
+      <div class="modal-field" style="margin-bottom:0">
+        <label for="lh-date-to">To</label>
+        <input type="date" id="lh-date-to" onchange="loadLoginHistory(1)">
+      </div>
+      <div class="modal-field" style="margin-bottom:0">
+        <label for="lh-status">Status</label>
+        <select id="lh-status" onchange="loadLoginHistory(1)">
+          <option value="">All</option>
+          <option value="true">Success</option>
+          <option value="false">Failed</option>
+        </select>
+      </div>
+      <div class="modal-field" style="margin-bottom:0;flex:1;min-width:160px">
+        <label for="lh-ip">IP contains</label>
+        <input type="text" id="lh-ip" placeholder="e.g. 192.168" oninput="debouncedLoadLoginHistory()">
+      </div>
+      <div class="modal-field" style="margin-bottom:0">
+        <label for="lh-sort">Sort by date</label>
+        <select id="lh-sort" onchange="loadLoginHistory(1)">
+          <option value="desc">Newest first</option>
+          <option value="asc">Oldest first</option>
+        </select>
+      </div>
+    </div>
+    <div style="flex:1;overflow-y:auto;border:1px solid var(--border);border-radius:8px;min-height:200px">
+      <table class="data-table">
+        <thead><tr><th>Time</th><th>Status</th><th>IP Address</th><th>Detail</th></tr></thead>
+        <tbody id="lh-table-body"></tbody>
+      </table>
+    </div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px">
+      <span id="lh-page-info" style="font-size:12px;color:var(--muted)"></span>
+      <div style="display:flex;gap:8px">
+        <button class="btn-secondary" id="lh-prev-btn" onclick="loginHistoryPrevPage()">Previous</button>
+        <button class="btn-secondary" id="lh-next-btn" onclick="loginHistoryNextPage()">Next</button>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="modal-cancel" onclick="closeModal('login-history-modal')">Close</button>
+    </div>
+  </div>
+</div>
+
 <!-- ── Add Account Modal ──────────────────────────────────────────────────── -->
 <div class="modal-overlay" id="add-account-modal" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="add-account-modal-title">
   <div class="modal">
@@ -541,6 +594,8 @@
     <div style="display:flex;align-items:stretch;min-height:0;flex:1;border-top:1px solid var(--border)">
       <div class="settings-nav" role="tablist" aria-label="Settings sections">
         <button data-tab="accounts" class="active" role="tab" aria-selected="true" onclick="showSettingsTab('accounts')">Accounts</button>
+        <button data-tab="general" role="tab" aria-selected="false" onclick="showSettingsTab('general')">General</button>
+        <button data-tab="security" role="tab" aria-selected="false" onclick="showSettingsTab('security')">Security</button>
         <button data-tab="account" role="tab" aria-selected="false" onclick="showSettingsTab('account')">Profile</button>
         <button data-tab="rules" role="tab" aria-selected="false" onclick="showSettingsTab('rules')">Rules</button>
         <button data-tab="signatures" role="tab" aria-selected="false" onclick="showSettingsTab('signatures')">Signatures</button>
@@ -560,29 +615,7 @@
         </div>
       </div>
 
-      <div class="settings-panel" data-tab="account" role="tabpanel">
-        <div class="settings-group">
-          <div class="settings-group-title">Profile</div>
-          <div class="modal-field">
-            <label>Username</label>
-            <div style="display:flex;gap:8px">
-              <input type="text" id="profile-username" placeholder="New username" style="flex:1">
-              <button class="btn-primary" onclick="updateProfile('username')">Save</button>
-            </div>
-          </div>
-          <div class="modal-field">
-            <label>Email Address</label>
-            <div style="display:flex;gap:8px">
-              <input type="email" id="profile-email" placeholder="New email address" style="flex:1">
-              <button class="btn-primary" onclick="updateProfile('email')">Save</button>
-            </div>
-          </div>
-          <div class="modal-field">
-            <label>Current Password <span style="color:var(--muted);font-size:11px">(required to confirm changes)</span></label>
-            <input type="password" id="profile-confirm-pw" placeholder="Enter your current password">
-          </div>
-        </div>
-
+      <div class="settings-panel" data-tab="general" role="tabpanel">
         <div class="settings-group">
           <div class="settings-group-title">Email Sync</div>
           <div style="font-size:13px;color:var(--muted);margin-bottom:12px">How often to automatically check all your accounts for new mail.</div>
@@ -619,19 +652,17 @@
         </div>
 
         <div class="settings-group">
-          <div class="settings-group-title">Change Password</div>
-          <div class="modal-field"><label>Current Password</label><input type="password" id="cur-pw"></div>
-          <div class="modal-field"><label>New Password</label><input type="password" id="new-pw" placeholder="Min. 8 characters"></div>
-          <button class="btn-primary" onclick="changePassword()">Update Password</button>
+          <div class="settings-group-title">Notifications</div>
+          <div style="font-size:13px;color:var(--muted);margin-bottom:12px">Show a browser notification when new mail arrives, even while GoWebMail is in a background tab.</div>
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:var(--text)">
+            <input type="checkbox" id="notifications-toggle" onchange="toggleNotifications(this.checked)" style="width:auto">
+            Enable desktop notifications
+          </label>
+          <div id="notifications-status" style="font-size:12px;color:var(--muted);margin-top:8px"></div>
         </div>
+      </div>
 
-        <div class="settings-group">
-          <div class="settings-group-title" style="display:flex;align-items:center;gap:10px">
-            Two-Factor Authentication <span id="mfa-badge"></span>
-          </div>
-          <div id="mfa-panel">Loading...</div>
-        </div>
-
+      <div class="settings-panel" data-tab="security" role="tabpanel">
         <div class="settings-group">
           <div class="settings-group-title">IP Access Rules</div>
           <div style="font-size:13px;color:var(--muted);margin-bottom:14px">
@@ -651,6 +682,50 @@
             <input type="text" id="ip-rule-list" placeholder="e.g. 192.168.1.10, 10.0.0.5">
           </div>
           <button class="btn-primary" onclick="saveIPRules()">Save IP Rules</button>
+        </div>
+
+        <div class="settings-group">
+          <div class="settings-group-title">Login History</div>
+          <div style="font-size:13px;color:var(--muted);margin-bottom:12px">View login attempts for your account only — successful and failed, with timestamps and source IPs.</div>
+          <button class="btn-secondary" onclick="openLoginHistory()">View Login History</button>
+        </div>
+      </div>
+
+      <div class="settings-panel" data-tab="account" role="tabpanel">
+        <div class="settings-group">
+          <div class="settings-group-title">Profile</div>
+          <div class="modal-field">
+            <label>Username</label>
+            <div style="display:flex;gap:8px">
+              <input type="text" id="profile-username" placeholder="New username" style="flex:1">
+              <button class="btn-primary" onclick="updateProfile('username')">Save</button>
+            </div>
+          </div>
+          <div class="modal-field">
+            <label>Email Address</label>
+            <div style="display:flex;gap:8px">
+              <input type="email" id="profile-email" placeholder="New email address" style="flex:1">
+              <button class="btn-primary" onclick="updateProfile('email')">Save</button>
+            </div>
+          </div>
+          <div class="modal-field">
+            <label>Current Password <span style="color:var(--muted);font-size:11px">(required to confirm changes)</span></label>
+            <input type="password" id="profile-confirm-pw" placeholder="Enter your current password">
+          </div>
+        </div>
+
+        <div class="settings-group">
+          <div class="settings-group-title">Change Password</div>
+          <div class="modal-field"><label>Current Password</label><input type="password" id="cur-pw"></div>
+          <div class="modal-field"><label>New Password</label><input type="password" id="new-pw" placeholder="Min. 8 characters"></div>
+          <button class="btn-primary" onclick="changePassword()">Update Password</button>
+        </div>
+
+        <div class="settings-group">
+          <div class="settings-group-title" style="display:flex;align-items:center;gap:10px">
+            Two-Factor Authentication <span id="mfa-badge"></span>
+          </div>
+          <div id="mfa-panel">Loading...</div>
         </div>
       </div>
 

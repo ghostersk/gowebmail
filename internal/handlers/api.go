@@ -1268,6 +1268,46 @@ func (h *APIHandler) Search(w http.ResponseWriter, r *http.Request) {
 	h.writeJSON(w, result)
 }
 
+// ---- Login history (per-user, Settings > Security) ----
+
+// ListMyLoginHistory returns the authenticated user's own login attempts — never any other
+// user's, unlike the admin-only audit log viewer (AdminHandler.ListAuditLogs).
+func (h *APIHandler) ListMyLoginHistory(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.GetUserID(r)
+	page := queryInt(r, "page", 1)
+	pageSize := queryInt(r, "page_size", 25)
+	if pageSize > 100 {
+		pageSize = 100
+	}
+
+	var success *bool
+	switch r.URL.Query().Get("success") {
+	case "true":
+		b := true
+		success = &b
+	case "false":
+		b := false
+		success = &b
+	}
+
+	var dateFrom, dateTo string
+	if v := r.URL.Query().Get("date_from"); v != "" {
+		dateFrom = v + " 00:00:00"
+	}
+	if v := r.URL.Query().Get("date_to"); v != "" {
+		dateTo = v + " 23:59:59"
+	}
+	ip := r.URL.Query().Get("ip")
+	sortAsc := r.URL.Query().Get("sort") == "asc"
+
+	result, err := h.db.ListLoginHistory(userID, page, pageSize, dateFrom, dateTo, success, ip, sortAsc)
+	if err != nil {
+		h.writeError(w, http.StatusInternalServerError, "failed to load login history")
+		return
+	}
+	h.writeJSON(w, result)
+}
+
 // ---- Sync interval (per-user) ----
 
 func (h *APIHandler) GetSyncInterval(w http.ResponseWriter, r *http.Request) {

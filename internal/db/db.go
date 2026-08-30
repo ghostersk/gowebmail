@@ -925,6 +925,67 @@ func (d *DB) ListAuditLogs(page, pageSize int, eventFilter string) (*models.Audi
 	}, rows.Err()
 }
 
+// ListLoginHistory returns a user's own login attempts (success + failure) — used by the
+// Settings > Security "Login History" viewer. Always scoped to userID so a user can only ever
+// see their own attempts, unlike the admin-only ListAuditLogs above. success nil means both;
+// true/false filters to just successful/failed attempts. ip is a substring match. dateFrom/
+// dateTo are inclusive "YYYY-MM-DD HH:MM:SS" bounds (caller pads a plain date to a full day).
+func (d *DB) ListLoginHistory(userID int64, page, pageSize int, dateFrom, dateTo string, success *bool, ip string, sortAsc bool) (*models.AuditPage, error) {
+	offset := (page - 1) * pageSize
+	where := " WHERE a.user_id=? AND a.event IN ('login','login_fail')"
+	args := []interface{}{userID}
+	if success != nil {
+		if *success {
+			where += " AND a.event='login'"
+		} else {
+			where += " AND a.event='login_fail'"
+		}
+	}
+	if dateFrom != "" {
+		where += " AND a.created_at>=?"
+		args = append(args, dateFrom)
+	}
+	if dateTo != "" {
+		where += " AND a.created_at<=?"
+		args = append(args, dateTo)
+	}
+	if ip != "" {
+		where += " AND a.ip_address LIKE ?"
+		args = append(args, "%"+ip+"%")
+	}
+
+	var total int
+	d.sql.QueryRow(`SELECT COUNT(*) FROM audit_log a`+where, args...).Scan(&total)
+
+	order := "DESC"
+	if sortAsc {
+		order = "ASC"
+	}
+	args = append(args, pageSize, offset)
+	rows, err := d.sql.Query(`
+		SELECT a.id, a.event, a.detail, a.ip_address, a.user_agent, a.created_at
+		FROM audit_log a`+where+`
+		ORDER BY a.created_at `+order+` LIMIT ? OFFSET ?`, args...,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var logs []models.AuditLog
+	for rows.Next() {
+		l := models.AuditLog{UserID: &userID}
+		if err := rows.Scan(&l.ID, &l.Event, &l.Detail, &l.IPAddress, &l.UserAgent, &l.CreatedAt); err != nil {
+			return nil, err
+		}
+		logs = append(logs, l)
+	}
+	return &models.AuditPage{
+		Logs: logs, Total: total, Page: page, PageSize: pageSize,
+		HasMore: offset+len(logs) < total,
+	}, rows.Err()
+}
+
 // ---- Email Accounts ----
 
 func (d *DB) CreateAccount(a *models.EmailAccount) error {

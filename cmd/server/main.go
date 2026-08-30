@@ -273,6 +273,7 @@ func main() {
 	api.HandleFunc("/accounts/sort-order", h.API.SetAccountSortOrder).Methods("PUT")
 	api.HandleFunc("/ui-prefs", h.API.GetUIPrefs).Methods("GET")
 	api.HandleFunc("/ui-prefs", h.API.SetUIPrefs).Methods("PUT")
+	api.HandleFunc("/login-history", h.API.ListMyLoginHistory).Methods("GET")
 
 	// Search
 	api.HandleFunc("/search", h.API.Search).Methods("GET")
