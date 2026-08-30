@@ -205,23 +205,25 @@ type Message struct {
 
 // MessageSummary is a lightweight version for list views.
 type MessageSummary struct {
-	ID            int64     `json:"id"`
-	AccountID     int64     `json:"account_id"`
-	AccountEmail  string    `json:"account_email"`
-	AccountColor  string    `json:"account_color"`
-	FolderID      int64     `json:"folder_id"`
-	FolderName    string    `json:"folder_name"`
-	Subject       string    `json:"subject"`
-	FromName      string    `json:"from_name"`
-	FromEmail     string    `json:"from_email"`
-	Preview       string    `json:"preview"` // first ~100 chars of body
-	Date          time.Time `json:"date"`
-	IsRead        bool      `json:"is_read"`
-	IsStarred     bool      `json:"is_starred"`
-	HasAttachment bool      `json:"has_attachment"`
+	ID            int64      `json:"id"`
+	AccountID     int64      `json:"account_id"`
+	AccountEmail  string     `json:"account_email"`
+	AccountName   string     `json:"account_name"` // account's own display_name (may be blank)
+	AccountColor  string     `json:"account_color"`
+	FolderID      int64      `json:"folder_id"`
+	FolderName    string     `json:"folder_name"`
+	Subject       string     `json:"subject"`
+	FromName      string     `json:"from_name"`
+	FromEmail     string     `json:"from_email"`
+	ToList        string     `json:"to_list"` // comma-separated; only shown in the Sent folder view
+	Preview       string     `json:"preview"` // first ~100 chars of body
+	Date          time.Time  `json:"date"`
+	IsRead        bool       `json:"is_read"`
+	IsStarred     bool       `json:"is_starred"`
+	HasAttachment bool       `json:"has_attachment"`
 	SnoozedUntil  *time.Time `json:"snoozed_until,omitempty"`
-	Size          int64     `json:"size,omitempty"` // approximate; only populated by search results
-	Labels        []Label   `json:"labels,omitempty"`
+	Size          int64      `json:"size,omitempty"` // approximate; only populated by search results
+	Labels        []Label    `json:"labels,omitempty"`
 }
 
 // ScheduledSend is a fully-composed message held until SendAt, delivered by the background

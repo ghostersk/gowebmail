@@ -1349,7 +1349,14 @@ function renderMessageList() {
   // Update bulk action bar
   updateBulkBar();
 
-  list.innerHTML=msgs.map((m,i)=>`
+  const sentView = isSentFolderView();
+
+  list.innerHTML=msgs.map((m,i)=>{
+    const acctLabel = m.account_name || m.account_email || '';
+    const fromLine = sentView
+      ? `To: ${m.to_list || '(no recipient)'}`
+      : (m.from_name ? `${m.from_name} - ${m.from_email}` : (m.from_email||''));
+    return `
     <div class="message-item ${m.id===S.selectedMessageId&&!SEL.ids.size?'active':''} ${!m.is_read?'unread':''} ${SEL.ids.has(m.id)?'selected':''}"
          data-id="${m.id}" data-idx="${i}"
          draggable="true"
@@ -1359,7 +1366,8 @@ function renderMessageList() {
       <div class="msg-top">
         <span class="msg-unread-dot" title="${m.is_read?'':'Unread'}"></span>
         <span class="msg-dot" style="background:${m.account_color}" title="${esc(m.account_email||'')}"></span>
-        <span class="msg-from">${esc(m.from_name||m.from_email)}</span>
+        <span class="msg-account-name" title="${esc(m.account_email||'')}">${esc(acctLabel)}</span>
+        <span class="msg-from" title="${esc(fromLine)}">${esc(fromLine)}</span>
         <span class="msg-date">${formatDate(m.date)}</span>
       </div>
       <div class="msg-line2">
@@ -1373,7 +1381,8 @@ function renderMessageList() {
           <span class="msg-star ${m.is_starred?'on':''}" onclick="toggleStar(${m.id},event)">${m.is_starred?'★':'☆'}</span>
         </span>
       </div>
-    </div>`).join('')+(S.messages.length<S.totalMessages
+    </div>`;
+  }).join('')+(S.messages.length<S.totalMessages
     ?`<div class="load-more"><button class="load-more-btn" onclick="loadMoreMessages()">Load more</button></div>`:'');
 
   // Enable drag-drop onto folder nav items
@@ -1508,6 +1517,12 @@ async function openMessage(id) {
 // next autosave replaces this exact draft in place instead of creating a duplicate.
 function isDraftFolder(folderId) {
   return S.folders?.find(f=>f.id===folderId)?.folder_type==='drafts';
+}
+// Whether the currently open folder is a Sent folder — used by renderMessageList to show
+// "To: <recipient>" instead of the from-line, since a Sent row's "from" is always just your
+// own account and tells you nothing about who the message actually went to.
+function isSentFolderView() {
+  return S.folders?.find(f=>f.id===S.currentFolder)?.folder_type==='sent';
 }
 function resumeDraft(msg) {
   const toList=(msg.to||'').split(',').map(s=>s.trim()).filter(Boolean);

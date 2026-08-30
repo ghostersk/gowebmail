@@ -1741,8 +1741,8 @@ func (d *DB) ListMessages(userID int64, folderIDs []int64, accountID int64, page
 
 	args = append(args, pageSize, offset)
 	rows, err := d.sql.Query(`
-		SELECT m.id, m.account_id, a.email_address, a.color, m.folder_id, f.name,
-		       m.subject, m.from_name, m.from_email, m.body_text,
+		SELECT m.id, m.account_id, a.email_address, a.display_name, a.color, m.folder_id, f.name,
+		       m.subject, m.from_name, m.from_email, m.to_list, m.body_text,
 		       m.date, m.is_read, m.is_starred, m.has_attachment
 		FROM messages m
 		JOIN email_accounts a ON a.id = m.account_id
@@ -1759,10 +1759,10 @@ func (d *DB) ListMessages(userID int64, folderIDs []int64, accountID int64, page
 	var summaries []models.MessageSummary
 	for rows.Next() {
 		s := models.MessageSummary{}
-		var subjectEnc, fromNameEnc, fromEmailEnc, bodyTextEnc string
+		var subjectEnc, fromNameEnc, fromEmailEnc, toListEnc, bodyTextEnc string
 		if err := rows.Scan(
-			&s.ID, &s.AccountID, &s.AccountEmail, &s.AccountColor, &s.FolderID, &s.FolderName,
-			&subjectEnc, &fromNameEnc, &fromEmailEnc, &bodyTextEnc,
+			&s.ID, &s.AccountID, &s.AccountEmail, &s.AccountName, &s.AccountColor, &s.FolderID, &s.FolderName,
+			&subjectEnc, &fromNameEnc, &fromEmailEnc, &toListEnc, &bodyTextEnc,
 			&s.Date, &s.IsRead, &s.IsStarred, &s.HasAttachment,
 		); err != nil {
 			return nil, err
@@ -1770,6 +1770,7 @@ func (d *DB) ListMessages(userID int64, folderIDs []int64, accountID int64, page
 		s.Subject, _ = d.enc.Decrypt(subjectEnc)
 		s.FromName, _ = d.enc.Decrypt(fromNameEnc)
 		s.FromEmail, _ = d.enc.Decrypt(fromEmailEnc)
+		s.ToList, _ = d.enc.Decrypt(toListEnc)
 		bodyText, _ := d.enc.Decrypt(bodyTextEnc)
 		if len(bodyText) > 120 {
 			bodyText = bodyText[:120] + "…"
@@ -1874,8 +1875,8 @@ func (d *DB) SearchMessages(userID int64, q string, filters SearchFilters, page,
 
 	qArgs := append(append([]interface{}{}, args...), pageSize, offset)
 	rows, err := d.sql.Query(`
-		SELECT m.id, m.account_id, a.email_address, a.color, m.folder_id, f.name,
-		       m.subject, m.from_name, m.from_email, m.body_text,
+		SELECT m.id, m.account_id, a.email_address, a.display_name, a.color, m.folder_id, f.name,
+		       m.subject, m.from_name, m.from_email, m.to_list, m.body_text,
 		       m.date, m.is_read, m.is_starred, m.has_attachment, `+approxSizeExpr+`
 		FROM messages m
 		JOIN email_accounts a ON a.id=m.account_id
@@ -1891,10 +1892,10 @@ func (d *DB) SearchMessages(userID int64, q string, filters SearchFilters, page,
 	var summaries []models.MessageSummary
 	for rows.Next() {
 		s := models.MessageSummary{}
-		var subjectEnc, fromNameEnc, fromEmailEnc, bodyTextEnc string
+		var subjectEnc, fromNameEnc, fromEmailEnc, toListEnc, bodyTextEnc string
 		if err := rows.Scan(
-			&s.ID, &s.AccountID, &s.AccountEmail, &s.AccountColor, &s.FolderID, &s.FolderName,
-			&subjectEnc, &fromNameEnc, &fromEmailEnc, &bodyTextEnc,
+			&s.ID, &s.AccountID, &s.AccountEmail, &s.AccountName, &s.AccountColor, &s.FolderID, &s.FolderName,
+			&subjectEnc, &fromNameEnc, &fromEmailEnc, &toListEnc, &bodyTextEnc,
 			&s.Date, &s.IsRead, &s.IsStarred, &s.HasAttachment, &s.Size,
 		); err != nil {
 			return nil, err
@@ -1902,6 +1903,7 @@ func (d *DB) SearchMessages(userID int64, q string, filters SearchFilters, page,
 		s.Subject, _ = d.enc.Decrypt(subjectEnc)
 		s.FromName, _ = d.enc.Decrypt(fromNameEnc)
 		s.FromEmail, _ = d.enc.Decrypt(fromEmailEnc)
+		s.ToList, _ = d.enc.Decrypt(toListEnc)
 		bodyText, _ := d.enc.Decrypt(bodyTextEnc)
 		if len(bodyText) > 120 {
 			bodyText = bodyText[:120] + "…"
