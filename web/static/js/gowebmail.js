@@ -1,5 +1,10 @@
 // GoWebMail shared utilities - loaded on every page
 
+// ---- Service worker (Web Push delivery) ----
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js').catch(() => {});
+}
+
 // ---- API helper ----
 async function api(method, path, body, timeoutMs) {
   const opts = { method, headers: { 'Content-Type': 'application/json' } };

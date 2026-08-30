@@ -349,9 +349,9 @@ body.app-page{overflow:hidden}
 .detail-from strong{color:var(--text)}
 .detail-from span{color:var(--muted);font-size:12px}
 .detail-date{font-size:12px;color:var(--muted);flex-shrink:0}
-.detail-actions{padding:6px 20px;border-bottom:1px solid var(--border);display:flex;gap:6px;flex-shrink:0}
-.action-btn{padding:4px 10px;background:var(--surface2);border:1px solid var(--border2);border-radius:5px;
-  color:var(--text2);font-family:'DM Sans',sans-serif;font-size:12px;cursor:pointer;transition:background .15s}
+.detail-actions{padding:6px 20px;border-bottom:1px solid var(--border);display:flex;gap:5px;flex-shrink:0}
+.action-btn{padding:3px 8px;background:var(--surface2);border:1px solid var(--border2);border-radius:5px;
+  color:var(--text2);font-family:'DM Sans',sans-serif;font-size:11px;cursor:pointer;transition:background .15s}
 .action-btn:hover{background:var(--surface3);color:var(--text)}
 .action-btn.danger:hover{background:rgba(239,68,68,.1);color:var(--danger);border-color:rgba(239,68,68,.3)}
 .detail-body{flex:1;overflow-y:auto;padding:16px 20px}
@@ -474,6 +474,10 @@ body.admin-page{overflow:auto;background:var(--bg)}
 .fmt-btn{background:none;border:none;color:var(--text2);cursor:pointer;padding:4px 7px;border-radius:4px;font-size:13px;line-height:1;transition:background .1s}
 .fmt-btn:hover{background:var(--border2);color:var(--text)}
 .fmt-sep{width:1px;height:16px;background:var(--border2);margin:0 3px}
+.fmt-font-select{background:var(--surface2);border:1px solid var(--border2);border-radius:4px;color:var(--text);
+  font-size:12px;padding:3px 4px;cursor:pointer;max-width:130px;color-scheme:dark}
+.fmt-font-select:hover{border-color:var(--accent)}
+.fmt-font-select option{background:var(--surface2);color:var(--text)}
 .compose-editor{flex:1;overflow-y:auto;padding:10px 12px;
   font-size:13px;line-height:1.6;color:var(--text);outline:none;background:var(--bg);min-height:0}
 .compose-editor:empty::before{content:attr(placeholder);color:var(--muted);pointer-events:none}
@@ -519,6 +523,9 @@ body.admin-page{overflow:auto;background:var(--bg)}
   padding:4px 6px;min-height:32px;cursor:text;background:transparent}
 .tag-container:focus-within{}
 .compose-tag-field label{flex-shrink:0;align-self:flex-start;padding-top:7px}
+.compose-cc-bcc-toggle{display:flex;gap:8px;flex-shrink:0;align-self:flex-start;padding-top:7px}
+.cc-bcc-btn{background:none;border:none;color:var(--muted);cursor:pointer;font-size:12px;padding:0;transition:color .15s}
+.cc-bcc-btn:hover{color:var(--accent)}
 .email-tag{display:inline-flex;align-items:center;gap:3px;padding:2px 6px 2px 8px;
   background:var(--surface3);border:1px solid var(--border2);border-radius:12px;
   font-size:12px;color:var(--text);white-space:nowrap;max-width:260px}
@@ -686,8 +693,21 @@ body.admin-page{overflow:auto;background:var(--bg)}
   /* Desktop-only sidebar collapse control — mobile already has the drawer/hamburger */
   .sidebar-collapse-btn{display:none}
 
-  /* Message list panel: full width, shown/hidden by data-mob-view */
-  .message-list-panel{width:100%;border-right:none;flex-shrink:0}
+  /* Message action row (Reply/Forward/Star/...): wrap instead of overflowing
+     horizontally — there's no room for 9+ buttons in one row on a phone. */
+  .detail-actions{flex-wrap:wrap}
+
+  /* Let the whole message view (subject/from/buttons + body) scroll together as one
+     on a phone, instead of pinning the header/action row in place and squeezing the
+     body into whatever vertical space is left over — that left almost no room to read. */
+  .message-detail{overflow-y:auto}
+  .detail-body{flex:none;overflow-y:visible}
+
+  /* Message list panel: full width/height, shown/hidden by data-mob-view. !important
+     because the desktop drag-resize / reading-pane-bottom feature can leave an inline
+     height (e.g. "35%") on this element from a persisted desktop layout — without it,
+     the list would only fill that leftover fraction of the screen on mobile. */
+  .message-list-panel{width:100%!important;height:100%!important;border-right:none;flex-shrink:0}
   .message-detail{width:100%}
 
   /* View switching via data-mob-view on #app-root */
@@ -705,6 +725,35 @@ body.admin-page{overflow:auto;background:var(--bg)}
   }
   /* Hide floating minimised bar on mobile, use back button instead */
   .compose-minimised{display:none!important}
+
+  /* Any other modal (add/edit account, login history, spam block, etc.): fit the screen
+     instead of overflowing a fixed desktop width. */
+  .modal{width:calc(100vw - 24px)!important;max-width:440px}
+
+  /* Settings modal on mobile becomes a full-screen "page" — it must render above the
+     app's own fixed .mob-topbar (z-index:200), otherwise the topbar sits on top of the
+     modal's own close button and swallows the tap. Modals opened from inside Settings
+     (add/edit account, etc.) keep stacking above it, just shifted up to match. */
+  #settings-modal{z-index:220}
+  #add-account-modal,#edit-account-modal,#login-history-modal,#spam-block-modal{z-index:230}
+
+  /* Settings modal: full screen, side nav becomes a horizontal sliding tab strip on top. */
+  .settings-modal-box{
+    width:100vw!important;max-width:100vw!important;height:100dvh!important;height:100vh!important;
+    max-height:100vh!important;border-radius:0!important;
+    position:fixed!important;inset:0!important;
+  }
+  .settings-body{flex-direction:column!important}
+  .settings-nav{
+    width:100%!important;flex-direction:row!important;flex-shrink:0;
+    overflow-x:auto;-webkit-overflow-scrolling:touch;
+    border-right:none!important;border-bottom:1px solid var(--border);
+    padding:8px 10px!important;gap:4px!important;
+  }
+  .settings-nav button{
+    width:auto!important;display:inline-block;white-space:nowrap;flex-shrink:0;
+    padding:6px 12px;font-size:12px;
+  }
 }
 
 /* ── Contacts ──────────────────────────────────────────────────────────── */

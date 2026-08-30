@@ -1786,7 +1786,6 @@ function renderMessageDetail(msg, showRemoteContent) {
       <button class="action-btn" onclick="openForwardAsAttachment()" title="Forward the original message as an .eml file attachment">↪ Fwd as Attachment</button>
       ${threadBtnHtml}
       <button class="action-btn" onclick="toggleStar(${msg.id})">${msg.is_starred?'★ Unstar':'☆ Star'}</button>
-      <button class="action-btn" onclick="markRead(${msg.id},${!msg.is_read})">${msg.is_read?'Mark unread':'Mark read'}</button>
       <button class="action-btn" onclick="${S.currentFolder==='snoozed'?'unsnoozeMessage':'snoozeMessage'}(${msg.id})">⏰ ${S.currentFolder==='snoozed'?'Unsnooze':'Snooze'}</button>
       <button class="action-btn" onclick="showMessageHeaders(${msg.id})">⋮ Headers</button>
       <button class="action-btn" onclick="downloadEML(${msg.id})">⬇ Download</button>
@@ -2031,6 +2030,8 @@ function openCompose(opts={}) {
   document.getElementById('compose-subject').value=opts.subject||'';
   document.getElementById('cc-row').style.display='none';
   document.getElementById('bcc-row').style.display='none';
+  document.getElementById('cc-toggle-btn').style.display='';
+  document.getElementById('bcc-toggle-btn').style.display='';
   populateComposeFrom(opts.accountId||null);
   const editor=document.getElementById('compose-editor');
   const fromAccountId=parseInt(document.getElementById('compose-from')?.value||0);
@@ -2092,8 +2093,8 @@ function _closeCompose() {
   S.composeVisible=false; S.composeMinimised=false; S.draftDirty=false;
 }
 
-function showCCRow()  { document.getElementById('cc-row').style.display='flex'; }
-function showBCCRow() { document.getElementById('bcc-row').style.display='flex'; }
+function showCCRow()  { document.getElementById('cc-row').style.display='flex'; document.getElementById('cc-toggle-btn').style.display='none'; }
+function showBCCRow() { document.getElementById('bcc-row').style.display='flex'; document.getElementById('bcc-toggle-btn').style.display='none'; }
 
 function openReply() { if (S.currentMessage) openReplyTo(S.currentMessage.id); }
 
@@ -2302,6 +2303,22 @@ async function discardDraft() {
 
 // ── Compose formatting ─────────────────────────────────────────────────────
 function execFmt(cmd,val) { document.getElementById('compose-editor').focus(); document.execCommand(cmd,false,val||null); }
+
+// Opening the native <select> dropdown steals focus and clears the editor's text
+// selection before onchange fires, so fontName silently no-ops — save the range on
+// mousedown (before the dropdown opens) and restore it before applying the font.
+let savedComposeRange = null;
+function saveEditorRange() {
+  const sel = window.getSelection();
+  savedComposeRange = sel.rangeCount ? sel.getRangeAt(0).cloneRange() : null;
+}
+function applyFontFromSelect(select) {
+  const editor = document.getElementById('compose-editor');
+  const sel = window.getSelection();
+  editor.focus();
+  if (savedComposeRange) { sel.removeAllRanges(); sel.addRange(savedComposeRange); }
+  if (select.value) document.execCommand('fontName', false, select.value);
+}
 function triggerAttach() { document.getElementById('compose-attach-input').click(); }
 function handleAttachFiles(input) { for(const file of input.files) composeAttachments.push({file,name:file.name,size:file.size}); input.value=''; updateAttachList(); S.draftDirty=true; }
 function removeAttachment(i) {
@@ -3022,6 +3039,7 @@ async function toggleNotifications(enabled) {
     uiPrefsSet('notificationsEnabled', false);
     POLLER.notifGranted = false;
     updateNotificationStatus();
+    await unsubscribePush();
     return;
   }
   if (!('Notification' in window)) {
@@ -3040,12 +3058,53 @@ async function toggleNotifications(enabled) {
     uiPrefsSet('notificationsEnabled', true);
     POLLER.notifGranted = true;
     toast('Notifications enabled', 'success');
+    await subscribePush(); // background push while the app isn't open/focused
   } else {
     if (cb) cb.checked = false;
     uiPrefsSet('notificationsEnabled', false);
     toast('Notification permission was not granted', 'error');
   }
   updateNotificationStatus();
+}
+
+// ---- Web Push subscription (background delivery — the in-page POLLER only covers
+// foreground/open-tab delivery) ----
+function urlBase64ToUint8Array(base64) {
+  const padding = '='.repeat((4 - base64.length % 4) % 4);
+  const raw = atob((base64 + padding).replace(/-/g, '+').replace(/_/g, '/'));
+  return Uint8Array.from([...raw].map(c => c.charCodeAt(0)));
+}
+
+async function subscribePush() {
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) {
+      const { public_key } = await api('GET', '/push/vapid-public-key') || {};
+      if (!public_key) return;
+      sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(public_key),
+      });
+    }
+    await api('POST', '/push/subscribe', sub.toJSON());
+  } catch (e) {
+    console.error('Push subscribe failed:', e);
+  }
+}
+
+async function unsubscribePush() {
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.getSubscription();
+    if (!sub) return;
+    await api('POST', '/push/unsubscribe', { endpoint: sub.endpoint });
+    await sub.unsubscribe();
+  } catch (e) {
+    console.error('Push unsubscribe failed:', e);
+  }
 }
 
 async function loadRemoteWhitelist() {

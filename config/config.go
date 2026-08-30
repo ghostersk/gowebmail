@@ -11,6 +11,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	webpush "github.com/SherClockHolmes/webpush-go"
 )
 
 // Config holds all application configuration.
@@ -61,6 +63,10 @@ type Config struct {
 	MicrosoftClientSecret string
 	MicrosoftTenantID     string
 	MicrosoftRedirectURL  string // auto-derived from BaseURL if blank
+
+	// Web Push (VAPID) — signs background push notifications to browsers/mobile PWAs
+	VAPIDPublicKey  string
+	VAPIDPrivateKey string
 }
 
 const configPath = "./data/gowebmail.conf"
@@ -325,6 +331,20 @@ var allFields = []configField{
 			"Must exactly match what is registered in Azure.",
 		},
 	},
+	{
+		key:    "VAPID_PUBLIC_KEY",
+		defVal: "",
+		comments: []string{
+			"--- Web Push Notifications ---",
+			"VAPID keypair signing background push notifications (browser + mobile PWA/Android wrapper).",
+			"Auto-generated on first run. Do not edit manually.",
+		},
+	},
+	{
+		key:      "VAPID_PRIVATE_KEY",
+		defVal:   "",
+		comments: []string{},
+	},
 }
 
 // Load reads/creates data/gowebmail.conf, fills in missing keys, then returns Config.
@@ -346,6 +366,14 @@ func Load() (*Config, error) {
 	}
 	if existing["SESSION_SECRET"] == "" {
 		existing["SESSION_SECRET"] = mustHex(32)
+	}
+	if existing["VAPID_PUBLIC_KEY"] == "" || existing["VAPID_PRIVATE_KEY"] == "" {
+		priv, pub, err := webpush.GenerateVAPIDKeys()
+		if err != nil {
+			return nil, fmt.Errorf("generate VAPID keys: %w", err)
+		}
+		existing["VAPID_PRIVATE_KEY"] = priv
+		existing["VAPID_PUBLIC_KEY"] = pub
 	}
 
 	// Write back (preserves existing, adds any new fields from allFields)
@@ -463,6 +491,9 @@ func Load() (*Config, error) {
 		MicrosoftClientSecret: get("MICROSOFT_CLIENT_SECRET"),
 		MicrosoftTenantID:     orDefault(get("MICROSOFT_TENANT_ID"), "consumers"),
 		MicrosoftRedirectURL:  outlookRedirect,
+
+		VAPIDPublicKey:  get("VAPID_PUBLIC_KEY"),
+		VAPIDPrivateKey: get("VAPID_PRIVATE_KEY"),
 	}
 
 	// Derive SECURE_COOKIE automatically if BASE_URL uses https
@@ -652,8 +683,10 @@ func writeConfigFile(path string, values map[string]string) error {
 // SESSION_SECRET and ENCRYPTION_KEY are intentionally excluded.
 var EditableKeys = func() map[string]bool {
 	excluded := map[string]bool{
-		"SESSION_SECRET": true,
-		"ENCRYPTION_KEY": true,
+		"SESSION_SECRET":   true,
+		"ENCRYPTION_KEY":   true,
+		"VAPID_PUBLIC_KEY":  true,
+		"VAPID_PRIVATE_KEY": true,
 	}
 	m := map[string]bool{}
 	for _, f := range allFields {

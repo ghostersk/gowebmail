@@ -7,12 +7,14 @@ package syncer
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
 	"sync"
 	"time"
 
+	webpush "github.com/SherClockHolmes/webpush-go"
 	"github.com/ghostersk/gowebmail/internal/logger"
 	"github.com/ghostersk/gowebmail/config"
 	"github.com/ghostersk/gowebmail/internal/auth"
@@ -495,6 +497,7 @@ func (s *Scheduler) syncFolder(c *email.Client, account *models.EmailAccount, db
 	}
 
 	// 1. Fetch new messages (UID > lastSeenUID)
+	isIncrementalSync := lastSeenUID != 0 // false = first-ever sync or post-UIDVALIDITY full re-sync
 	var msgs []*models.Message
 	if lastSeenUID == 0 {
 		// First sync: respect the account's days/all setting
@@ -510,6 +513,11 @@ func (s *Scheduler) syncFolder(c *email.Client, account *models.EmailAccount, db
 		return 0, fmt.Errorf("fetch new: %w", err)
 	}
 
+	// Collected only for a genuine incremental inbox sync — never for first-sync/full-resync
+	// backfill (that's historical mail, not "new mail") — mirrors the same restraint the
+	// reconciliation step below already applies to rules/spam-move side effects.
+	var pushCandidates []*models.Message
+
 	maxUID := lastSeenUID
 	for _, msg := range msgs {
 		msg.FolderID = dbFolder.ID
@@ -523,6 +531,8 @@ func (s *Scheduler) syncFolder(c *email.Client, account *models.EmailAccount, db
 				s.moveToSpamIMAP(account, dbFolder, msg)
 			} else if rule := matchRule(msg, account.EmailAddress, activeRules); rule != nil {
 				s.applyRuleIMAP(c, account, dbFolder, msg, rule)
+			} else if isIncrementalSync && dbFolder.FolderType == "inbox" && !msg.IsRead {
+				pushCandidates = append(pushCandidates, msg)
 			}
 		}
 		uid := uint32(0)
@@ -530,6 +540,9 @@ func (s *Scheduler) syncFolder(c *email.Client, account *models.EmailAccount, db
 		if uid > maxUID {
 			maxUID = uid
 		}
+	}
+	if len(pushCandidates) > 0 {
+		s.sendNewMailPush(account.UserID, pushCandidates)
 	}
 
 	// 2. Sync flags for ALL existing messages (catch read/star changes from other clients)
@@ -599,6 +612,62 @@ func (s *Scheduler) syncFolder(c *email.Client, account *models.EmailAccount, db
 	}
 
 	return newMessages, nil
+}
+
+// sendNewMailPush delivers a background Web Push notification for genuinely new unread
+// inbox mail to every device userID has subscribed (Settings > General > Notifications).
+// Mirrors the title/body convention already used client-side by sendOSNotification() in
+// app.js so a background push and a foreground toast read the same way.
+func (s *Scheduler) sendNewMailPush(userID int64, msgs []*models.Message) {
+	if s.cfg.VAPIDPrivateKey == "" || s.cfg.VAPIDPublicKey == "" {
+		return
+	}
+	subs, err := s.db.GetPushSubscriptionsForUser(userID)
+	if err != nil || len(subs) == 0 {
+		return
+	}
+
+	first := msgs[0]
+	fromLabel := first.FromName
+	if fromLabel == "" {
+		fromLabel = first.FromEmail
+	}
+	subject := first.Subject
+	if subject == "" {
+		subject = "(no subject)"
+	}
+
+	title, body := fromLabel, subject
+	if len(msgs) > 1 {
+		title = fmt.Sprintf("%d new messages in GoWebMail", len(msgs))
+		body = fmt.Sprintf("%s: %s", fromLabel, subject)
+	}
+
+	payload, err := json.Marshal(map[string]string{"title": title, "body": body, "tag": "gowebmail-new"})
+	if err != nil {
+		return
+	}
+
+	for _, sub := range subs {
+		resp, err := webpush.SendNotification(payload, &webpush.Subscription{
+			Endpoint: sub.Endpoint,
+			Keys:     webpush.Keys{P256dh: sub.P256dh, Auth: sub.Auth},
+		}, &webpush.Options{
+			Subscriber:      "mailto:noreply@" + s.cfg.Hostname,
+			VAPIDPublicKey:  s.cfg.VAPIDPublicKey,
+			VAPIDPrivateKey: s.cfg.VAPIDPrivateKey,
+			TTL:             60,
+		})
+		if err != nil {
+			log.Printf("[push] send to user %d: %v", userID, err)
+			continue
+		}
+		resp.Body.Close()
+		if resp.StatusCode == 404 || resp.StatusCode == 410 {
+			// Subscription is dead (browser data cleared, app uninstalled, etc).
+			s.db.DeletePushSubscriptionByEndpoint(sub.Endpoint)
+		}
+	}
 }
 
 // ---- Pending ops drain ----

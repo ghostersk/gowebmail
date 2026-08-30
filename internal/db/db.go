@@ -494,6 +494,23 @@ func (d *DB) Migrate() error {
 	// One-row-per-migration marker table so a one-time data backfill (as opposed to a
 	// schema ALTER, which is naturally idempotent) runs exactly once, ever — never
 	// re-applying and silently overwriting a choice the user made after that first run.
+	// Web Push subscriptions — a browser/WebView calls PushManager.subscribe() once per
+	// device and posts the result here; the syncer looks these up by user_id to deliver
+	// background new-mail notifications via VAPID. Outlives login sessions on purpose.
+	if _, err := d.sql.Exec(`CREATE TABLE IF NOT EXISTS push_subscriptions (
+		id         INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		endpoint   TEXT    NOT NULL UNIQUE,
+		p256dh     TEXT    NOT NULL,
+		auth       TEXT    NOT NULL,
+		created_at DATETIME DEFAULT (datetime('now'))
+	)`); err != nil {
+		return fmt.Errorf("create push_subscriptions: %w", err)
+	}
+	if _, err := d.sql.Exec(`CREATE INDEX IF NOT EXISTS idx_push_subs_user ON push_subscriptions(user_id)`); err != nil {
+		return fmt.Errorf("create idx_push_subs_user: %w", err)
+	}
+
 	if _, err := d.sql.Exec(`CREATE TABLE IF NOT EXISTS data_migrations (
 		name       TEXT PRIMARY KEY,
 		applied_at DATETIME DEFAULT (datetime('now'))
@@ -3633,4 +3650,69 @@ func (d *DB) GetTrustedCert(accountID int64, fingerprint string) (string, error)
 		return "", nil
 	}
 	return certPEM, err
+}
+
+// ---- Web Push subscriptions ----
+
+// PushSubscription is a decrypted row from push_subscriptions, shaped to match
+// webpush.Subscription directly (Endpoint + Keys.P256dh/Auth).
+type PushSubscription struct {
+	ID       int64
+	Endpoint string
+	P256dh   string
+	Auth     string
+}
+
+// UpsertPushSubscription stores (or refreshes) a browser's PushSubscription for userID.
+// p256dh/auth are encrypted at rest like other sensitive fields.
+func (d *DB) UpsertPushSubscription(userID int64, endpoint, p256dh, auth string) error {
+	encP256dh, err := d.enc.Encrypt(p256dh)
+	if err != nil {
+		return err
+	}
+	encAuth, err := d.enc.Encrypt(auth)
+	if err != nil {
+		return err
+	}
+	_, err = d.sql.Exec(`
+		INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(endpoint) DO UPDATE SET user_id=excluded.user_id, p256dh=excluded.p256dh, auth=excluded.auth`,
+		userID, endpoint, encP256dh, encAuth)
+	return err
+}
+
+// DeletePushSubscription removes a subscription by its endpoint, scoped to userID so one
+// user can't unsubscribe another's device.
+func (d *DB) DeletePushSubscription(userID int64, endpoint string) error {
+	_, err := d.sql.Exec(`DELETE FROM push_subscriptions WHERE user_id=? AND endpoint=?`, userID, endpoint)
+	return err
+}
+
+// DeletePushSubscriptionByEndpoint removes a subscription regardless of owner — used when
+// the push service reports the endpoint is gone (410/404), so no user_id is known at that point.
+func (d *DB) DeletePushSubscriptionByEndpoint(endpoint string) error {
+	_, err := d.sql.Exec(`DELETE FROM push_subscriptions WHERE endpoint=?`, endpoint)
+	return err
+}
+
+// GetPushSubscriptionsForUser returns every device subscribed to push for userID.
+func (d *DB) GetPushSubscriptionsForUser(userID int64) ([]*PushSubscription, error) {
+	rows, err := d.sql.Query(`SELECT id, endpoint, p256dh, auth FROM push_subscriptions WHERE user_id=?`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*PushSubscription
+	for rows.Next() {
+		var s PushSubscription
+		var encP256dh, encAuth string
+		if err := rows.Scan(&s.ID, &s.Endpoint, &encP256dh, &encAuth); err != nil {
+			continue
+		}
+		s.P256dh, _ = d.enc.Decrypt(encP256dh)
+		s.Auth, _ = d.enc.Decrypt(encAuth)
+		out = append(out, &s)
+	}
+	return out, rows.Err()
 }

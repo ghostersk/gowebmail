@@ -143,6 +143,26 @@ func main() {
 		w.Header().Set("Content-Type", "image/png")
 		w.Write(data)
 	})
+	// PWA manifest + service worker — served at root (not /static/) so the service worker's
+	// default scope covers the whole app, not just /static/.
+	r.HandleFunc("/manifest.json", func(w http.ResponseWriter, r *http.Request) {
+		data, err := gowebmail.WebFS.ReadFile("web/static/manifest.json")
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/manifest+json")
+		w.Write(data)
+	})
+	r.HandleFunc("/sw.js", func(w http.ResponseWriter, r *http.Request) {
+		data, err := gowebmail.WebFS.ReadFile("web/static/sw.js")
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/javascript")
+		w.Write(data)
+	})
 	// Public auth routes
 	auth := r.PathPrefix("/auth").Subrouter()
 	auth.HandleFunc("/login", h.Auth.ShowLogin).Methods("GET")
@@ -278,6 +298,11 @@ func main() {
 	api.HandleFunc("/accounts/sort-order", h.API.SetAccountSortOrder).Methods("PUT")
 	api.HandleFunc("/ui-prefs", h.API.GetUIPrefs).Methods("GET")
 	api.HandleFunc("/ui-prefs", h.API.SetUIPrefs).Methods("PUT")
+
+	// Web Push (background new-mail notifications)
+	api.HandleFunc("/push/vapid-public-key", h.API.GetVAPIDPublicKey).Methods("GET")
+	api.HandleFunc("/push/subscribe", h.API.SubscribePush).Methods("POST")
+	api.HandleFunc("/push/unsubscribe", h.API.UnsubscribePush).Methods("POST")
 	api.HandleFunc("/login-history", h.API.ListMyLoginHistory).Methods("GET")
 
 	// Search

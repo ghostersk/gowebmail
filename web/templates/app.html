@@ -281,11 +281,33 @@
   </div>
   <div class="compose-body-wrap" id="compose-body-wrap">
     <div class="compose-field"><label for="compose-from">From</label><select id="compose-from" onchange="onComposeFromChange()"></select></div>
-    <div class="compose-field compose-tag-field"><label id="compose-to-label">To</label><div id="compose-to" class="tag-container" role="group" aria-labelledby="compose-to-label"></div></div>
+    <div class="compose-field compose-tag-field"><label id="compose-to-label">To</label><div id="compose-to" class="tag-container" role="group" aria-labelledby="compose-to-label"></div>
+      <div class="compose-cc-bcc-toggle">
+        <button type="button" class="cc-bcc-btn" id="cc-toggle-btn" onclick="showCCRow()">Cc</button>
+        <button type="button" class="cc-bcc-btn" id="bcc-toggle-btn" onclick="showBCCRow()">Bcc</button>
+      </div>
+    </div>
     <div class="compose-field compose-tag-field" id="cc-row" style="display:none"><label id="compose-cc-label">CC</label><div id="compose-cc-tags" class="tag-container" role="group" aria-labelledby="compose-cc-label"></div></div>
     <div class="compose-field compose-tag-field" id="bcc-row" style="display:none"><label id="compose-bcc-label">BCC</label><div id="compose-bcc-tags" class="tag-container" role="group" aria-labelledby="compose-bcc-label"></div></div>
     <div class="compose-field"><label for="compose-subject">Subject</label><input type="text" id="compose-subject" oninput="S.draftDirty=true"></div>
     <div class="compose-toolbar" role="toolbar" aria-label="Formatting">
+      <select class="fmt-font-select" title="Font" aria-label="Font family" onmousedown="saveEditorRange()" onchange="applyFontFromSelect(this)">
+        <option value="">Font</option>
+        <option value="Arial" style="font-family:Arial">Arial</option>
+        <option value="Helvetica" style="font-family:Helvetica">Helvetica</option>
+        <option value="Georgia" style="font-family:Georgia">Georgia</option>
+        <option value="'Times New Roman'" style="font-family:'Times New Roman'">Times New Roman</option>
+        <option value="'Courier New'" style="font-family:'Courier New'">Courier New</option>
+        <option value="Verdana" style="font-family:Verdana">Verdana</option>
+        <option value="Tahoma" style="font-family:Tahoma">Tahoma</option>
+        <option value="'Trebuchet MS'" style="font-family:'Trebuchet MS'">Trebuchet MS</option>
+        <option value="Garamond" style="font-family:Garamond">Garamond</option>
+        <option value="'Palatino Linotype'" style="font-family:'Palatino Linotype'">Palatino</option>
+        <option value="'Comic Sans MS'" style="font-family:'Comic Sans MS'">Comic Sans MS</option>
+        <option value="Impact" style="font-family:Impact">Impact</option>
+        <option value="'Lucida Console'" style="font-family:'Lucida Console'">Lucida Console</option>
+      </select>
+      <span class="fmt-sep"></span>
       <button class="fmt-btn" title="Bold" aria-label="Bold" onclick="execFmt('bold')"><b>B</b></button>
       <button class="fmt-btn" title="Italic" aria-label="Italic" onclick="execFmt('italic')"><i>I</i></button>
       <button class="fmt-btn" title="Underline" aria-label="Underline" onclick="execFmt('underline')"><u>U</u></button>
@@ -295,15 +317,14 @@
       <span class="fmt-sep"></span>
       <button class="fmt-btn" title="Link" aria-label="Insert link" onclick="insertLink()">&#128279;</button>
       <button class="fmt-btn" title="Clear format" aria-label="Clear formatting" onclick="execFmt('removeFormat')">T&#x20D7;</button>
+      <span class="fmt-sep"></span>
+      <button class="fmt-btn" title="Attach files" aria-label="Attach files" onclick="triggerAttach()">&#128206;</button>
     </div>
     <div id="compose-editor" contenteditable="true" role="textbox" aria-multiline="true" aria-label="Message body" class="compose-editor" placeholder="Write your message..."></div>
     <div id="compose-attach-list" class="compose-attach-list"></div>
     <div class="compose-footer">
       <button class="send-btn" id="send-btn" onclick="sendMessage()">Send</button>
       <div style="display:flex;gap:6px;margin-left:4px">
-        <button class="btn-secondary" style="font-size:12px" onclick="showCCRow()">+CC</button>
-        <button class="btn-secondary" style="font-size:12px" onclick="showBCCRow()">+BCC</button>
-        <button class="btn-secondary" style="font-size:12px" onclick="triggerAttach()">&#128206; Attach</button>
         <button class="btn-secondary" style="font-size:12px" onclick="saveDraft()">&#9998; Draft</button>
         <button class="btn-secondary" style="font-size:12px" onclick="openSendLater()">&#128339; Send later</button>
       </div>
@@ -607,12 +628,12 @@
 
 <!-- ── Settings Modal ─────────────────────────────────────────────────────── -->
 <div class="modal-overlay" id="settings-modal" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="settings-modal-title">
-  <div class="modal" style="width:820px;max-width:95vw;height:640px;max-height:90vh;padding:0;display:flex;flex-direction:column">
+  <div class="modal settings-modal-box" style="width:820px;max-width:95vw;height:640px;max-height:90vh;padding:0;display:flex;flex-direction:column">
     <div style="display:flex;align-items:center;justify-content:space-between;padding:22px 24px 16px">
       <h2 id="settings-modal-title" style="margin-bottom:0">Settings</h2>
       <button onclick="closeModal('settings-modal')" class="icon-btn" aria-label="Close settings"><svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg></button>
     </div>
-    <div style="display:flex;align-items:stretch;min-height:0;flex:1;border-top:1px solid var(--border)">
+    <div class="settings-body" style="display:flex;align-items:stretch;min-height:0;flex:1;border-top:1px solid var(--border)">
       <div class="settings-nav" role="tablist" aria-label="Settings sections">
         <button data-tab="accounts" class="active" role="tab" aria-selected="true" onclick="showSettingsTab('accounts')">Accounts</button>
         <button data-tab="general" role="tab" aria-selected="false" onclick="showSettingsTab('general')">General</button>
