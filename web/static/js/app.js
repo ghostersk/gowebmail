@@ -59,8 +59,15 @@ function applyViewPrefs() {
   if (listPanel) {
     const widthPx = uiPrefsGet('panelWidthPx', null);
     const heightPct = uiPrefsGet('panelHeightPct', null);
-    if (widthPx) listPanel.style.width = widthPx + 'px';
-    if (heightPct) listPanel.style.height = heightPct + '%';
+    // Inline styles beat the orientation CSS — only apply the saved dimension
+    // for the current reading-pane mode and clear the other.
+    if (pane === 'bottom') {
+      listPanel.style.height = heightPct ? heightPct + '%' : '';
+      listPanel.style.width = '';
+    } else {
+      listPanel.style.width = widthPx ? widthPx + 'px' : '';
+      listPanel.style.height = '';
+    }
   }
 }
 
