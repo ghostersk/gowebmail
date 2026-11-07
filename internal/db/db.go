@@ -65,7 +65,9 @@ func (d *DB) Migrate() error {
 			sync_interval INTEGER NOT NULL DEFAULT 15,
 			last_login_at DATETIME,
 			created_at    DATETIME DEFAULT (datetime('now')),
-			updated_at    DATETIME DEFAULT (datetime('now'))
+			updated_at    DATETIME DEFAULT (datetime('now')),
+			compose_popup INTEGER NOT NULL DEFAULT 0,
+			ui_prefs      TEXT    NOT NULL DEFAULT '{}'
 		)`,
 		`CREATE TABLE IF NOT EXISTS email_accounts (
 			id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -84,7 +86,13 @@ func (d *DB) Migrate() error {
 			color         TEXT    NOT NULL DEFAULT '#4A90D9',
 			is_active     INTEGER NOT NULL DEFAULT 1,
 			last_sync     DATETIME,
-			created_at    DATETIME DEFAULT (datetime('now'))
+			created_at    DATETIME DEFAULT (datetime('now')),
+			sync_days      INTEGER NOT NULL DEFAULT 30,
+			sync_mode      TEXT    NOT NULL DEFAULT 'days',
+			sync_all_folders INTEGER NOT NULL DEFAULT 0,
+			sort_order     INTEGER NOT NULL DEFAULT 0,
+			caldav_url     TEXT    NOT NULL DEFAULT '',
+			carddav_url    TEXT    NOT NULL DEFAULT ''
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_accounts_user ON email_accounts(user_id)`,
 		`CREATE TABLE IF NOT EXISTS folders (
@@ -94,7 +102,11 @@ func (d *DB) Migrate() error {
 			full_path    TEXT    NOT NULL,
 			folder_type  TEXT    NOT NULL DEFAULT 'custom',
 			unread_count INTEGER NOT NULL DEFAULT 0,
-			total_count  INTEGER NOT NULL DEFAULT 0
+			total_count  INTEGER NOT NULL DEFAULT 0,
+			is_hidden    INTEGER NOT NULL DEFAULT 0,
+			sync_enabled INTEGER NOT NULL DEFAULT 1,
+			uid_validity INTEGER NOT NULL DEFAULT 0,
+			last_seen_uid INTEGER NOT NULL DEFAULT 0
 		)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_folders_account_path ON folders(account_id, full_path)`,
 		`CREATE TABLE IF NOT EXISTS messages (
@@ -118,7 +130,12 @@ func (d *DB) Migrate() error {
 			is_starred     INTEGER  NOT NULL DEFAULT 0,
 			is_draft       INTEGER  NOT NULL DEFAULT 0,
 			has_attachment INTEGER  NOT NULL DEFAULT 0,
-			created_at     DATETIME DEFAULT (datetime('now'))
+			created_at     DATETIME DEFAULT (datetime('now')),
+			folder_path    TEXT    NOT NULL DEFAULT '',
+			search_text    TEXT    NOT NULL DEFAULT '',
+			search_subject TEXT    NOT NULL DEFAULT '',
+			search_body    TEXT    NOT NULL DEFAULT '',
+			snoozed_until  DATETIME
 		)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_uid ON messages(account_id, folder_id, remote_uid)`,
 		`CREATE INDEX IF NOT EXISTS idx_messages_date ON messages(date DESC)`,
@@ -473,7 +490,8 @@ func (d *DB) Migrate() error {
 		body_text        TEXT    NOT NULL DEFAULT '',
 		forward_from_ids TEXT    NOT NULL DEFAULT '',
 		send_at          DATETIME NOT NULL,
-		created_at       DATETIME DEFAULT (datetime('now'))
+		created_at       DATETIME DEFAULT (datetime('now')),
+		paused           INTEGER NOT NULL DEFAULT 0
 	)`); err != nil {
 		return fmt.Errorf("create scheduled_sends: %w", err)
 	}
