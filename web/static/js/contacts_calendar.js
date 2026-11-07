@@ -180,7 +180,13 @@ const CAL = {
   view: 'month',
   cursor: new Date(),
   events: [],
+  calendars: [],
+  hidden: JSON.parse(localStorage.getItem('calVisible.v1') || '[]'),
 };
+
+function calVisibleIds() {
+  return CAL.calendars.filter(c => !CAL.hidden.includes(c.id)).map(c => c.id);
+}
 
 function calSetView(v) {
   CAL.view = v;
@@ -203,6 +209,131 @@ function calNav(dir) {
 
 function calGoToday() { CAL.cursor = new Date(); calRender(); }
 
+// ======== CALENDARS PANEL ========
+
+const CAL_COLORS = ['#0078D4','#EA4335','#34A853','#FBBC04','#9C27B0','#FF6D00'];
+let _calEditId = 0;
+let _calFormColor = '#0078D4';
+
+async function loadCalendars() {
+  try {
+    CAL.calendars = (await api('GET', '/calendars')) || [];
+  } catch (e) {
+    CAL.calendars = [];
+  }
+  const ex = document.getElementById('cal-export-btn');
+  if (ex) {
+    const vis = calVisibleIds();
+    ex.href = '/api/calendar/export.ics' +
+      (CAL.calendars.length && vis.length < CAL.calendars.length ? '?calendar_ids=' + vis.join(',') : '');
+  }
+  renderCalPanel();
+}
+
+function renderCalPanel() {
+  const panel = document.getElementById('cal-cal-panel');
+  if (!panel) return;
+  if (!CAL.calendars.length) { panel.style.display = 'none'; return; }
+  panel.style.display = '';
+  const accEmail = id => {
+    const a = (S.accounts || []).find(x => x.id === id);
+    return a ? a.email_address : '';
+  };
+  panel.innerHTML = CAL.calendars.map(c => {
+    const email = c.account_id ? ` <span style="color:var(--muted);font-size:11px">${esc(accEmail(c.account_id))}</span>` : '';
+    return `<div class="cal-cal-row">
+      <input type="checkbox" ${CAL.hidden.includes(c.id) ? '' : 'checked'} style="width:auto" onchange="calToggleVisible(${c.id}, this.checked)">
+      <span style="width:10px;height:10px;border-radius:50%;background:${esc(c.color)};flex-shrink:0"></span>
+      <span style="flex:1;font-size:13px">${esc(c.name)}${email}</span>
+      <button class="icon-btn" style="width:22px;height:22px;font-size:12px" title="Edit calendar" onclick="calEdit(${c.id})">✎</button>
+      <button class="icon-btn" style="width:22px;height:22px;font-size:12px" title="Delete calendar" onclick="calDeleteCal(${c.id})">✕</button>
+    </div>`;
+  }).join('') +
+  `<div class="cal-cal-row" style="border-bottom:none"><span style="cursor:pointer;color:var(--accent);font-size:13px" onclick="calAddCal()">+ Add calendar</span></div>`;
+}
+
+function calCalForm(c) {
+  c = c || {};
+  const opts = ['<option value="">None</option>'].concat(
+    (S.accounts || []).map(a =>
+      `<option value="${a.id}" ${c.account_id === a.id ? 'selected' : ''}>${esc(a.email_address)}</option>`)).join('');
+  return `<div class="cal-cal-row" style="flex-wrap:wrap">
+    <input id="cal-name" type="text" placeholder="Name" value="${esc(c.name || '')}" style="width:130px;padding:4px 8px;font-size:13px;background:var(--bg);border:1px solid var(--border2);border-radius:6px;color:var(--text)">
+    <select id="cal-acc" style="padding:4px 6px;font-size:12px;background:var(--bg);border:1px solid var(--border2);border-radius:6px;color:var(--text)">${opts}</select>
+    ${CAL_COLORS.map(cl => `<span data-color="${cl}" onclick="calPickColor(this)" title="${cl}" style="width:18px;height:18px;border-radius:50%;background:${cl};cursor:pointer;border:2px solid ${c.color === cl ? 'white' : 'transparent'}"></span>`).join('')}
+    <button class="btn-secondary" style="font-size:11px;padding:2px 10px" onclick="calSaveCal(${c.id || 0})">Save</button>
+    <button class="btn-secondary" style="font-size:11px;padding:2px 10px" onclick="renderCalPanel()">Cancel</button>
+  </div>`;
+}
+
+function calPickColor(el) {
+  _calFormColor = el.dataset.color;
+  document.querySelectorAll('#cal-cal-panel [data-color]').forEach(s => s.style.borderColor = 'transparent');
+  el.style.borderColor = 'white';
+}
+
+function calAddCal() {
+  _calEditId = 0;
+  _calFormColor = CAL_COLORS[0];
+  const panel = document.getElementById('cal-cal-panel');
+  panel.style.display = '';
+  panel.innerHTML = calCalForm(null);
+  document.getElementById('cal-name').focus();
+}
+
+function calEdit(id) {
+  const c = CAL.calendars.find(x => x.id === id);
+  if (!c) return;
+  _calEditId = id;
+  _calFormColor = c.color || CAL_COLORS[0];
+  const panel = document.getElementById('cal-cal-panel');
+  panel.style.display = '';
+  panel.innerHTML = calCalForm(c);
+}
+
+async function calSaveCal(id) {
+  const name = document.getElementById('cal-name').value.trim();
+  if (!name) { toast('Calendar name is required', 'error'); return; }
+  const body = { name, color: _calFormColor, account_id: Number(document.getElementById('cal-acc').value) || null };
+  if (id) await api('PUT', `/calendars/${id}`, body);
+  else await api('POST', '/calendars', body);
+  await calRender();
+  toast(id ? 'Calendar updated' : 'Calendar added', 'success');
+}
+
+async function calDeleteCal(id) {
+  const c = CAL.calendars.find(x => x.id === id);
+  if (!c) return;
+  if (!c.account_id && c.name === 'General') return; // General can't be deleted (server enforces too)
+  if (!confirm(`Delete "${c.name}"? Its events will move to General.`)) return;
+  await api('DELETE', `/calendars/${id}`);
+  CAL.hidden = CAL.hidden.filter(h => h !== id);
+  localStorage.setItem('calVisible.v1', JSON.stringify(CAL.hidden));
+  await calRender();
+  toast('Calendar deleted', 'success');
+}
+
+async function calToggleVisible(id, checked) {
+  if (checked) CAL.hidden = CAL.hidden.filter(h => h !== id);
+  else if (!CAL.hidden.includes(id)) CAL.hidden.push(id);
+  localStorage.setItem('calVisible.v1', JSON.stringify(CAL.hidden));
+  await calRender();
+}
+
+async function calImportFile(input) {
+  const f = input.files && input.files[0];
+  input.value = '';
+  if (!f) return;
+  const text = await f.text();
+  const r = await api('POST', '/calendar/import', { text, calendar_id: 0 });
+  if (r && r.imported !== undefined) {
+    toast(`Imported ${r.imported} events`, 'success');
+    await calRender();
+  } else {
+    toast('Import failed', 'error');
+  }
+}
+
 async function calRender() {
   const gridEl = document.getElementById('cal-grid');
   if (!gridEl) return;
@@ -223,7 +354,17 @@ async function calRender() {
   }
 
   const fmt = d => d.toISOString().split('T')[0];
-  const data = await api('GET', `/calendar/events?from=${fmt(from)}&to=${fmt(to)}`);
+  await loadCalendars();
+  const vis = calVisibleIds();
+  // No filter when nothing is hidden (or the calendar list is unavailable);
+  // an empty visible set means "show nothing".
+  let data;
+  if (CAL.calendars.length && vis.length === 0) {
+    data = [];
+  } else {
+    const q = (CAL.calendars.length && vis.length < CAL.calendars.length) ? `&calendar_ids=${vis.join(',')}` : '';
+    data = await api('GET', `/calendar/events?from=${fmt(from)}&to=${fmt(to)}${q}`);
+  }
   CAL.events = data || [];
   const evs = expandRecurrences(CAL.events, fmt(from), fmt(to));
 
@@ -460,15 +601,28 @@ function selectEvColor(el) {
   el.style.borderColor = 'white';
 }
 
+// Fill the #ev-calendar picker (visible calendars first) and select the
+// event's calendar, or the first visible one for new events.
+function fillEvCalendar(preferId) {
+  const sel = document.getElementById('ev-calendar');
+  if (!sel) return;
+  const cals = [...CAL.calendars].sort((a, b) =>
+    (CAL.hidden.includes(b.id) ? 1 : 0) - (CAL.hidden.includes(a.id) ? 1 : 0));
+  sel.innerHTML = cals.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
+  let pick = cals.find(c => c.id === preferId) || cals.find(c => !CAL.hidden.includes(c.id)) || cals[0];
+  if (pick) sel.value = String(pick.id);
+}
+
 function openEventForm(id, defaultStart) {
   _editingEventId = id || null;
   const delBtn = document.getElementById('ev-delete-btn');
+  const ev = id ? CAL.events.find(e => e.id === id) : null;
+  fillEvCalendar(ev ? ev.calendar_id : 0);
   _selectedEvColor = '#0078D4';
   document.querySelectorAll('#ev-colors span').forEach((s,i) => s.style.borderColor = i===0?'white':'transparent');
   if (id) {
     document.getElementById('event-modal-title').textContent = 'Edit Event';
     if (delBtn) delBtn.style.display = '';
-    const ev = CAL.events.find(e => e.id === id);
     if (ev) {
       document.getElementById('ev-title').value = ev.title||'';
       document.getElementById('ev-start').value = (ev.start_time||'').replace(' ','T').substring(0,16);
@@ -499,6 +653,8 @@ function openEventForm(id, defaultStart) {
 async function saveEvent() {
   const title = document.getElementById('ev-title').value.trim();
   if (!title) { toast('Title is required','error'); return; }
+  const evCalId = Number(document.getElementById('ev-calendar').value) || 0;
+  const evCal = CAL.calendars.find(x => x.id === evCalId);
   const body = {
     title,
     start_time: document.getElementById('ev-start').value.replace('T',' '),
@@ -508,6 +664,8 @@ async function saveEvent() {
     description:document.getElementById('ev-desc').value.trim(),
     color:      _selectedEvColor,
     status:     'confirmed',
+    calendar_id: evCalId,
+    account_id:  evCal ? evCal.account_id : null,
   };
   if (_editingEventId) {
     await api('PUT', `/calendar/events/${_editingEventId}`, body);

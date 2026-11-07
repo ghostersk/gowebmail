@@ -259,11 +259,15 @@
         <button class="btn-secondary" id="cal-btn-month" onclick="calSetView('month')" style="font-size:12px">Month</button>
         <button class="btn-secondary" id="cal-btn-week" onclick="calSetView('week')" style="font-size:12px">Week</button>
         <button class="btn-secondary" onclick="openEventForm()" style="font-size:12px;background:var(--accent);color:white;border-color:var(--accent)">+ Event</button>
+        <a class="icon-btn" id="cal-export-btn" href="/api/calendar/export.ics" download="gowebmail.ics" title="Export visible calendars as .ics" aria-label="Export .ics">⬇</a>
+        <button class="icon-btn" title="Import .ics" aria-label="Import .ics" onclick="document.getElementById('cal-import-file').click()">⬆</button>
+        <input type="file" accept=".ics,text/calendar" id="cal-import-file" style="display:none" onchange="calImportFile(this)">
         <button class="icon-btn" onclick="showCalDAVSettings()" title="CalDAV / sharing" aria-label="CalDAV and sharing settings">
           <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z"/></svg>
         </button>
       </div>
     </div>
+    <div id="cal-cal-panel" style="display:none;border-bottom:1px solid var(--border);padding:4px 18px;flex-shrink:0"></div>
     <div id="cal-grid" style="flex:1;overflow-y:auto"></div>
   </div>
   </div><!-- .app-body -->
@@ -303,6 +307,7 @@
 <div class="modal-overlay" id="event-modal" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="event-modal-title">
   <div class="modal" style="max-width:520px">
     <h2 id="event-modal-title">New Event</h2>
+    <div class="modal-field"><label>Calendar</label><select id="ev-calendar"></select></div>
     <div class="modal-field"><label>Title</label><input id="ev-title" type="text" placeholder="Event title"></div>
     <div class="modal-row">
       <div class="modal-field"><label>Start</label><input id="ev-start" type="datetime-local"></div>
@@ -1054,5 +1059,5 @@
 
 {{define "scripts"}}
 <script src="/static/js/app.js?v=106"></script>
-<script src="/static/js/contacts_calendar.js?v=82"></script>
+<script src="/static/js/contacts_calendar.js?v=85"></script>
 {{end}}

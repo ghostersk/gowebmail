@@ -375,3 +375,79 @@ func bytesCount(s, substr string) int {
 	}
 	return count
 }
+
+// TestParseICSEvents covers the .ics import parser (Task 9 / C2b).
+func TestParseICSEvents(t *testing.T) {
+	plain := "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:uid-1\r\nSUMMARY:Plain event\r\nLOCATION:Room 1\r\nDTSTART:20261105T090000\r\nDTEND:20261105T100000\r\nEND:VEVENT\r\nEND:VCALENDAR"
+	allDay := "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:uid-2\r\nSUMMARY:Holidays\r\nDTSTART;VALUE=DATE:20261110\r\nDTEND;VALUE=DATE:20261112\r\nEND:VEVENT\r\nEND:VCALENDAR"
+	folded := "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:uid-3\r\nSUMMARY:This is a very long summary line that " +
+		"exceeds the seventy-five character " +
+		"fold limit and must be unfolded again\r\nDTSTART:20261107T080000\r\nDTEND:20261107T090000\r\nEND:VEVENT\r\nEND:VCALENDAR"
+	tzid := "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:uid-4\r\nSUMMARY:Brussels meeting\r\nDTSTART;TZID=Europe/Brussels:20261105T090000\r\nDTEND;TZID=Europe/Brussels:20261105T100000\r\nEND:VEVENT\r\nEND:VCALENDAR"
+	rrule := "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:uid-5\r\nSUMMARY:Weekly standup\r\nDTSTART:20261103T090000\r\nDTEND:20261103T093000\r\nRRULE:FREQ=WEEKLY;COUNT=4\r\nSTATUS:CONFIRMED\r\nEND:VEVENT\r\nEND:VCALENDAR"
+	multi := "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:a1\r\nSUMMARY:First\r\nDTSTART:20261101T090000\r\nDTEND:20261101T100000\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:a2\r\nSUMMARY:Second\r\nDTSTART:20261102T090000\r\nDTEND:20261102T100000\r\nEND:VEVENT\r\nEND:VCALENDAR"
+	noUID := "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nSUMMARY:No uid here\r\nDTSTART:20261101T090000\r\nDTEND:20261101T100000\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:ok\r\nSUMMARY:Keep me\r\nDTSTART:20261102T090000\r\nDTEND:20261102T100000\r\nEND:VEVENT\r\nEND:VCALENDAR"
+
+	for name, tt := range map[string]struct {
+		text   string
+		n      int
+		check  func(*testing.T, *models.CalendarEvent)
+	}{
+		"plain": {plain, 1, func(t *testing.T, e *models.CalendarEvent) {
+			if e.Title != "Plain event" || e.Location != "Room 1" {
+				t.Fatalf("got %+v", e)
+			}
+			if e.StartTime != "2026-11-05 09:00:00" || e.EndTime != "2026-11-05 10:00:00" {
+				t.Fatalf("times: %q / %q", e.StartTime, e.EndTime)
+			}
+			if e.AllDay {
+				t.Fatal("should not be all-day")
+			}
+		}},
+		"allday": {allDay, 1, func(t *testing.T, e *models.CalendarEvent) {
+			if !e.AllDay {
+				t.Fatal("should be all-day")
+			}
+			if e.StartTime != "2026-11-10 00:00:00" || e.EndTime != "2026-11-12 00:00:00" {
+				t.Fatalf("times: %q / %q", e.StartTime, e.EndTime)
+			}
+		}},
+		"folded": {folded, 1, func(t *testing.T, e *models.CalendarEvent) {
+			want := "This is a very long summary line that exceeds the seventy-five character fold limit and must be unfolded again"
+			if e.Title != want {
+				t.Fatalf("got %q", e.Title)
+			}
+		}},
+		"tzid": {tzid, 1, func(t *testing.T, e *models.CalendarEvent) {
+			if e.StartTime != "2026-11-05 09:00:00" {
+				t.Fatalf("tzid not stripped: %q", e.StartTime)
+			}
+		}},
+		"rrule": {rrule, 1, func(t *testing.T, e *models.CalendarEvent) {
+			if e.RecurrenceRule != "FREQ=WEEKLY;COUNT=4" {
+				t.Fatalf("rrule: %q", e.RecurrenceRule)
+			}
+			if e.Status != "confirmed" {
+				t.Fatalf("status: %q", e.Status)
+			}
+		}},
+		"multi": {multi, 2, func(t *testing.T, e *models.CalendarEvent) {
+			if e.Title != "First" {
+				t.Fatalf("file order broken: %q", e.Title)
+			}
+		}},
+		"noUID": {noUID, 1, func(t *testing.T, e *models.CalendarEvent) {
+			if e.UID != "ok" {
+				t.Fatalf("wrong event kept: %+v", e)
+			}
+		}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			evs := parseICSEvents(tt.text)
+			if len(evs) != tt.n {
+				t.Fatalf("got %d events, want %d", len(evs), tt.n)
+			}
+			tt.check(t, evs[0])
+		})
+	}
+}

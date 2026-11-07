@@ -322,10 +322,19 @@ type Contact struct {
 
 // ---- Calendar ----
 
+type Calendar struct {
+	ID        int64  `json:"id"`
+	UserID    int64  `json:"user_id"`
+	AccountID *int64 `json:"account_id,omitempty"`
+	Name      string `json:"name"`
+	Color     string `json:"color"`
+}
+
 type CalendarEvent struct {
 	ID             int64   `json:"id"`
 	UserID         int64   `json:"user_id"`
 	AccountID      *int64  `json:"account_id,omitempty"`
+	CalendarID     int64   `json:"calendar_id"`
 	UID            string  `json:"uid"`
 	Title          string  `json:"title"`
 	Description    string  `json:"description"`

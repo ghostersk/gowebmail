@@ -207,6 +207,8 @@ func (d *DB) Migrate() error {
 		`ALTER TABLE folders ADD COLUMN last_seen_uid INTEGER NOT NULL DEFAULT 0`,
 		// Account display order for sidebar drag-and-drop reordering.
 		`ALTER TABLE email_accounts ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0`,
+		// Per-account / custom calendars; events are repointed by SeedCalendars.
+		`ALTER TABLE calendar_events ADD COLUMN calendar_id INTEGER NOT NULL DEFAULT 0`,
 		// UI preferences (JSON): collapsed accounts/folders, etc. Synced across devices.
 		`ALTER TABLE users ADD COLUMN ui_prefs TEXT NOT NULL DEFAULT '{}'`,
 		// Optional CalDAV/CardDAV sync, works alongside any mail provider (encrypted like imap_host).
@@ -331,6 +333,7 @@ func (d *DB) Migrate() error {
 		organizer_email TEXT    NOT NULL DEFAULT '',
 		attendees       TEXT    NOT NULL DEFAULT '',
 		ical_source     TEXT    NOT NULL DEFAULT '',
+		calendar_id     INTEGER NOT NULL DEFAULT 0,
 		created_at      DATETIME DEFAULT (datetime('now')),
 		updated_at      DATETIME DEFAULT (datetime('now')),
 		UNIQUE(user_id, uid)
@@ -339,6 +342,16 @@ func (d *DB) Migrate() error {
 	}
 	if _, err := d.sql.Exec(`CREATE INDEX IF NOT EXISTS idx_calendar_user_time ON calendar_events(user_id, start_time)`); err != nil {
 		return fmt.Errorf("index calendar_user_time: %w", err)
+	}
+
+	if _, err := d.sql.Exec(`CREATE TABLE IF NOT EXISTS calendars (
+		id         INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		account_id INTEGER REFERENCES email_accounts(id) ON DELETE SET NULL,
+		name       TEXT    NOT NULL DEFAULT '',
+		color      TEXT    NOT NULL DEFAULT '#0078D4'
+	)`); err != nil {
+		return fmt.Errorf("create calendars: %w", err)
 	}
 
 	if _, err := d.sql.Exec(`CREATE TABLE IF NOT EXISTS caldav_tokens (
@@ -3537,18 +3550,146 @@ func (d *DB) SearchContacts(userID int64, q string) ([]*models.Contact, error) {
 	return out, nil
 }
 
+// ======== Calendars ========
+
+func (d *DB) ListCalendars(userID int64) ([]*models.Calendar, error) {
+	rows, err := d.sql.Query(`
+		SELECT id, user_id, account_id, name, color
+		FROM calendars WHERE user_id=? ORDER BY account_id IS NOT NULL, name`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*models.Calendar
+	for rows.Next() {
+		var c models.Calendar
+		var accountID *int64
+		if err := rows.Scan(&c.ID, &c.UserID, &accountID, &c.Name, &c.Color); err != nil {
+			return nil, err
+		}
+		c.AccountID = accountID
+		out = append(out, &c)
+	}
+	return out, nil
+}
+
+func (d *DB) GetCalendar(id, userID int64) (*models.Calendar, error) {
+	var c models.Calendar
+	var accountID *int64
+	err := d.sql.QueryRow(`
+		SELECT id, user_id, account_id, name, color
+		FROM calendars WHERE id=? AND user_id=?`, id, userID).
+		Scan(&c.ID, &c.UserID, &accountID, &c.Name, &c.Color)
+	if err != nil {
+		return nil, err
+	}
+	c.AccountID = accountID
+	return &c, nil
+}
+
+func (d *DB) CreateCalendar(c *models.Calendar) error {
+	res, err := d.sql.Exec(`
+		INSERT INTO calendars (user_id, account_id, name, color) VALUES (?,?,?,?)`,
+		c.UserID, c.AccountID, c.Name, c.Color)
+	if err != nil {
+		return err
+	}
+	c.ID, _ = res.LastInsertId()
+	return nil
+}
+
+func (d *DB) UpdateCalendar(c *models.Calendar) error {
+	_, err := d.sql.Exec(`
+		UPDATE calendars SET account_id=?, name=?, color=? WHERE id=? AND user_id=?`,
+		c.AccountID, c.Name, c.Color, c.ID, c.UserID)
+	return err
+}
+
+// DeleteCalendar repoints the calendar's events to the user's General
+// calendar (or 0 if it has none) before removing the row.
+func (d *DB) DeleteCalendar(id, userID int64) error {
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`
+		UPDATE calendar_events SET calendar_id = (
+			SELECT id FROM calendars WHERE user_id=? AND account_id IS NULL ORDER BY id LIMIT 1)
+		WHERE user_id=? AND calendar_id=?`, userID, userID, id); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM calendars WHERE id=? AND user_id=?`, id, userID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// SeedCalendars creates General + one calendar per account on first run, then
+// repoints existing events to their calendar (by account match).
+func (d *DB) SeedCalendars(userID int64) error {
+	var n int
+	if err := d.sql.QueryRow(`SELECT COUNT(*) FROM calendars WHERE user_id=?`, userID).Scan(&n); err != nil {
+		return err
+	}
+	if n == 0 {
+		if _, err := d.sql.Exec(`
+			INSERT INTO calendars (user_id, account_id, name, color)
+			VALUES (?,NULL,'General','#0078D4')`, userID); err != nil {
+			return err
+		}
+		accs, err := d.ListAccountsByUser(userID)
+		if err != nil {
+			return err
+		}
+		for _, a := range accs {
+			name := a.DisplayName
+			if name == "" {
+				name = a.EmailAddress
+			}
+			if _, err := d.sql.Exec(`
+				INSERT INTO calendars (user_id, account_id, name, color) VALUES (?,?,?,?)`,
+				userID, a.ID, name, a.Color); err != nil {
+				return err
+			}
+		}
+	}
+	// Legacy events (calendar_id=0) move to the calendar of their account,
+	// or General when account-less. DeleteCalendar repoints before removing
+	// a calendar, so no dangling calendar_id can survive.
+	_, err := d.sql.Exec(`
+		UPDATE calendar_events SET calendar_id = (
+			SELECT c.id FROM calendars c
+			WHERE c.user_id = calendar_events.user_id AND c.account_id IS calendar_events.account_id
+			ORDER BY c.id LIMIT 1)
+		WHERE user_id=? AND calendar_id = 0`, userID)
+	return err
+}
+
 // ======== Calendar Events ========
 
-func (d *DB) ListCalendarEvents(userID int64, from, to string) ([]*models.CalendarEvent, error) {
+func (d *DB) ListCalendarEvents(userID int64, from, to string, calendarIDs []int64) ([]*models.CalendarEvent, error) {
+	where := " WHERE e.user_id=? AND e.start_time >= ? AND e.start_time <= ?"
+	args := []interface{}{userID, from, to}
+	if len(calendarIDs) > 0 {
+		ph := ""
+		for i, id := range calendarIDs {
+			if i > 0 {
+				ph += ","
+			}
+			ph += "?"
+			args = append(args, id)
+		}
+		where += " AND e.calendar_id IN (" + ph + ")"
+	}
 	rows, err := d.sql.Query(`
-		SELECT e.id, e.user_id, e.account_id, e.uid, e.title, e.description, e.location,
+		SELECT e.id, e.user_id, e.account_id, e.calendar_id, e.uid, e.title, e.description, e.location,
 		       e.start_time, e.end_time, e.all_day, e.recurrence_rule, e.color,
 		       e.status, e.organizer_email, e.attendees,
 		       COALESCE(a.color,''), COALESCE(a.email_address,'')
 		FROM calendar_events e
-		LEFT JOIN email_accounts a ON a.id = e.account_id
-		WHERE e.user_id=? AND e.start_time >= ? AND e.start_time <= ?
-		ORDER BY e.start_time`, userID, from, to)
+		LEFT JOIN email_accounts a ON a.id = e.account_id`+where+`
+		ORDER BY e.start_time`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -3558,7 +3699,7 @@ func (d *DB) ListCalendarEvents(userID int64, from, to string) ([]*models.Calend
 
 func (d *DB) GetCalendarEvent(id, userID int64) (*models.CalendarEvent, error) {
 	rows, err := d.sql.Query(`
-		SELECT e.id, e.user_id, e.account_id, e.uid, e.title, e.description, e.location,
+		SELECT e.id, e.user_id, e.account_id, e.calendar_id, e.uid, e.title, e.description, e.location,
 		       e.start_time, e.end_time, e.all_day, e.recurrence_rule, e.color,
 		       e.status, e.organizer_email, e.attendees,
 		       COALESCE(a.color,''), COALESCE(a.email_address,'')
@@ -3583,7 +3724,7 @@ func scanCalendarEvents(d *DB, rows interface{ Next() bool; Scan(...interface{})
 		var accountID *int64
 		var ti, de, lo, rc, co, st, oe, at []byte
 		err := rows.Scan(
-			&e.ID, &e.UserID, &accountID, &e.UID,
+			&e.ID, &e.UserID, &accountID, &e.CalendarID, &e.UID,
 			&ti, &de, &lo,
 			&e.StartTime, &e.EndTime, &e.AllDay, &rc, &co,
 			&st, &oe, &at,
@@ -3627,19 +3768,19 @@ func (d *DB) UpsertCalendarEvent(e *models.CalendarEvent) error {
 	}
 	res, err := d.sql.Exec(`
 		INSERT INTO calendar_events
-			(user_id, account_id, uid, title, description, location,
+			(user_id, account_id, calendar_id, uid, title, description, location,
 			 start_time, end_time, all_day, recurrence_rule, color,
 			 status, organizer_email, attendees)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(user_id, uid) DO UPDATE SET
 			title=excluded.title, description=excluded.description,
 			location=excluded.location, start_time=excluded.start_time,
 			end_time=excluded.end_time, all_day=excluded.all_day,
 			recurrence_rule=excluded.recurrence_rule, color=excluded.color,
 			status=excluded.status, organizer_email=excluded.organizer_email,
-			attendees=excluded.attendees,
+			attendees=excluded.attendees, calendar_id=excluded.calendar_id,
 			updated_at=datetime('now')`,
-		e.UserID, e.AccountID, e.UID, ti, de, lo,
+		e.UserID, e.AccountID, e.CalendarID, e.UID, ti, de, lo,
 		e.StartTime, e.EndTime, allDay, rc, co, st, oe, at)
 	if err != nil {
 		return err

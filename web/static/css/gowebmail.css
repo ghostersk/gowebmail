@@ -896,3 +896,7 @@ body.admin-page{overflow:auto;background:var(--bg)}
 .caldav-token-url{font-size:11px;font-family:monospace;color:var(--muted);overflow:hidden;
   text-overflow:ellipsis;white-space:nowrap;flex:1;cursor:pointer}
 .caldav-token-url:hover{color:var(--text)}
+/* Calendars panel row (reuses the CalDAV row look, tighter) */
+.cal-cal-row{display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--border)}
+.cal-cal-row .icon-btn{width:24px;height:24px;display:inline-flex;align-items:center;justify-content:center;color:var(--muted)}
+.cal-cal-row .icon-btn:hover{color:var(--text);background:var(--surface3)}

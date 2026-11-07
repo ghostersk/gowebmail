@@ -574,3 +574,137 @@ func TestToggleMessageStar(t *testing.T) {
 		t.Errorf("expected starred=false after second toggle")
 	}
 }
+
+func TestCalendarsAndEventFilter(t *testing.T) {
+	d, uid := newTestDB(t)
+	accID, _ := seedAccountAndFolder(t, d, uid)
+
+	if err := d.SeedCalendars(uid); err != nil {
+		t.Fatalf("SeedCalendars: %v", err)
+	}
+	cals, err := d.ListCalendars(uid)
+	if err != nil {
+		t.Fatalf("ListCalendars: %v", err)
+	}
+	if len(cals) != 2 {
+		t.Fatalf("expected 2 seeded calendars, got %d", len(cals))
+	}
+	var generalID, accCalID int64
+	for _, c := range cals {
+		if c.AccountID == nil {
+			if c.Name != "General" {
+				t.Fatalf("account-less calendar should be General, got %q", c.Name)
+			}
+			generalID = c.ID
+		} else if *c.AccountID == accID {
+			accCalID = c.ID
+		}
+	}
+	if generalID == 0 || accCalID == 0 {
+		t.Fatalf("missing seeded calendars: general=%d acc=%d", generalID, accCalID)
+	}
+
+	// Seed is idempotent
+	if err := d.SeedCalendars(uid); err != nil {
+		t.Fatalf("re-seed: %v", err)
+	}
+	if cals, _ = d.ListCalendars(uid); len(cals) != 2 {
+		t.Fatalf("seed not idempotent: %d calendars", len(cals))
+	}
+
+	// Legacy event (no calendar_id) gets repointed to its account calendar
+	legacy := &models.CalendarEvent{
+		UserID: uid, AccountID: &accID, Title: "legacy",
+		StartTime: "2026-11-05 09:00", EndTime: "2026-11-05 10:00", Status: "confirmed",
+	}
+	if err := d.UpsertCalendarEvent(legacy); err != nil {
+		t.Fatalf("UpsertCalendarEvent: %v", err)
+	}
+	if err := d.SeedCalendars(uid); err != nil {
+		t.Fatalf("re-seed after event: %v", err)
+	}
+	got, err := d.GetCalendarEvent(legacy.ID, uid)
+	if err != nil || got == nil {
+		t.Fatalf("GetCalendarEvent: %v", err)
+	}
+	if got.CalendarID != accCalID {
+		t.Fatalf("legacy event not repointed: cal=%d want %d", got.CalendarID, accCalID)
+	}
+
+	one := &models.CalendarEvent{
+		UserID: uid, CalendarID: generalID, Title: "on general",
+		StartTime: "2026-11-10 09:00", EndTime: "2026-11-10 10:00", Status: "confirmed",
+	}
+	two := &models.CalendarEvent{
+		UserID: uid, AccountID: &accID, CalendarID: accCalID, Title: "on account",
+		StartTime: "2026-11-11 09:00", EndTime: "2026-11-11 10:00", Status: "confirmed",
+	}
+	if err := d.UpsertCalendarEvent(one); err != nil {
+		t.Fatalf("upsert 1: %v", err)
+	}
+	if err := d.UpsertCalendarEvent(two); err != nil {
+		t.Fatalf("upsert 2: %v", err)
+	}
+
+	from, to := "2026-11-01", "2026-11-30"
+	all, err := d.ListCalendarEvents(uid, from, to, nil)
+	if err != nil {
+		t.Fatalf("ListCalendarEvents: %v", err)
+	}
+	if len(all) != 3 {
+		t.Fatalf("expected 3 events, got %d", len(all))
+	}
+	filtered, err := d.ListCalendarEvents(uid, from, to, []int64{generalID})
+	if err != nil {
+		t.Fatalf("ListCalendarEvents filtered: %v", err)
+	}
+	if len(filtered) != 1 || filtered[0].CalendarID != generalID {
+		t.Fatalf("filter returned wrong events: %+v", filtered)
+	}
+}
+
+func TestCalendarCRUD(t *testing.T) {
+	d, uid := newTestDB(t)
+	accID, _ := seedAccountAndFolder(t, d, uid)
+	if err := d.SeedCalendars(uid); err != nil {
+		t.Fatalf("SeedCalendars: %v", err)
+	}
+
+	c := &models.Calendar{UserID: uid, Name: "Work", Color: "#EA4335", AccountID: &accID}
+	if err := d.CreateCalendar(c); err != nil {
+		t.Fatalf("CreateCalendar: %v", err)
+	}
+	if c.ID == 0 {
+		t.Fatal("CreateCalendar did not set ID")
+	}
+	got, err := d.GetCalendar(c.ID, uid)
+	if err != nil || got == nil || got.Name != "Work" {
+		t.Fatalf("GetCalendar: %+v %v", got, err)
+	}
+
+	got.Name = "Personal"
+	if err := d.UpdateCalendar(got); err != nil {
+		t.Fatalf("UpdateCalendar: %v", err)
+	}
+	got2, _ := d.GetCalendar(c.ID, uid)
+	if got2.Name != "Personal" {
+		t.Fatalf("update not persisted: %q", got2.Name)
+	}
+
+	// Event on the calendar must be repointed to General on delete
+	ev := &models.CalendarEvent{UserID: uid, AccountID: &accID, CalendarID: c.ID, Title: "work ev",
+		StartTime: "2026-11-15 09:00", EndTime: "2026-11-15 10:00", Status: "confirmed"}
+	if err := d.UpsertCalendarEvent(ev); err != nil {
+		t.Fatalf("UpsertCalendarEvent: %v", err)
+	}
+	if err := d.DeleteCalendar(c.ID, uid); err != nil {
+		t.Fatalf("DeleteCalendar: %v", err)
+	}
+	if _, err := d.GetCalendar(c.ID, uid); err == nil {
+		t.Fatal("calendar still exists after delete")
+	}
+	evs, _ := d.ListCalendarEvents(uid, "2026-11-01", "2026-11-30", nil)
+	if len(evs) != 1 || evs[0].CalendarID == c.ID {
+		t.Fatalf("event not repointed to General: %+v", evs)
+	}
+}

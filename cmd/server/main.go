@@ -322,6 +322,14 @@ func main() {
 	api.HandleFunc("/calendar/events/{id:[0-9]+}", h.API.GetCalendarEvent).Methods("GET")
 	api.HandleFunc("/calendar/events/{id:[0-9]+}", h.API.UpdateCalendarEvent).Methods("PUT")
 	api.HandleFunc("/calendar/events/{id:[0-9]+}", h.API.DeleteCalendarEvent).Methods("DELETE")
+	api.HandleFunc("/calendar/export.ics", h.API.ExportCalendarICS).Methods("GET")
+	api.HandleFunc("/calendar/import", h.API.ImportCalendar).Methods("POST")
+
+	// Calendars
+	api.HandleFunc("/calendars", h.API.ListCalendars).Methods("GET")
+	api.HandleFunc("/calendars", h.API.CreateCalendar).Methods("POST")
+	api.HandleFunc("/calendars/{id:[0-9]+}", h.API.UpdateCalendar).Methods("PUT")
+	api.HandleFunc("/calendars/{id:[0-9]+}", h.API.DeleteCalendar).Methods("DELETE")
 
 	// CalDAV API tokens
 	api.HandleFunc("/caldav/tokens", h.API.ListCalDAVTokens).Methods("GET")
