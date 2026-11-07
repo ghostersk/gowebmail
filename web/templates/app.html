@@ -159,23 +159,10 @@
   <aside class="sidebar">
     <div class="nav-section">
       <div class="fav-section-title">Favourites</div>
-      <div id="favourites-list"></div>
-      <div class="nav-item active" id="nav-unified" onclick="selectFolder('unified','Unified Inbox')">
-        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"/></svg>
-        Unified Inbox
-        <span class="unread-badge" id="unread-total" style="display:none"></span>
-      </div>
+      <div id="favourites-list" ondragover="favDragOver(event)" ondrop="event.preventDefault()"></div>
       <div class="nav-item" id="nav-starred" onclick="selectFolder('starred','Starred')">
         <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>
         Starred
-      </div>
-      <div class="nav-item" id="nav-snoozed" onclick="selectFolder('snoozed','Snoozed')">
-        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 20c4.42 0 8-3.58 8-8s-3.58-8-8-8-8 3.58-8 8 3.58 8 8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67V7z"/></svg>
-        Snoozed
-      </div>
-      <div class="nav-item" id="nav-scheduled" onclick="showScheduledSends()">
-        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M20 3h-1V1h-2v2H7V1H5v2H4c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 18H4V8h16v13zm-8-9h5v5h-5z"/></svg>
-        Scheduled
       </div>
       <div id="folders-by-account"></div>
     </div>
@@ -1067,6 +1054,6 @@
 {{end}}
 
 {{define "scripts"}}
-<script src="/static/js/app.js?v=96"></script>
+<script src="/static/js/app.js?v=97"></script>
 <script src="/static/js/contacts_calendar.js?v=80"></script>
 {{end}}

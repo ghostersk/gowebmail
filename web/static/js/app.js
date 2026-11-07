@@ -728,23 +728,80 @@ const FOLDER_ICONS = {
   custom:'<path d="M20 6h-2.18c.07-.44.18-.86.18-1 0-2.21-1.79-4-4-4s-4 1.79-4 4c0 .14.11.56.18 1H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2z"/>',
 };
 
-// Favourites mirrors the first account (sort_order): its Inbox/Drafts/Archive.
-// shortcut: first account only — extend to per-account favourites if multi-account users want it.
+// Favourites: the virtual views (Unified Inbox / Snoozed / Scheduled) are pinned at the
+// top; uiPrefs.favourites (ordered folder ids) adds user-picked folders below them.
+// Drag user rows to reorder; same-name folders across accounts get " - <mailbox>" + dot.
 function renderFavourites() {
   const el = document.getElementById('favourites-list');
   if (!el) return;
-  const acc = [...S.accounts].sort((a,b) => (a.sort_order||0) - (b.sort_order||0))[0];
-  const rows = acc
-    ? S.folders.filter(f => f.account_id === acc.id && !f.is_hidden
-        && ['inbox','drafts','archive'].includes(f.folder_type)).map(f => `
-      <div class="nav-item" id="fav-f${f.id}" data-fid="${f.id}"
-           onclick="selectFolder(${f.id},'${esc(f.name)}')">
+  const accMap = {}; S.accounts.forEach(a => accMap[a.id] = a);
+  const pinned = [
+    { id:'nav-unified',  icon:FOLDER_ICONS.inbox, label:'Unified Inbox', act:`selectFolder('unified','Unified Inbox')`,
+      badge:'<span class="unread-badge" id="unread-total" style="display:none"></span>' },
+    { id:'nav-snoozed',  icon:'<path d="M12 20c4.42 0 8-3.58 8-8s-3.58-8-8-8-8 3.58-8 8 3.58 8 8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67V7z"/>',
+      label:'Snoozed', act:`selectFolder('snoozed','Snoozed')` },
+    { id:'nav-scheduled', icon:'<path d="M20 3h-1V1h-2v2H7V1H5v2H4c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 18H4V8h16v13zm-8-9h5v5h-5z"/>',
+      label:'Scheduled', act:'showScheduledSends()' },
+  ];
+  const visible = S.folders.filter(f=>!f.is_hidden);
+  const favs = (uiPrefsGet('favourites', [])||[])
+    .map(id => visible.find(f=>f.id===id)).filter(Boolean);
+  const userRows = favs.map(f => {
+    const acc = accMap[f.account_id];
+    const dup = visible.some(x => x.id!==f.id && x.name.toLowerCase()===f.name.toLowerCase());
+    const label = dup
+      ? `${esc(f.name)} - <span style="color:${acc?.color||'var(--muted)'}">●</span> ${esc(acc?.display_name||acc?.email_address||'')}`
+      : esc(f.name);
+    return `
+      <div class="nav-item fav-drag" id="fav-f${f.id}" data-fid="${f.id}" draggable="true"
+           onclick="selectFolder(${f.id},'${esc(f.name)}')"
+           ondragstart="favDragStart(event,${f.id})" ondragend="favDragEnd(event)">
         <svg viewBox="0 0 24 24" fill="currentColor">${FOLDER_ICONS[f.folder_type]||FOLDER_ICONS.custom}</svg>
-        ${esc(f.name)}
+        ${label}
         ${f.folder_type==='inbox'&&f.unread_count>0?`<span class="unread-badge">${f.unread_count}</span>`:''}
-      </div>`).join('')
-    : '';
-  el.innerHTML = rows;
+      </div>`;
+  }).join('');
+  el.innerHTML = pinned.map(p => `
+      <div class="nav-item" id="${p.id}" onclick="${p.act}">
+        <svg viewBox="0 0 24 24" fill="currentColor">${p.icon}</svg>
+        ${p.label}${p.badge||''}
+      </div>`).join('') + userRows;
+  updateUnreadBadge(); // the #unread-total span was rebuilt above
+}
+
+let _favDragId = null;
+function favDragStart(e, id) {
+  _favDragId = id;
+  e.dataTransfer.effectAllowed = 'move';
+  e.dataTransfer.setData('text/plain', String(id));
+}
+// Live reorder: insert the dragged row before the first user row whose midpoint is
+// below the cursor (append at the end if none). Pinned rows aren't .fav-drag, so they stay on top.
+function favDragOver(e) {
+  if (_favDragId == null) return;
+  e.preventDefault();
+  const list = document.getElementById('favourites-list');
+  const dragging = list?.querySelector(`.fav-drag[data-fid="${_favDragId}"]`);
+  if (!dragging) return;
+  const after = [...list.querySelectorAll('.fav-drag')]
+    .find(el => el !== dragging && e.clientY < el.getBoundingClientRect().top + el.getBoundingClientRect().height/2);
+  if (after) list.insertBefore(dragging, after); else list.appendChild(dragging);
+}
+function favDragEnd() {
+  if (_favDragId == null) return;
+  _favDragId = null;
+  const list = document.getElementById('favourites-list');
+  const ids = [...(list?.querySelectorAll('.fav-drag')||[])].map(el => parseInt(el.dataset.fid));
+  uiPrefsSet('favourites', ids);
+  renderFavourites();
+}
+
+function toggleFavourite(id) {
+  const favs = uiPrefsGet('favourites', []) || [];
+  const i = favs.indexOf(id);
+  if (i >= 0) favs.splice(i, 1); else favs.push(id);
+  uiPrefsSet('favourites', favs);
+  renderFavourites();
 }
 
 function renderFolders() {
@@ -908,7 +965,10 @@ function showFolderMenu(e, folderId) {
   // would break sync. Only user-created "custom" folders can be deleted.
   const deleteEntry = f.folder_type==='custom'
     ? `<div class="ctx-item danger" onclick="confirmDeleteFolder(${folderId});closeMenu()">🗑 Delete folder</div>` : '';
+  const isFav = (uiPrefsGet('favourites', [])||[]).includes(folderId);
+  const favEntry = `<div class="ctx-item" onclick="toggleFavourite(${folderId});closeMenu()">${isFav?'★ Remove from favourites':'☆ Add to favourites'}</div>`;
   showCtxMenu(e, `
+    ${favEntry}
     <div class="ctx-item" onclick="createFolderPrompt(${f.account_id});closeMenu()">📁 New folder</div>
     <div class="ctx-item" onclick="syncFolderNow(${folderId});closeMenu()">↻ Sync this folder</div>
     <div class="ctx-item" onclick="toggleFolderSync(${folderId});closeMenu()">${syncLabel}</div>

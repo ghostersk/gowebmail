@@ -264,6 +264,7 @@ body.app-page{overflow:hidden}
   cursor:pointer;transition:background .1s;color:var(--text2);user-select:none;font-size:14px}
 .nav-item:hover{background:var(--hover);color:var(--text)}
 .nav-item.active{background:var(--surface);color:#fff}
+.nav-item.fav-drag{cursor:grab}
 .nav-item svg{width:16px;height:16px;flex-shrink:0}
 .unread-badge{margin-left:auto;background:var(--accent);color:white;font-size:10px;
   font-weight:600;padding:1px 6px;border-radius:10px;min-width:18px;text-align:center}
