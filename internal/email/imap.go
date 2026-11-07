@@ -20,6 +20,7 @@ import (
 	netmail "net/mail"
 	"net/smtp"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1070,7 +1071,7 @@ func SendMessageFull(ctx context.Context, account *gomailModels.EmailAccount, re
 		return err
 	}
 
-	addr := fmt.Sprintf("%s:%d", host, port)
+	addr := net.JoinHostPort(host, strconv.Itoa(port))
 	logger.Debug("[SMTP] dialing %s for account %s", addr, account.EmailAddress)
 
 	timeout := dialTimeout(ctx)
