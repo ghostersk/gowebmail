@@ -1630,6 +1630,33 @@ func (d *DB) ListMessagesByLabel(labelID, userID int64, page, pageSize int) (*mo
 // ---- Messages ----
 
 func (d *DB) UpsertMessage(m *models.Message) error {
+	// Some providers (e.g. freebede) auto-save sent mail on the server in addition to
+	// our AppendToSent on send, so the same Message-ID can exist as several server
+	// messages with different UIDs in one folder. Keep the first row and refresh it
+	// in place (read/star are sticky) instead of inserting a duplicate row.
+	if m.MessageID != "" {
+		readVal, starVal := 0, 0
+		if m.IsRead {
+			readVal = 1
+		}
+		if m.IsStarred {
+			starVal = 1
+		}
+		var dupID int64
+		if err := d.sql.QueryRow(
+			`SELECT id FROM messages
+			  WHERE account_id=? AND folder_id=? AND message_id=? AND remote_uid != ?
+			  ORDER BY id LIMIT 1`,
+			m.AccountID, m.FolderID, m.MessageID, m.RemoteUID,
+		).Scan(&dupID); err == nil {
+			d.sql.Exec(
+				`UPDATE messages SET is_read=MAX(is_read,?), is_starred=MAX(is_starred,?) WHERE id=?`,
+				readVal, starVal, dupID,
+			)
+			m.ID = dupID
+			return nil
+		}
+	}
 	subjectEnc, _ := d.enc.Encrypt(m.Subject)
 	fromNameEnc, _ := d.enc.Encrypt(m.FromName)
 	fromEmailEnc, _ := d.enc.Encrypt(m.FromEmail)
