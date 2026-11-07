@@ -7,7 +7,7 @@
   --accent-glow:rgba(71,158,245,.25);--danger:#ef4444;--success:#22c55e;
   --warn:#f59e0b;--star:#f59e0b;
   --sidebar-w:240px;--panel-w:350px;
-  --topbar-h:48px;--ribbon-h:92px;--row-accent:#77b7f7;--hover:rgba(255,255,255,.05);
+  --topbar-h:48px;--ribbon-h:48px;--row-accent:#77b7f7;--hover:rgba(255,255,255,.05);
   --font:"Segoe UI","Segoe UI Web (West European)",-apple-system,"Helvetica Neue",sans-serif;
 }
 html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--font);font-size:14px}
@@ -175,19 +175,20 @@ body.app-page{overflow:hidden}
 .ribbon{display:none;height:var(--ribbon-h);background:var(--surface);border-bottom:1px solid var(--border);
   align-items:center;padding:0 8px;overflow-x:auto;flex-shrink:0;gap:2px}
 @media (min-width:701px){.ribbon{display:flex}}
-.ribbon-sep{width:1px;height:64px;background:var(--border);flex-shrink:0;margin:0 6px}
+.ribbon-sep{width:1px;height:26px;background:var(--border);flex-shrink:0;margin:0 6px}
 .ribbon-group{display:flex;align-items:center;gap:2px;flex-shrink:0}
-.ribbon-btn{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;
-  min-width:64px;height:78px;padding:8px 10px;border:none;border-radius:4px;
-  background:none;color:#d6d6d6;font-family:var(--font);font-size:11px;cursor:pointer}
+/* Compact single-row toolbar: icon + label side by side */
+.ribbon-btn{display:flex;flex-direction:row;align-items:center;justify-content:center;gap:6px;
+  height:36px;padding:0 10px;border:none;border-radius:4px;white-space:nowrap;
+  background:none;color:#d6d6d6;font-family:var(--font);font-size:12px;cursor:pointer}
 .ribbon-btn:hover:not(:disabled){background:var(--hover);color:#fff}
 .ribbon-btn:active:not(:disabled){background:var(--surface3)}
 .ribbon-btn:disabled{opacity:.35;cursor:default}
-.ribbon-btn svg{width:22px;height:22px}
-.ribbon-new{min-width:76px}
-.ribbon-new svg{width:28px;height:28px}
+.ribbon-btn svg{width:17px;height:17px}
+.ribbon-new{font-weight:600}
+.ribbon-new svg{width:19px;height:19px}
 /* Split caret next to New — same menu as the old sidebar compose caret */
-.ribbon-caret{width:18px;height:78px;border:none;background:none;color:#d6d6d6;cursor:pointer;
+.ribbon-caret{width:22px;height:36px;border:none;background:none;color:#d6d6d6;cursor:pointer;
   border-radius:4px;font-size:12px;display:flex;align-items:center;justify-content:center}
 .ribbon-caret:hover{background:var(--hover);color:#fff}
 

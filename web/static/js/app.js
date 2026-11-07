@@ -2164,9 +2164,8 @@ function ribbonAct(action) {
     case 'replyall': openReplyAll(S.selectedMessageId); break;
     case 'flag': sel.forEach(id=>toggleStar(id)); break;
     case 'snooze': snoozeMessage(S.selectedMessageId); break;
-    case 'markallread': markFolderAllRead(S.currentFolder); break;
     case 'print': window.print(); break;
-    case 'rules': openSettings(); showSettingsTab('rules'); break;
+    case 'rules': openSettings(); showSettingsTab('rules'); prefillRulesFromMessage(S.selectedMessageId); break;
   }
 }
 
@@ -2187,6 +2186,32 @@ function ribbonMoveMenu(e) {
 function ribbonMoveTo(folderId) {
   const ids = SEL.ids.size ? [...SEL.ids] : [S.selectedMessageId];
   ids.forEach(id=>moveMessage(id, folderId, true));
+}
+
+// Ribbon "Rules" with a message selected: prefill the rule form so a rule for
+// similar mail needs no manual typing (sender / subject / recipient).
+async function prefillRulesFromMessage(msgId) {
+  let msg = msgId ? (S.messages.find(m=>m.id===msgId) || (S.currentMessage?.id===msgId ? S.currentMessage : null)) : null;
+  if (!msg) return;
+  if (!msg.to && !msg.cc) msg = Object.assign({}, msg, await api('GET','/messages/'+msgId)); // list summaries lack to/cc
+  const sel = document.getElementById('rules-account-select');
+  if (sel) { sel.value = String(msg.account_id || ''); loadRules(); }
+  const wrap = document.getElementById('rule-conditions');
+  if (!wrap) return;
+  wrap.innerHTML = '';
+  const add = (field, value) => {
+    addRuleConditionRow();
+    const row = wrap.lastElementChild;
+    row.querySelector('.rc-field').value = field;
+    row.querySelector('.rc-value').value = value;
+  };
+  const from = msg.from_email || msg.from_name;
+  if (from) add('from', from);
+  if (msg.subject) add('subject', msg.subject);
+  const to = (msg.to||'').split(',').map(s=>s.trim()).find(Boolean) || (msg.cc||'').split(',').map(s=>s.trim()).find(Boolean);
+  if (to) add('to', to);
+  const name = document.getElementById('rule-name');
+  if (name && (msg.subject || from)) name.value = (msg.subject || from).slice(0, 48);
 }
 
 // Reply-all CC = original's full recipient set (to + cc), deduped, minus the
@@ -2234,7 +2259,6 @@ function updateRibbonState() {
   set('rb-flag', !hasMsg);
   set('rb-snooze', !single);
   set('rb-print', !single);
-  set('rb-markallread', !/^\d+$/.test(String(S.currentFolder)));
 }
 
 function formatSize(b){if(!b)return'';if(b<1024)return b+' B';if(b<1048576)return Math.round(b/1024)+' KB';return(b/1048576).toFixed(1)+' MB';}
