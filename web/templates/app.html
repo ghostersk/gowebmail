@@ -255,6 +255,7 @@
       <button class="icon-btn" onclick="calNav(1)" title="Next" aria-label="Next period">&#8250;</button>
       <button class="btn-secondary" onclick="calGoToday()" style="font-size:12px;margin-left:4px">Today</button>
       <div style="margin-left:auto;display:flex;gap:4px">
+        <button class="btn-secondary" id="cal-btn-day" onclick="calSetView('day')" style="font-size:12px">Day</button>
         <button class="btn-secondary" id="cal-btn-month" onclick="calSetView('month')" style="font-size:12px">Month</button>
         <button class="btn-secondary" id="cal-btn-week" onclick="calSetView('week')" style="font-size:12px">Week</button>
         <button class="btn-secondary" onclick="openEventForm()" style="font-size:12px;background:var(--accent);color:white;border-color:var(--accent)">+ Event</button>
@@ -1053,5 +1054,5 @@
 
 {{define "scripts"}}
 <script src="/static/js/app.js?v=106"></script>
-<script src="/static/js/contacts_calendar.js?v=81"></script>
+<script src="/static/js/contacts_calendar.js?v=82"></script>
 {{end}}

@@ -184,6 +184,7 @@ const CAL = {
 
 function calSetView(v) {
   CAL.view = v;
+  document.getElementById('cal-btn-day')?.classList.toggle('active', v === 'day');
   document.getElementById('cal-btn-month')?.classList.toggle('active', v === 'month');
   document.getElementById('cal-btn-week')?.classList.toggle('active', v === 'week');
   calRender();
@@ -192,6 +193,8 @@ function calSetView(v) {
 function calNav(dir) {
   if (CAL.view === 'month') {
     CAL.cursor = new Date(CAL.cursor.getFullYear(), CAL.cursor.getMonth() + dir, 1);
+  } else if (CAL.view === 'day') {
+    CAL.cursor = new Date(CAL.cursor.getTime() + dir * 86400000);
   } else {
     CAL.cursor = new Date(CAL.cursor.getTime() + dir * 7 * 86400000);
   }
@@ -210,6 +213,9 @@ async function calRender() {
     to   = new Date(CAL.cursor.getFullYear(), CAL.cursor.getMonth() + 1, 0);
     from = new Date(from.getTime() - from.getDay() * 86400000);
     to   = new Date(to.getTime() + (6 - to.getDay()) * 86400000);
+  } else if (CAL.view === 'day') {
+    from = new Date(CAL.cursor.getFullYear(), CAL.cursor.getMonth(), CAL.cursor.getDate());
+    to   = new Date(from.getTime() + 86400000);
   } else {
     const dow = CAL.cursor.getDay();
     from = new Date(CAL.cursor.getTime() - dow * 86400000);
@@ -219,19 +225,84 @@ async function calRender() {
   const fmt = d => d.toISOString().split('T')[0];
   const data = await api('GET', `/calendar/events?from=${fmt(from)}&to=${fmt(to)}`);
   CAL.events = data || [];
+  const evs = expandRecurrences(CAL.events, fmt(from), fmt(to));
 
   const months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
   const titleEl = document.getElementById('cal-title');
   if (CAL.view === 'month') {
     if (titleEl) titleEl.textContent = `${months[CAL.cursor.getMonth()]} ${CAL.cursor.getFullYear()}`;
-    calRenderMonth(from, to);
+    calRenderMonth(from, to, evs);
+  } else if (CAL.view === 'day') {
+    const wd = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][CAL.cursor.getDay()];
+    if (titleEl) titleEl.textContent = `${wd}, ${months[CAL.cursor.getMonth()]} ${CAL.cursor.getDate()}, ${CAL.cursor.getFullYear()}`;
+    calRenderDay(CAL.cursor, evs);
   } else {
     if (titleEl) titleEl.textContent = `${months[from.getMonth()]} ${from.getDate()} – ${months[to.getMonth()]} ${to.getDate()}, ${to.getFullYear()}`;
-    calRenderWeek(from);
+    calRenderWeek(from, evs);
   }
 }
 
-function calRenderMonth(from, to) {
+// Date-string helpers — work on the stored "YYYY-MM-DD" prefix so no timezone
+// conversion can shift an event into the wrong day.
+function calDate(s){ return (s||'').slice(0,10); }
+function calHM(s){ return (s||'').slice(11,16) || '00:00'; }
+function calMin(s){ const h = calHM(s); return parseInt(h.slice(0,2),10)*60 + parseInt(h.slice(3,5),10); }
+function calTime(hm){
+  const h = parseInt(hm.slice(0,2),10), m = hm.slice(3,5);
+  return `${h%12||12}:${m} ${h>=12?'pm':'am'}`;
+}
+function dInc(ds, days){
+  const [y,mo,d] = ds.split('-').map(Number);
+  return new Date(Date.UTC(y, mo-1, d+days)).toISOString().slice(0,10);
+}
+function mInc(ds, months){
+  const [y,mo,d] = ds.split('-').map(Number);
+  return new Date(Date.UTC(y, mo-1+months, d)).toISOString().slice(0,10);
+}
+// A timed event covers its end day; an all-day one with a midnight end
+// (iCal DTEND is exclusive) does not. shortcut: form all-day events should be
+// saved with a non-midnight end to span multiple days.
+function evCovers(ev, D){
+  const s = calDate(ev.start_time), e = calDate(ev.end_time);
+  const exclEnd = ev.all_day && calHM(ev.end_time) === '00:00' && s < e;
+  return D >= s && (D < e || (D === e && !exclEnd));
+}
+function evLastDay(ev){
+  const e = calDate(ev.end_time);
+  return (ev.all_day && calHM(ev.end_time) === '00:00' && calDate(ev.start_time) < e) ? dInc(e, -1) : e;
+}
+// Recurrence instances for the visible range. shortcut: DAILY/WEEKLY/MONTHLY
+// only, no BYDAY — upgrade if a user imports a fancier RRULE.
+function expandRecurrences(events, f, t){
+  const out = [];
+  events.forEach(ev => {
+    if (!ev.recurrence_rule || !ev.start_time) { out.push(ev); return; }
+    const m = ev.recurrence_rule.match(/FREQ=(DAILY|WEEKLY|MONTHLY)(;INTERVAL=(\d+))?(;UNTIL=[A-Z0-9TZ-]+)?(;COUNT=(\d+))?/i);
+    if (!m) { out.push(ev); return; }
+    const freq = m[1].toUpperCase();
+    const step = Math.max(1, parseInt(m[3] || '1'));
+    const until = m[4] ? m[4].replace(/UNTIL=/,'').slice(0,8) : null; // YYYYMMDD
+    const count = m[5] ? parseInt(m[5]) : null;
+    const sDay = calDate(ev.start_time), eDay = calDate(ev.end_time);
+    const sHM = calHM(ev.start_time), eHM = calHM(ev.end_time);
+    const span = Math.round((Date.parse(eDay) - Date.parse(sDay)) / 86400000);
+    let d = sDay, i = 0;
+    while (d <= t && i < 1000) {
+      if (d >= f) {
+        out.push({ ...ev, id: ev.id + '~r' + i, rbase: ev.id,
+          start_time: d + 'T' + sHM,
+          end_time: dInc(d, span) + 'T' + eHM });
+      }
+      i++;
+      if (count && i >= count) break;
+      d = freq === 'DAILY' ? dInc(d, step) : freq === 'WEEKLY' ? dInc(d, 7*step) : mInc(d, step);
+      if (until && d.replace(/-/g,'') > until) break;
+    }
+  });
+  return out;
+}
+
+function calRenderMonth(from, to, evs) {
   const days = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
   const today = new Date(); today.setHours(0,0,0,0);
   let html = `<div class="cal-grid-month">`;
@@ -242,13 +313,21 @@ function calRenderMonth(from, to) {
     const dateStr = cur.toISOString().split('T')[0];
     const isToday = cur.getTime() === today.getTime();
     const isOther = cur.getMonth() !== curMonth;
-    const dayEvents = CAL.events.filter(e => e.start_time && e.start_time.startsWith(dateStr));
+    const dayEvents = evs.filter(e => e.start_time && evCovers(e, dateStr));
     const shown = dayEvents.slice(0, 3);
     const more = dayEvents.length - 3;
     html += `<div class="cal-day${isToday?' today':''}${isOther?' other-month':''}" data-date="${dateStr}">
       <div class="cal-day-num" onclick="openEventForm(null,'${dateStr}T09:00')">${cur.getDate()}</div>
-      ${shown.map(ev=>`<div class="cal-event" style="background:${ev.color||'#0078D4'}"
-        onclick="openEventForm(${ev.id})" title="${esc(ev.title)}">${esc(ev.title)}</div>`).join('')}
+      ${shown.map(ev => {
+        const isS = calDate(ev.start_time) === dateStr;
+        const isE = evLastDay(ev) === dateStr;
+        let cls = 'cal-event', label;
+        if (isS) label = (ev.all_day ? 'All day ' : calTime(calHM(ev.start_time)) + ' ') + esc(ev.title);
+        else if (isE) { cls += ' cal-evt-end'; label = esc(ev.title); }
+        else { cls += ' cal-evt-mid'; label = '→ ' + esc(ev.title); }
+        return `<div class="${cls}" style="background:${ev.color||'#0078D4'}"
+          onclick="openEventForm(${ev.rbase||ev.id})" title="${esc(ev.title)}">${label}</div>`;
+      }).join('')}
       ${more>0?`<div class="cal-more" onclick="openEventForm(null,'${dateStr}T09:00')">+${more} more</div>`:''}
     </div>`;
     cur.setDate(cur.getDate() + 1);
@@ -257,36 +336,116 @@ function calRenderMonth(from, to) {
   document.getElementById('cal-grid').innerHTML = html;
 }
 
-function calRenderWeek(weekStart) {
+function calRenderWeek(weekStart, evs) {
   const days = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
   const today = new Date(); today.setHours(0,0,0,0);
+  const dateStrs = [];
+  for (let i=0;i<7;i++) {
+    const d = new Date(weekStart.getTime()+i*86400000);
+    dateStrs.push(d.toISOString().split('T')[0]);
+  }
   let html = `<div class="cal-week-grid">`;
-  html += `<div class="cal-week-header" style="background:var(--surface)"></div>`;
+  html += `<div class="cal-week-header"></div>`;
   for (let i=0;i<7;i++) {
     const d = new Date(weekStart.getTime()+i*86400000);
     const isT = d.getTime()===today.getTime();
     html += `<div class="cal-week-header${isT?' today-col':''}">${days[d.getDay()]} ${d.getDate()}</div>`;
   }
+  html += `<div class="cal-allday-strip"></div>`;
+  for (let i=0;i<7;i++) {
+    const dateStr = dateStrs[i];
+    const allday = evs.filter(ev => ev.all_day && evCovers(ev, dateStr));
+    const isT = new Date(dateStr).getTime() === today.getTime();
+    html += `<div class="cal-allday-cell${isT?' today-col':''}">
+      ${allday.map(ev=>`<div class="cal-event" style="background:${ev.color||'#0078D4'}"
+        onclick="openEventForm(${ev.rbase||ev.id})" title="${esc(ev.title)}">${esc(ev.title)}</div>`).join('')}
+    </div>`;
+  }
+  let timeCol = '';
   for (let h=0;h<24;h++) {
-    const label = h===0?'12am':h<12?`${h}am`:h===12?'12pm':`${h-12}pm`;
-    html += `<div class="cal-time-col">${label}</div>`;
-    for (let i=0;i<7;i++) {
-      const d = new Date(weekStart.getTime()+i*86400000);
-      const dateStr = d.toISOString().split('T')[0];
-      const slotEvs = CAL.events.filter(ev => {
-        if (!ev.start_time) return false;
-        return ev.start_time.startsWith(dateStr) &&
-          parseInt((ev.start_time.split('T')[1]||'').split(':')[0]||'0') === h;
-      });
-      const isT = d.getTime()===today.getTime();
-      html += `<div class="cal-week-cell${isT?' today':''}"
-        onclick="openEventForm(null,'${dateStr}T${String(h).padStart(2,'0')}:00')">
-        ${slotEvs.map(ev=>`<div class="cal-event" style="background:${ev.color||'#0078D4'};font-size:10px;position:absolute;left:2px;right:2px;z-index:1"
-          onclick="event.stopPropagation();openEventForm(${ev.id})">${esc(ev.title)}</div>`).join('')}
-      </div>`;
-    }
+    const label = h===0?'':h<12?`${h}am`:h===12?'12pm':`${h-12}pm`;
+    timeCol += `<div class="cal-time-col">${label}</div>`;
+  }
+  html += `<div class="cal-time-col-stack">${timeCol}</div>`;
+  for (let i=0;i<7;i++) {
+    const dateStr = dateStrs[i];
+    const d = new Date(weekStart.getTime()+i*86400000);
+    const isT = d.getTime()===today.getTime();
+    const timed = evs.filter(ev => !ev.all_day && ev.start_time && evCovers(ev, dateStr));
+    html += `<div class="cal-week-col${isT?' today':''}" onclick="calColClick('${dateStr}',event)">
+      ${timed.map((ev,ix)=>{
+        const isS = calDate(ev.start_time) === dateStr;
+        const isE = evLastDay(ev) === dateStr;
+        const sMin = isS ? calMin(ev.start_time) : 0;
+        const eMin = isE ? calMin(ev.end_time) : 24*60;
+        const top = sMin/1440*100;
+        const hgt = Math.max(1.6, (eMin - sMin)/1440*100);
+        const cls = 'cal-evt-abs' + (isS?' ev-start':'') + (isE?' ev-end':'');
+        const label = isS ? `${calTime(calHM(ev.start_time))} ${esc(ev.title)}` : esc(ev.title);
+        return `<div class="${cls}" style="background:${ev.color||'#0078D4'};top:${top}%;height:${hgt}%;left:${2+(ix%4)*2}px"
+          onclick="event.stopPropagation();openEventForm(${ev.rbase||ev.id})" title="${esc(ev.title)}">${label}</div>`;
+      }).join('')}
+    </div>`;
   }
   html += `</div>`;
+  document.getElementById('cal-grid').innerHTML = html;
+}
+
+function calColClick(dateStr, e) {
+  const h = Math.min(23, Math.max(0, Math.floor(e.offsetY / 48)));
+  openEventForm(null, `${dateStr}T${String(h).padStart(2,'0')}:00`);
+}
+
+function calRenderDay(day, evs) {
+  const dateStr = day.toISOString().split('T')[0];
+  const allday = evs.filter(ev => ev.all_day && evCovers(ev, dateStr));
+  const timed = evs.filter(ev => !ev.all_day && ev.start_time && evCovers(ev, dateStr));
+  let timeCol = '';
+  for (let h=0;h<24;h++) {
+    const label = h===0?'':h<12?`${h}am`:h===12?'12pm':`${h-12}pm`;
+    timeCol += `<div class="cal-time-col">${label}</div>`;
+  }
+  let html = `<div class="cal-dayview">
+    <div class="cal-dayview-grid">
+      <div class="cal-allday-strip"></div>
+      <div class="cal-allday-cell">
+        ${allday.map(ev=>`<div class="cal-event" style="background:${ev.color||'#0078D4'}"
+          onclick="openEventForm(${ev.rbase||ev.id})" title="${esc(ev.title)}">${esc(ev.title)}</div>`).join('')}
+      </div>
+      <div class="cal-time-col-stack">${timeCol}</div>
+      <div class="cal-week-col" onclick="calColClick('${dateStr}',event)">
+        ${timed.map((ev,ix)=>{
+          const isS = calDate(ev.start_time) === dateStr;
+          const isE = evLastDay(ev) === dateStr;
+          const sMin = isS ? calMin(ev.start_time) : 0;
+          const eMin = isE ? calMin(ev.end_time) : 24*60;
+          const cls = 'cal-evt-abs' + (isS?' ev-start':'') + (isE?' ev-end':'');
+          const label = isS ? `${calTime(calHM(ev.start_time))} ${esc(ev.title)}` : esc(ev.title);
+          return `<div class="${cls}" style="background:${ev.color||'#0078D4'};top:${sMin/1440*100}%;height:${Math.max(1.6,(eMin-sMin)/1440*100)}%;left:${2+(ix%4)*2}px"
+            onclick="event.stopPropagation();openEventForm(${ev.rbase||ev.id})" title="${esc(ev.title)}">${label}</div>`;
+        }).join('')}
+      </div>
+    </div>
+    <div class="cal-day-agenda">
+      ${timed.concat(allday).sort((a,b)=>calMin(a.start_time)-calMin(b.start_time)).map(ev=>{
+        const isS = calDate(ev.start_time) === dateStr;
+        const isE = evLastDay(ev) === dateStr;
+        let range;
+        if (ev.all_day) range = 'All day';
+        else if (isS && isE) range = `${calTime(calHM(ev.start_time))} – ${calTime(calHM(ev.end_time))}`;
+        else if (isS) range = calTime(calHM(ev.start_time)) + ' →';
+        else range = '→ ' + (isE ? calTime(calHM(ev.end_time)) : '');
+        const loc = ev.location ? ` · ${esc(ev.location)}` : '';
+        const att = ev.attendees && ev.attendees.trim() ? ` · 👥${ev.attendees.split(',').filter(x=>x.trim()).length}` : '';
+        return `<div class="cal-agenda-item" onclick="openEventForm(${ev.rbase||ev.id})">
+          <div class="cal-agenda-time">${range}</div>
+          <div class="cal-agenda-title">${esc(ev.title)}</div>
+          ${loc||att?`<div class="cal-agenda-meta">${loc}${att}</div>`:''}
+          ${ev.description?`<div class="cal-agenda-desc">${esc(ev.description)}</div>`:''}
+        </div>`;
+      }).join('') || '<div class="cal-agenda-empty">No events</div>'}
+    </div>
+  </div>`;
   document.getElementById('cal-grid').innerHTML = html;
 }
 

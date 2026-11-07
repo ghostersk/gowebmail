@@ -859,6 +859,38 @@ body.admin-page{overflow:auto;background:var(--bg)}
   height:40px;position:relative;transition:background .1s}
 .cal-week-cell:hover{background:var(--surface3)}
 
+/* Week/day positioned columns + day view */
+.cal-time-col-stack{display:flex;flex-direction:column;border-right:1px solid var(--border)}
+.cal-time-col-stack .cal-time-col{height:48px;border-bottom:none}
+.cal-allday-strip{background:transparent}
+.cal-allday-cell{border-right:1px solid var(--border);border-bottom:1px solid var(--border);
+  min-height:26px;padding:2px 3px;background:var(--surface)}
+.cal-allday-cell .cal-event{padding:1px 4px;font-size:10px;margin-bottom:1px}
+.cal-week-col{position:relative;height:1152px;border-right:1px solid var(--border)}
+.cal-week-col.today{background:var(--accent-dim)}
+.cal-evt-abs{position:absolute;right:2px;z-index:1;font-size:10px;padding:2px 4px;
+  overflow:hidden;white-space:nowrap;text-overflow:ellipsis;cursor:pointer;border-radius:0}
+.cal-evt-abs:hover{opacity:.85}
+.cal-evt-abs.ev-start{border-radius:3px 0 0 3px}
+.cal-evt-end{border-radius:0 3px 3px 0}
+.cal-evt-abs.ev-start.ev-end{border-radius:3px}
+.cal-evt-mid{border-radius:0}
+.cal-dayview{display:flex;gap:12px;height:100%;padding:4px 6px}
+.cal-dayview-grid{display:grid;grid-template-columns:52px 1fr;width:42%;min-width:280px;flex-shrink:0}
+.cal-day-agenda{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:8px}
+.cal-agenda-item{padding:8px 10px;background:var(--surface);border:1px solid var(--border);
+  border-radius:6px;cursor:pointer}
+.cal-agenda-item:hover{border-color:var(--accent)}
+.cal-agenda-time{font-size:11px;color:var(--muted);margin-bottom:2px}
+.cal-agenda-title{font-size:13px;font-weight:600}
+.cal-agenda-meta{font-size:11px;color:var(--muted);margin-top:2px}
+.cal-agenda-desc{font-size:12px;color:var(--text2);margin-top:4px;white-space:pre-wrap}
+.cal-agenda-empty{font-size:13px;color:var(--muted);padding:16px}
+@media (max-width:768px){
+  .cal-dayview{flex-direction:column}
+  .cal-dayview-grid{width:100%;min-width:0}
+}
+
 /* CalDAV token row */
 .caldav-token-row{display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border)}
 .caldav-token-url{font-size:11px;font-family:monospace;color:var(--muted);overflow:hidden;
