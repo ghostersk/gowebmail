@@ -1572,7 +1572,8 @@ function getFilteredSortedMsgs() {
   else if (S.sortOrder==='size-desc') msgs.sort((a,b)=>(b.size||0)-(a.size||0));
   else msgs.sort((a,b)=>new Date(b.date)-new Date(a.date));
   // View-setting toggle: when grouping is off, show every message as its own row.
-  return uiPrefsGet('conversations','on') === 'on' ? groupThreads(msgs) : msgs;
+  // Sent never groups: it's outgoing mail (no threads), and rows must match the count.
+  return uiPrefsGet('conversations','on') === 'on' && !isSentFolderView() ? groupThreads(msgs) : msgs;
 }
 
 function handleMsgDragStart(e, id) {
