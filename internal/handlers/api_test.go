@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -449,5 +451,38 @@ func TestParseICSEvents(t *testing.T) {
 			}
 			tt.check(t, evs[0])
 		})
+	}
+}
+
+// TestInviteCalendarEvent_Guards covers the guard branches of the C3 invite handler
+// (the happy path needs live SMTP and is verified against MailDev).
+func TestInviteCalendarEvent_Guards(t *testing.T) {
+	h, d, uid := newTestHandler(t)
+	accID, _ := seedTestAccountAndFolder(t, d, uid)
+
+	rec := httptest.NewRecorder()
+	h.InviteCalendarEvent(rec, authedRequest(t, "POST", "/calendar/events/999/invite", uid, map[string]string{"id": "999"}, nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("missing event: want 404, got %d (%s)", rec.Code, rec.Body.String())
+	}
+
+	noAcc := &models.CalendarEvent{UserID: uid, UID: "inv-1", Title: "No account", StartTime: "2026-12-20 09:00:00", EndTime: "2026-12-20 10:00:00", Attendees: "a@example.com"}
+	if err := d.UpsertCalendarEvent(noAcc); err != nil {
+		t.Fatalf("UpsertCalendarEvent: %v", err)
+	}
+	rec = httptest.NewRecorder()
+	h.InviteCalendarEvent(rec, authedRequest(t, "POST", "/calendar/events/invite", uid, map[string]string{"id": fmt.Sprintf("%d", noAcc.ID)}, nil))
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "no account") {
+		t.Fatalf("account-less event: want 400 'no account', got %d (%s)", rec.Code, rec.Body.String())
+	}
+
+	noAtt := &models.CalendarEvent{UserID: uid, AccountID: &accID, UID: "inv-2", Title: "No attendees", StartTime: "2026-12-20 09:00:00", EndTime: "2026-12-20 10:00:00"}
+	if err := d.UpsertCalendarEvent(noAtt); err != nil {
+		t.Fatalf("UpsertCalendarEvent: %v", err)
+	}
+	rec = httptest.NewRecorder()
+	h.InviteCalendarEvent(rec, authedRequest(t, "POST", "/calendar/events/invite", uid, map[string]string{"id": fmt.Sprintf("%d", noAtt.ID)}, nil))
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "no attendees") {
+		t.Fatalf("no attendees: want 400 'no attendees', got %d (%s)", rec.Code, rec.Body.String())
 	}
 }

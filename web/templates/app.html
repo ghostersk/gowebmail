@@ -319,6 +319,7 @@
     </div>
     <div class="modal-field"><label>Location</label><input id="ev-location" type="text" placeholder="Location or video link"></div>
     <div class="modal-field"><label>Description</label><textarea id="ev-desc" rows="3" style="width:100%;resize:vertical;padding:8px;background:var(--surface3);border:1px solid var(--border2);border-radius:6px;color:var(--text);font-family:var(--font);font-size:13px"></textarea></div>
+    <div class="modal-field"><label>Attendees</label><div id="ev-attendees" class="tag-container"></div></div>
     <div class="modal-field"><label>Color</label>
       <div style="display:flex;gap:6px" id="ev-colors">
         <span data-color="#0078D4" onclick="selectEvColor(this)" style="width:22px;height:22px;border-radius:50%;background:#0078D4;cursor:pointer;border:2px solid transparent"></span>
@@ -332,6 +333,7 @@
     <div class="modal-actions">
       <button class="modal-cancel" onclick="closeModal('event-modal')">Cancel</button>
       <button id="ev-delete-btn" class="btn-secondary" style="color:var(--danger);display:none" onclick="deleteEvent()">Delete</button>
+      <button id="ev-invite-btn" class="btn-secondary" style="display:none" onclick="inviteEvent()">Invite</button>
       <button class="modal-submit" onclick="saveEvent()">Save</button>
     </div>
   </div>
@@ -1059,5 +1061,5 @@
 
 {{define "scripts"}}
 <script src="/static/js/app.js?v=106"></script>
-<script src="/static/js/contacts_calendar.js?v=85"></script>
+<script src="/static/js/contacts_calendar.js?v=86"></script>
 {{end}}

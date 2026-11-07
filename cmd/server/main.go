@@ -322,6 +322,7 @@ func main() {
 	api.HandleFunc("/calendar/events/{id:[0-9]+}", h.API.GetCalendarEvent).Methods("GET")
 	api.HandleFunc("/calendar/events/{id:[0-9]+}", h.API.UpdateCalendarEvent).Methods("PUT")
 	api.HandleFunc("/calendar/events/{id:[0-9]+}", h.API.DeleteCalendarEvent).Methods("DELETE")
+	api.HandleFunc("/calendar/events/{id:[0-9]+}/invite", h.API.InviteCalendarEvent).Methods("POST")
 	api.HandleFunc("/calendar/export.ics", h.API.ExportCalendarICS).Methods("GET")
 	api.HandleFunc("/calendar/import", h.API.ImportCalendar).Methods("POST")
 

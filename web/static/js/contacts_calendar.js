@@ -647,6 +647,12 @@ function openEventForm(id, defaultStart) {
     document.getElementById('ev-location').value = '';
     document.getElementById('ev-desc').value = '';
   }
+  const att = document.getElementById('ev-attendees');
+  att.innerHTML = '';
+  initTagField('ev-attendees');
+  ((ev && ev.attendees) || '').split(',').map(x => x.trim()).filter(Boolean).forEach(a => addTag('ev-attendees', a));
+  const inviteBtn = document.getElementById('ev-invite-btn');
+  if (inviteBtn) inviteBtn.style.display = (id && ev && ev.account_id) ? '' : 'none';
   openModal('event-modal');
 }
 
@@ -666,6 +672,7 @@ async function saveEvent() {
     status:     'confirmed',
     calendar_id: evCalId,
     account_id:  evCal ? evCal.account_id : null,
+    attendees:   getTagValues('ev-attendees').join(','),
   };
   if (_editingEventId) {
     await api('PUT', `/calendar/events/${_editingEventId}`, body);
@@ -675,6 +682,16 @@ async function saveEvent() {
   closeModal('event-modal');
   await calRender();
   toast(_editingEventId ? 'Event updated' : 'Event created', 'success');
+}
+
+async function inviteEvent() {
+  if (!_editingEventId) return;
+  const ev = CAL.events.find(e => e.id === _editingEventId);
+  const n = ev ? ev.attendees.split(',').filter(x => x.trim()).length : 0;
+  if (!n) { toast('Add attendees and save first', 'error'); return; }
+  const res = await api('POST', `/calendar/events/${_editingEventId}/invite`);
+  if (res && res.ok) toast(`Invitation sent to ${n} attendee${n > 1 ? 's' : ''}`, 'success');
+  else toast('Invite failed' + (res && res.error ? ': ' + res.error : ''), 'error');
 }
 
 async function deleteEvent() {

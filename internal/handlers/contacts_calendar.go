@@ -278,6 +278,46 @@ func (h *APIHandler) DeleteCalendar(w http.ResponseWriter, r *http.Request) {
 	h.writeJSON(w, map[string]bool{"ok": true})
 }
 
+// InviteCalendarEvent emails all of the event's attendees a single message with a
+// METHOD:REQUEST .ics attachment, sent from the event's own account.
+func (h *APIHandler) InviteCalendarEvent(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.GetUserID(r)
+	id := pathInt64(r, "id")
+	ev, err := h.db.GetCalendarEvent(id, userID)
+	if err != nil || ev == nil {
+		h.writeError(w, http.StatusNotFound, "event not found")
+		return
+	}
+	if ev.AccountID == nil {
+		h.writeError(w, http.StatusBadRequest, "event has no account — assign it to an account's calendar")
+		return
+	}
+	if ev.Attendees == "" {
+		h.writeError(w, http.StatusBadRequest, "no attendees")
+		return
+	}
+	account, err := h.db.GetAccount(*ev.AccountID)
+	if err != nil || account == nil {
+		h.writeError(w, http.StatusBadRequest, "account not found")
+		return
+	}
+	ev.OrganizerEmail = account.EmailAddress
+	ics := append([]byte("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//GoWebMail//EN\r\nMETHOD:REQUEST\r\n"), buildICSEvents([]*models.CalendarEvent{ev})...)
+	ics = append(ics, []byte("END:VCALENDAR\r\n")...)
+	req := &models.ComposeRequest{
+		AccountID:   account.ID,
+		To:          strings.Split(ev.Attendees, ","),
+		Subject:     "Invitation: " + ev.Title,
+		BodyText:    fmt.Sprintf("You're invited to %s\n\nWhen: %s – %s\nWhere: %s\n\nSent from GoWebMail", ev.Title, ev.StartTime, ev.EndTime, ev.Location),
+		Attachments: []models.Attachment{{Filename: "invite.ics", ContentType: "text/calendar", Data: ics}},
+	}
+	if err := h.sendComposedMessage(userID, account, req, nil); err != nil {
+		h.writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	h.writeJSON(w, map[string]bool{"ok": true})
+}
+
 // ======== CalDAV Tokens ========
 
 func (h *APIHandler) ListCalDAVTokens(w http.ResponseWriter, r *http.Request) {
