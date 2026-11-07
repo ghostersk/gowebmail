@@ -1669,10 +1669,12 @@ func (d *DB) UpsertMessage(m *models.Message) error {
 			  ORDER BY id LIMIT 1`,
 			m.AccountID, m.FolderID, m.MessageID, m.RemoteUID,
 		).Scan(&dupID); err == nil {
-			d.sql.Exec(
+			if _, err := d.sql.Exec(
 				`UPDATE messages SET is_read=MAX(is_read,?), is_starred=MAX(is_starred,?) WHERE id=?`,
 				readVal, starVal, dupID,
-			)
+			); err != nil {
+				return err
+			}
 			m.ID = dupID
 			return nil
 		}

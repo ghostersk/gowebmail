@@ -194,7 +194,7 @@ body.app-page{overflow:hidden}
 
 /* ---- Print: message pane only (ribbon Print button) ---- */
 @media print {
-  .topbar,.ribbon,.sidebar,.message-list-panel,.panel-resize-handle,.app-rail,
+  .topbar,.ribbon,.sidebar,.message-list-panel,.panel-resize-handle,
   .mob-topbar,.mob-nav,#bulk-action-bar,.ctx-menu,#compose-dropdown{display:none!important}
   html,body{background:#fff;color:#000}
   .app,.mail-view{display:block;height:auto;overflow:visible}
