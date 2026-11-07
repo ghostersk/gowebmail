@@ -33,6 +33,7 @@ function _setView(view) {
 function showMail() {
   _setView('mail');
   document.getElementById('nav-unified')?.classList.add('active');
+  if (typeof layoutRibbonOverflow === 'function') layoutRibbonOverflow();
 }
 
 function showContacts() {

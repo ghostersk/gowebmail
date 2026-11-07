@@ -173,7 +173,7 @@ body.app-page{overflow:hidden}
 
 /* ---- Home ribbon (mail view, desktop only; hidden by _setView for cal/people) ---- */
 .ribbon{display:none;height:var(--ribbon-h);background:var(--surface);border-bottom:1px solid var(--border);
-  align-items:center;padding:0 8px;overflow-x:auto;flex-shrink:0;gap:2px}
+  align-items:center;padding:0 8px;overflow:hidden;flex-shrink:0;gap:2px}
 @media (min-width:701px){.ribbon{display:flex}}
 .ribbon-sep{width:1px;height:26px;background:var(--border);flex-shrink:0;margin:0 6px}
 .ribbon-group{display:flex;align-items:center;gap:2px;flex-shrink:0}
@@ -191,6 +191,10 @@ body.app-page{overflow:hidden}
 .ribbon-caret{width:22px;height:36px;border:none;background:none;color:#d6d6d6;cursor:pointer;
   border-radius:4px;font-size:12px;display:flex;align-items:center;justify-content:center}
 .ribbon-caret:hover{background:var(--hover);color:#fff}
+.ribbon-overflow{padding:0 10px;font-size:15px;flex-shrink:0}
+#ribbon-overflow-menu{position:fixed;z-index:210;background:var(--surface2);border:1px solid var(--border2);
+  border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,.4);padding:4px;min-width:160px;flex-direction:column;gap:2px}
+#ribbon-overflow-menu .ribbon-btn{width:100%;justify-content:flex-start;border-radius:4px;height:30px}
 
 /* ---- Print: message pane only (ribbon Print button) ---- */
 @media print {
@@ -252,7 +256,12 @@ body.app-page{overflow:hidden}
 
 /* Sidebar */
 .sidebar{width:var(--sidebar-w);flex-shrink:0;background:var(--bg);
-  border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden}
+  border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden;position:relative}
+.sidebar-resize{position:absolute;top:0;right:-3px;width:6px;height:100%;cursor:col-resize;z-index:5}
+.sidebar-resize:hover{background:var(--accent);opacity:.4}
+#app-root[data-sidebar="collapsed"] .sidebar-resize,
+#app-root[data-sidebar="auto"] .sidebar-resize{display:none}
+@media (max-width:700px){.sidebar-resize{display:none}}
 .compose-btn{padding:6px 12px;background:var(--accent);border:none;border-radius:6px;
   color:white;font-family:var(--font);font-size:12px;font-weight:500;cursor:pointer;transition:opacity .15s}
 .compose-btn:hover{opacity:.85}

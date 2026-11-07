@@ -43,6 +43,8 @@ function applyViewPrefs() {
   });
   const root = document.getElementById('app-root');
   if (root) { root.dataset.density = density; root.dataset.readingPane = pane; root.dataset.sidebar = sidebarMode; }
+  const sw = uiPrefsGet('sidebarWidthPx', null);
+  if (sw) document.documentElement.style.setProperty('--sidebar-w', sw+'px');
   [['compact','Compact'],['comfortable','Comfortable']].forEach(([v,label]) => {
     const el = document.getElementById('vopt-density-'+v);
     if (el) el.textContent = (v===density?'✓ ':'○ ') + label;
@@ -69,6 +71,31 @@ function applyViewPrefs() {
       listPanel.style.height = '';
     }
   }
+}
+
+// ── Sidebar width drag (A3, desktop only) ───────────────────────────────────
+// Sets --sidebar-w live, clamped 180–420px, persisted in uiPrefs.
+function initSidebarResize() {
+  const handle = document.getElementById('sidebar-resize');
+  if (!handle) return;
+  let dragging = false;
+  handle.addEventListener('mousedown', e => {
+    dragging = true;
+    document.body.style.userSelect = 'none';
+    e.preventDefault();
+  });
+  document.addEventListener('mousemove', e => {
+    if (!dragging) return;
+    const w = Math.min(420, Math.max(180, e.clientX));
+    document.documentElement.style.setProperty('--sidebar-w', w+'px');
+  });
+  document.addEventListener('mouseup', () => {
+    if (!dragging) return;
+    dragging = false;
+    document.body.style.userSelect = '';
+    const cur = parseInt(document.documentElement.style.getPropertyValue('--sidebar-w')) || 240;
+    uiPrefsSet('sidebarWidthPx', cur);
+  });
 }
 
 // ── Draggable list/reading-pane divider (desktop only) ───────────────────────
@@ -132,7 +159,7 @@ function toggleSidebarCollapse() {
 }
 // Top-row menus (File/View/Help/Profile) share one outside-click listener; a
 // stale close handler must never swallow the click that opens the next menu.
-const TOP_MENUS = { help: ['help-menu', 'help-btn'], profile: ['profile-menu', 'profile-btn'] };
+const TOP_MENUS = { help: ['help-menu', 'help-btn'], profile: ['profile-menu', 'profile-btn'], bell: ['bell-menu', 'bell-btn'] };
 let _tbClose = null;
 function closeTopMenus() {
   let anyOpen = false;
@@ -176,6 +203,32 @@ function topMenuOpen(kind) {
     document.getElementById(bid).setAttribute('aria-expanded', 'true');
     armOutsideClose();
   }
+}
+
+// ── Bell: unread messages dropdown (A4) ─────────────────────────────────────
+async function toggleBellMenu(e) {
+  e.stopPropagation();
+  const menu = document.getElementById('bell-menu');
+  if (!menu) return;
+  if (menu.style.display === 'block') { closeTopMenus(); return; }
+  menu.innerHTML = '<div class="filter-opt" style="padding:10px;color:var(--muted)">Loading…</div>';
+  topMenuOpen('bell');
+  let list = [];
+  try { list = ((await api('GET','/messages/unified?page_size=50')) || {}).messages || []; } catch (err) { list = []; }
+  if (menu.style.display === 'none') return; // closed while loading
+  const unread = list.filter(m => !m.is_read).slice(0, 15);
+  menu.innerHTML = (unread.length
+    ? unread.map(m => `
+        <div class="filter-opt" style="display:flex;gap:8px;align-items:center" onclick="closeTopMenus();openMessage(${m.id})">
+          <span style="width:8px;height:8px;border-radius:50%;background:${m.account_color||'var(--accent)'};flex-shrink:0"></span>
+          <span style="min-width:0">
+            <span style="display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(m.subject||'(no subject)')}</span>
+            <span style="font-size:11px;color:var(--muted)">${esc(m.from_name||m.from_email||'')} · ${formatDate(m.date)}</span>
+          </span>
+        </div>`).join('')
+    : '<div class="filter-opt" style="padding:10px;color:var(--muted)">No unread messages 🎉</div>')
+    + '<div class="filter-sep-line"></div>'
+    + '<div class="filter-opt" onclick="closeTopMenus();selectFolder(\'unified\',\'Unified Inbox\')">View all in Unified Inbox</div>';
 }
 
 // ── Boot ───────────────────────────────────────────────────────────────────
@@ -249,6 +302,8 @@ async function init() {
 
   initComposeDragResize();
   initPanelResize();
+  initSidebarResize();
+  layoutRibbonOverflow();
   startPoller();
   mobSetView('list'); // initialise mobile view state
 }
@@ -759,11 +814,20 @@ function renderFavourites() {
   const visible = S.folders.filter(f=>!f.is_hidden);
   const favs = (uiPrefsGet('favourites', [])||[])
     .map(id => visible.find(f=>f.id===id)).filter(Boolean);
+  // A2: short account label = first word of display_name (or email local-part);
+  // accounts whose short labels collide fall back to the full name
+  const shortAcc = a => {
+    const dn=(a?.display_name||'').trim();
+    if (dn) return dn.split(/\s+/)[0];
+    return (a?.email_address||'').split('@')[0];
+  };
+  const shortCounts={};
+  S.accounts.forEach(a=>{const s=shortAcc(a).toLowerCase(); shortCounts[s]=(shortCounts[s]||0)+1;});
   const userRows = favs.map(f => {
     const acc = accMap[f.account_id];
     const dup = visible.some(x => x.id!==f.id && x.name.toLowerCase()===f.name.toLowerCase());
-    const label = dup
-      ? `${esc(f.name)} - <span style="color:${acc?.color||'var(--muted)'}">●</span> ${esc(acc?.display_name||acc?.email_address||'')}`
+    const label = dup && acc
+      ? `${esc(f.name)} - <span style="color:${acc?.color||'var(--muted)'}">●</span> ${esc(shortCounts[shortAcc(acc).toLowerCase()]>1 ? (acc.display_name||acc.email_address) : shortAcc(acc))}`
       : esc(f.name);
     return `
       <div class="nav-item fav-drag" id="fav-f${f.id}" data-fid="${f.id}" draggable="true"
@@ -2185,6 +2249,43 @@ function resetDetail() {
 }
 
 // ── Home ribbon ─────────────────────────────────────────────────────────────
+// A1: buttons that don't fit the ribbon's width move into a "⋯" dropdown (no scroll)
+let _rbButtons = null;
+function layoutRibbonOverflow(){
+  const ribbon=document.getElementById('ribbon'), btn=document.getElementById('ribbon-overflow-btn'), menu=document.getElementById('ribbon-overflow-menu');
+  if(!ribbon||!btn||!menu||window.innerWidth<=700||ribbon.style.display==='none') return; // desktop-only, mail view only
+  if(!_rbButtons){
+    _rbButtons=[...ribbon.querySelectorAll('.ribbon-btn,.ribbon-caret')];
+    _rbButtons.forEach(b=>b._home=b.parentElement);
+  }
+  // reset: everything back in its original group
+  _rbButtons.forEach(b=>{ if(b.parentElement!==b._home) b._home.appendChild(b); });
+  const groups=[...ribbon.querySelectorAll(':scope > .ribbon-group')];
+  groups.forEach(g=>g.style.display='');
+  const limit=ribbon.clientWidth-46; // 46px reserved for the ⋯ button
+  for(let i=groups.length-1;i>=1;i--){ // index 0 is the "New" group — never overflow it
+    const g=groups[i];
+    if(g.offsetLeft+g.offsetWidth>limit){
+      [...g.querySelectorAll('.ribbon-btn,.ribbon-caret')].forEach(b=>menu.appendChild(b));
+      g.style.display='none';
+    }
+  }
+  btn.style.display=menu.children.length?'':'none';
+  closeRibbonOverflow();
+}
+function toggleRibbonOverflow(e){
+  e.stopPropagation();
+  const menu=document.getElementById('ribbon-overflow-menu');
+  if(menu.style.display==='block') return closeRibbonOverflow();
+  const r=document.getElementById('ribbon-overflow-btn').getBoundingClientRect();
+  menu.style.top=(r.bottom+6)+'px';
+  menu.style.left=Math.max(8,r.right-menu.offsetWidth-8)+'px';
+  menu.style.display='flex';
+  document.addEventListener('click',closeRibbonOverflow,{once:true});
+}
+function closeRibbonOverflow(){ const m=document.getElementById('ribbon-overflow-menu'); if(m) m.style.display='none'; }
+let _rbResizeT=null;
+window.addEventListener('resize',()=>{ clearTimeout(_rbResizeT); _rbResizeT=setTimeout(layoutRibbonOverflow,150); });
 // Actions act on the multi-selection (SEL.ids) when present, otherwise on the
 // open message (S.selectedMessageId). Move reuses the shared context menu
 // (#ctx-menu), positioned at the click point by showCtxMenu().
