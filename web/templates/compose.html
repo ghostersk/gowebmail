@@ -61,7 +61,7 @@
     <!-- Subject -->
     <div style="display:flex;align-items:center;border-bottom:1px solid var(--border);padding:8px 0;gap:8px">
       <label for="cp-subject" style="font-size:12px;color:var(--muted);width:48px;flex-shrink:0">Subject</label>
-      <input id="cp-subject" type="text" placeholder="Subject" oninput="markDirty()" style="flex:1;background:transparent;border:none;color:var(--text);font-size:14px;outline:none;font-family:'DM Sans',sans-serif">
+      <input id="cp-subject" type="text" placeholder="Subject" oninput="markDirty()" style="flex:1;background:transparent;border:none;color:var(--text);font-size:14px;outline:none;font-family:var(--font)">
     </div>
     <!-- Formatting toolbar -->
     <div class="compose-toolbar" role="toolbar" aria-label="Formatting">
@@ -143,7 +143,7 @@ function restoreBlockedImages(html) {
 function initTagField(id) {
   const el = document.getElementById(id);
   if (!el) return;
-  el.innerHTML = '<input class="tag-input" type="email" multiple style="border:none;background:transparent;outline:none;color:var(--text);font-size:13px;min-width:180px;font-family:\'DM Sans\',sans-serif">';
+  el.innerHTML = '<input class="tag-input" type="email" multiple style="border:none;background:transparent;outline:none;color:var(--text);font-size:13px;min-width:180px;font-family:var(--font)">';
   const inp = el.querySelector('input');
   inp.addEventListener('keydown', e => {
     if (e.key === 'Enter' || e.key === ',' || e.key === 'Tab') {

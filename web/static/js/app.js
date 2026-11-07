@@ -108,19 +108,52 @@ function toggleSidebarCollapse() {
   const cur = uiPrefsGet('sidebarMode', 'expanded');
   setViewPref('sidebarMode', cur === 'expanded' ? 'collapsed' : 'expanded');
 }
+// Top-row menus (File/View/Help/Profile) share one outside-click listener; a
+// stale close handler must never swallow the click that opens the next menu.
+const TOP_MENUS = { file: ['file-menu', 'file-btn'], help: ['help-menu', 'help-btn'], profile: ['profile-menu', 'profile-btn'] };
+let _tbClose = null;
+function closeTopMenus() {
+  let anyOpen = false;
+  Object.keys(TOP_MENUS).forEach(k => {
+    const m = document.getElementById(TOP_MENUS[k][0]);
+    if (m?.style.display === 'block') anyOpen = true;
+    if (m) m.style.display = 'none';
+    document.getElementById(TOP_MENUS[k][1])?.setAttribute('aria-expanded', 'false');
+  });
+  const v = document.getElementById('view-dropdown-menu');
+  if (v) { if (v.style.display !== 'none') anyOpen = true; v.style.display = 'none'; }
+  document.getElementById('view-dropdown-btn')?.setAttribute('aria-expanded', 'false');
+  if (_tbClose) { document.removeEventListener('click', _tbClose); _tbClose = null; }
+  return anyOpen;
+}
+function armOutsideClose() {
+  if (_tbClose) document.removeEventListener('click', _tbClose);
+  _tbClose = () => closeTopMenus();
+  setTimeout(() => document.addEventListener('click', _tbClose), 0);
+}
 function toggleViewDropdown(e) {
   e.stopPropagation();
   const menu = document.getElementById('view-dropdown-menu');
   if (!menu) return;
   const isOpen = menu.style.display !== 'none';
-  menu.style.display = isOpen ? 'none' : 'block';
-  document.getElementById('view-dropdown-btn')?.setAttribute('aria-expanded', String(!isOpen));
-  if (!isOpen) setTimeout(() => document.addEventListener('click', closeViewDropdown, { once: true }), 0);
+  closeTopMenus();
+  if (!isOpen) {
+    menu.style.display = 'block';
+    document.getElementById('view-dropdown-btn').setAttribute('aria-expanded', 'true');
+    armOutsideClose();
+  }
 }
-function closeViewDropdown() {
-  const menu = document.getElementById('view-dropdown-menu');
-  if (menu) menu.style.display = 'none';
-  document.getElementById('view-dropdown-btn')?.setAttribute('aria-expanded', 'false');
+function topMenuOpen(kind) {
+  const [mid, bid] = TOP_MENUS[kind];
+  const menu = document.getElementById(mid);
+  if (!menu) return;
+  const wasOpen = menu.style.display === 'block';
+  closeTopMenus();
+  if (!wasOpen) {
+    menu.style.display = 'block';
+    document.getElementById(bid).setAttribute('aria-expanded', 'true');
+    armOutsideClose();
+  }
 }
 
 // ── Boot ───────────────────────────────────────────────────────────────────
@@ -131,8 +164,14 @@ async function init() {
   ]);
   if (me) {
     S.me = me;
-    document.getElementById('user-display').textContent = me.username || me.email;
+    const nm = me.username || me.email;
+    document.getElementById('user-display').textContent = nm;
+    const pe = document.getElementById('profile-email');
+    if (pe) pe.textContent = nm;
+    const pi = document.getElementById('profile-initials');
+    if (pi) pi.textContent = (nm || '?').split(/\s+/).slice(0, 2).map(w => w[0]).join('').toUpperCase() || '?';
     if (me.role === 'admin') document.getElementById('admin-link').style.display = 'block';
+    document.title = 'Email - ' + nm + ' - GoWebMail';
   }
   if (providers) { S.providers = providers; updateProviderButtons(); }
   if (wl?.whitelist) S.remoteWhitelist = new Set(wl.whitelist);
@@ -161,6 +200,7 @@ async function init() {
   if (p.get('error')) { toast('Connection failed: '+p.get('error'), 'error'); history.replaceState({},'','/'); }
 
   document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && closeTopMenus()) return; // top-row menus close first, even while typing
     if (['INPUT','TEXTAREA','SELECT'].includes(e.target.tagName)) return;
     if (e.target.contentEditable === 'true') return;
     if ((e.metaKey||e.ctrlKey) && e.key==='n') { e.preventDefault(); openCompose(); return; }
@@ -989,6 +1029,8 @@ function updateUnreadBadge() {
   const total=S.folders.filter(f=>f.folder_type==='inbox').reduce((s,f)=>s+(f.unread_count||0),0);
   const badge=document.getElementById('unread-total');
   badge.textContent=total; badge.style.display=total>0?'':'none';
+  const bell=document.getElementById('bell-badge');
+  if(bell){ bell.textContent=total>99?'99+':total; bell.style.display=total>0?'':'none'; }
 }
 
 // ── Labels ─────────────────────────────────────────────────────────────────
@@ -3423,8 +3465,13 @@ function updateUnreadBadgeFromPoll(inboxUnread) {
   } else {
     badge.style.display = 'none';
   }
+  const bell = document.getElementById('bell-badge');
+  if (bell) {
+    bell.textContent = inboxUnread > 99 ? '99+' : inboxUnread;
+    bell.style.display = inboxUnread > 0 ? '' : 'none';
+  }
   // Update browser tab title
-  const base = 'GoWebMail';
+  const base = S.me ? 'Email - ' + (S.me.username || S.me.email) + ' - GoWebMail' : 'GoWebMail';
   document.title = inboxUnread > 0 ? `(${inboxUnread}) ${base}` : base;
 }
 
