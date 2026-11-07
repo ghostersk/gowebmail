@@ -7,7 +7,7 @@
   --accent-glow:rgba(71,158,245,.25);--danger:#ef4444;--success:#22c55e;
   --warn:#f59e0b;--star:#f59e0b;
   --sidebar-w:240px;--panel-w:350px;
-  --rail-w:48px;--topbar-h:48px;--ribbon-h:92px;--row-accent:#77b7f7;--hover:rgba(255,255,255,.05);
+  --topbar-h:48px;--ribbon-h:92px;--row-accent:#77b7f7;--hover:rgba(255,255,255,.05);
   --font:"Segoe UI","Segoe UI Web (West European)",-apple-system,"Helvetica Neue",sans-serif;
 }
 html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--font);font-size:14px}
@@ -152,21 +152,20 @@ body.app-page{overflow:hidden}
 .app-body{flex:1;display:flex;min-height:0;min-width:0}
 
 /* ---- App rail (Mail/Calendar/People; desktop only) ---- */
-.app-rail{width:48px;background:#0a0a0a;display:flex;flex-direction:column;align-items:center;padding-top:8px;gap:4px;flex-shrink:0}
-.app-rail button{width:40px;height:40px;border-radius:4px;border:none;background:none;display:flex;align-items:center;justify-content:center;color:#d6d6d6;cursor:pointer;position:relative}
-.app-rail button svg{width:20px;height:20px}
-.app-rail button:hover{background:var(--hover);color:#fff}
-.app-rail button.on{color:#479ef5}
-.app-rail button.on::before{content:'';position:absolute;left:-4px;top:6px;bottom:6px;width:3px;background:#479ef5;border-radius:2px}
+.tb-icon{width:32px;height:32px;border-radius:4px;border:none;background:none;display:flex;align-items:center;justify-content:center;color:#d6d6d6;cursor:pointer;position:relative;flex-shrink:0}
+.tb-icon svg{width:18px;height:18px}
+.tb-icon:hover{background:var(--hover);color:#fff}
+.tb-icon.on{color:#479ef5}
+.tb-icon.on::after{content:'';position:absolute;left:6px;right:6px;bottom:1px;height:3px;background:#479ef5;border-radius:2px}
 
 /* ---- Top command row (desktop only) ---- */
 .topbar{height:48px;background:#141414;display:flex;align-items:center;gap:2px;padding:0 8px;border-bottom:1px solid var(--border);flex-shrink:0}
 .tb-btn{font-size:14px;color:#d6d6d6;padding:8px 10px;border:none;background:none;border-radius:4px;cursor:pointer;font-family:var(--font)}
 .tb-btn:hover{background:var(--hover);color:#fff}
 .tb-btn.on{color:#fff;background:var(--surface)}
-.tb-spacer{flex:1}
-.tb-search{flex:0 1 350px;min-width:140px}
-.tb-search .search-input{background:rgba(33,32,33,.7);border-color:var(--border2);border-radius:4px;height:32px}
+.tb-search{flex:0 1 400px;min-width:160px;margin:0 auto;display:flex;align-items:center}
+.tb-search .search-input{flex:1;width:auto;background:rgba(33,32,33,.7);border-color:var(--border2);border-radius:4px;height:32px;padding-right:4px}
+.tb-search .filter-dropdown-btn{flex-shrink:0;padding:3px 8px;margin-left:3px}
 .tb-bell{position:relative}
 .tb-badge{position:absolute;top:0;right:-2px;min-width:16px;height:16px;border-radius:8px;background:var(--accent);color:#fff;font-size:11px;line-height:16px;text-align:center;padding:0 4px}
 .tb-initials{display:inline-flex;width:26px;height:26px;border-radius:50%;background:var(--accent);color:#fff;font-size:12px;font-weight:600;align-items:center;justify-content:center}
@@ -216,30 +215,24 @@ body.app-page{overflow:hidden}
   #app-root[data-sidebar="auto"]:has(#sidebar-expand-btn:hover) .sidebar,
   #app-root[data-sidebar="auto"] .sidebar:hover{transform:translateX(0)}
 }
-.sidebar-collapse-btn{flex-shrink:0}
+
 
 /* Sidebar */
-.sidebar{width:var(--sidebar-w);flex-shrink:0;background:var(--surface);
+.sidebar{width:var(--sidebar-w);flex-shrink:0;background:var(--bg);
   border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden}
-.sidebar-header{padding:12px 14px 10px;border-bottom:1px solid var(--border);
-  display:flex;flex-direction:column}
-.sidebar-header .logo a{display:flex;align-items:center;gap:8px;text-decoration:none;color:var(--text)}
-.logo{display:flex;align-items:center;gap:8px}
-.logo-icon{width:26px;height:26px;background:var(--accent);border-radius:6px;
-  display:flex;align-items:center;justify-content:center;flex-shrink:0}
-.logo-icon svg{width:14px;height:14px;fill:white}
-.logo-text{font-family:var(--font);font-size:17px}
 .compose-btn{padding:6px 12px;background:var(--accent);border:none;border-radius:6px;
   color:white;font-family:var(--font);font-size:12px;font-weight:500;cursor:pointer;transition:opacity .15s}
 .compose-btn:hover{opacity:.85}
 /* ── Account dot (still used in popup) */
 .account-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
 .nav-section{padding:3px 6px;flex:1;overflow-y:auto}
+.fav-section-title{font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:.6px;
+  color:var(--muted);padding:6px 8px 2px}
 .nav-item{display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:5px;
-  cursor:pointer;transition:background .1s;color:var(--text2);user-select:none;font-size:13px}
-.nav-item:hover{background:var(--surface3);color:var(--text)}
-.nav-item.active{background:var(--accent-dim);color:var(--accent)}
-.nav-item svg{width:14px;height:14px;flex-shrink:0}
+  cursor:pointer;transition:background .1s;color:var(--text2);user-select:none;font-size:14px}
+.nav-item:hover{background:var(--hover);color:var(--text)}
+.nav-item.active{background:var(--surface);color:#fff}
+.nav-item svg{width:16px;height:16px;flex-shrink:0}
 .unread-badge{margin-left:auto;background:var(--accent);color:white;font-size:10px;
   font-weight:600;padding:1px 6px;border-radius:10px;min-width:18px;text-align:center}
 .folder-count-group{margin-left:auto;display:flex;align-items:center;gap:2px;flex-shrink:0}
@@ -255,12 +248,6 @@ body.app-page{overflow:hidden}
 .nav-account-group{border-radius:6px;transition:background .15s}
 .nav-account-group.acc-drag-target{background:rgba(74,144,226,.12);outline:1px dashed var(--accent)}
 .nav-account-group.acc-dragging{opacity:.4}
-.sidebar-footer{padding:8px 12px;border-top:1px solid var(--border);display:flex;
-  align-items:center;justify-content:space-between;flex-shrink:0}
-.user-info{display:flex;flex-direction:column;gap:2px;min-width:0}
-.user-name{font-size:12px;color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.footer-actions{display:flex;gap:4px;flex-shrink:0}
-
 /* Message list panel */
 .message-list-panel{width:var(--panel-w);flex-shrink:0;border-right:1px solid var(--border);
   display:flex;flex-direction:column;background:var(--surface)}
@@ -681,7 +668,6 @@ body.admin-page{overflow:auto;background:var(--bg)}
 @media (max-width:700px){
   /* Desktop top command row + app rail hidden on mobile (mobile top bar takes over) */
   .topbar{display:none}
-  .app-rail{display:none}
   /* The in-list search bar is the mobile search (top-bar search is hidden) */
   .search-bar{display:block}
   /* Show mobile top bar */
@@ -717,11 +703,6 @@ body.admin-page{overflow:auto;background:var(--bg)}
     background:rgba(0,0,0,.45);
   }
   .mob-sidebar-backdrop.mob-open{display:block}
-
-  /* Desktop compose button in sidebar header hidden on mobile (topbar has one) */
-  .sidebar-header .compose-btn{display:none}
-  /* Desktop-only sidebar collapse control — mobile already has the drawer/hamburger */
-  .sidebar-collapse-btn{display:none}
 
   /* Message action row (Reply/Forward/Star/...): wrap instead of overflowing
      horizontally — there's no room for 9+ buttons in one row on a phone. */

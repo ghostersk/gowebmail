@@ -4,6 +4,9 @@ data/*.db-shm
 data/*db-wal
 data/gowebmail.conf
 data/*.txt
+data/
+docs/
+.superpowers/
 gowebmail-devplan.md
 /gowebmail
 testrun/

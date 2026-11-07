@@ -110,7 +110,7 @@ function toggleSidebarCollapse() {
 }
 // Top-row menus (File/View/Help/Profile) share one outside-click listener; a
 // stale close handler must never swallow the click that opens the next menu.
-const TOP_MENUS = { file: ['file-menu', 'file-btn'], help: ['help-menu', 'help-btn'], profile: ['profile-menu', 'profile-btn'] };
+const TOP_MENUS = { help: ['help-menu', 'help-btn'], profile: ['profile-menu', 'profile-btn'] };
 let _tbClose = null;
 function closeTopMenus() {
   let anyOpen = false;
@@ -165,7 +165,6 @@ async function init() {
   if (me) {
     S.me = me;
     const nm = me.username || me.email;
-    document.getElementById('user-display').textContent = nm;
     const pe = document.getElementById('profile-email');
     if (pe) pe.textContent = nm;
     const pi = document.getElementById('profile-initials');
@@ -720,7 +719,27 @@ const FOLDER_ICONS = {
   custom:'<path d="M20 6h-2.18c.07-.44.18-.86.18-1 0-2.21-1.79-4-4-4s-4 1.79-4 4c0 .14.11.56.18 1H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2z"/>',
 };
 
+// Favourites mirrors the first account (sort_order): its Inbox/Drafts/Archive.
+// shortcut: first account only — extend to per-account favourites if multi-account users want it.
+function renderFavourites() {
+  const el = document.getElementById('favourites-list');
+  if (!el) return;
+  const acc = [...S.accounts].sort((a,b) => (a.sort_order||0) - (b.sort_order||0))[0];
+  const rows = acc
+    ? S.folders.filter(f => f.account_id === acc.id && !f.is_hidden
+        && ['inbox','drafts','archive'].includes(f.folder_type)).map(f => `
+      <div class="nav-item" id="fav-f${f.id}" data-fid="${f.id}"
+           onclick="selectFolder(${f.id},'${esc(f.name)}')">
+        <svg viewBox="0 0 24 24" fill="currentColor">${FOLDER_ICONS[f.folder_type]||FOLDER_ICONS.custom}</svg>
+        ${esc(f.name)}
+        ${f.folder_type==='inbox'&&f.unread_count>0?`<span class="unread-badge">${f.unread_count}</span>`:''}
+      </div>`).join('')
+    : '';
+  el.innerHTML = rows;
+}
+
 function renderFolders() {
+  renderFavourites();
   const el = document.getElementById('folders-by-account');
   const accMap = {}; S.accounts.forEach(a => accMap[a.id] = a);
   const byAcc = {};
@@ -1192,6 +1211,7 @@ function selectFolder(folderId, folderName) {
     :folderId==='snoozed'?document.getElementById('nav-snoozed')
     :document.getElementById('nav-f'+folderId);
   if (navEl) navEl.classList.add('active');
+  document.getElementById('fav-f'+folderId)?.classList.add('active');
   mobCloseNav();
   mobSetView('list');
   loadMessages();
@@ -1210,7 +1230,11 @@ const handleSearch=debounce(q=>{
 function toggleSearchFilters(e) {
   if (e) e.stopPropagation();
   const panel = document.getElementById('search-filters-panel');
-  const bar = document.querySelector('.search-bar');
+  // Anchor to the *visible* search bar: .tb-search on desktop, .search-bar on
+  // mobile. The old code always used .search-bar — display:none on desktop,
+  // zero rect, panel glued to the left edge.
+  const bars = [document.querySelector('.tb-search'), document.querySelector('.search-bar')];
+  const bar = bars.find(b => b && b.getBoundingClientRect().width > 0);
   if (!panel || !bar) return;
   const isOpen = panel.style.display !== 'none';
   document.removeEventListener('click', closeSearchFiltersOutside);
@@ -1218,7 +1242,7 @@ function toggleSearchFilters(e) {
   populateMailboxScopeOptions();
   const r = bar.getBoundingClientRect();
   panel.style.display = 'block';
-  panel.style.width = r.width + 'px';
+  panel.style.width = Math.min(r.width, 460) + 'px';
   panel.style.left = r.left + 'px';
   panel.style.top = Math.min(r.bottom + 4, window.innerHeight - 60) + 'px';
   setTimeout(() => document.addEventListener('click', closeSearchFiltersOutside), 0);
