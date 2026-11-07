@@ -36,6 +36,11 @@ function applyViewPrefs() {
   const density = uiPrefsGet('density', 'compact');
   const pane = uiPrefsGet('readingPane', 'right');
   const sidebarMode = uiPrefsGet('sidebarMode', 'expanded');
+  const conv = uiPrefsGet('conversations', 'on');
+  [['on','Conversations'],['off','Individual emails']].forEach(([v,label]) => {
+    const el = document.getElementById('vopt-conv-'+v);
+    if (el) el.textContent = (v===conv?'✓ ':'○ ') + label;
+  });
   const root = document.getElementById('app-root');
   if (root) { root.dataset.density = density; root.dataset.readingPane = pane; root.dataset.sidebar = sidebarMode; }
   [['compact','Compact'],['comfortable','Comfortable']].forEach(([v,label]) => {
@@ -99,6 +104,10 @@ function initPanelResize() {
 function setViewPref(key, val) {
   uiPrefsSet(key, val);
   applyViewPrefs();
+  if (key === 'conversations') {
+    if (val === 'off') threadSiblingsById = {}; // no grouped detail view while flat
+    renderMessageList();
+  }
   closeViewDropdown();
 }
 // Quick manual toggle (header button + edge tab): flip between fully visible
@@ -1495,7 +1504,8 @@ function getFilteredSortedMsgs() {
   if (S.sortOrder==='date-asc') msgs.sort((a,b)=>new Date(a.date)-new Date(b.date));
   else if (S.sortOrder==='size-desc') msgs.sort((a,b)=>(b.size||0)-(a.size||0));
   else msgs.sort((a,b)=>new Date(b.date)-new Date(a.date));
-  return groupThreads(msgs);
+  // View-setting toggle: when grouping is off, show every message as its own row.
+  return uiPrefsGet('conversations','on') === 'on' ? groupThreads(msgs) : msgs;
 }
 
 function handleMsgDragStart(e, id) {

@@ -23,6 +23,10 @@
         <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zm0 12.5c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg>
       </button>
       <div class="filter-dropdown-menu" id="view-dropdown-menu" style="display:none;min-width:190px;left:0;right:auto">
+        <div style="padding:6px 12px 2px;font-size:10px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted)">Grouping</div>
+        <div class="filter-opt" id="vopt-conv-on" onclick="setViewPref('conversations','on');event.stopPropagation()">✓ Conversations</div>
+        <div class="filter-opt" id="vopt-conv-off" onclick="setViewPref('conversations','off');event.stopPropagation()">○ Individual emails</div>
+        <div class="filter-sep-line"></div>
         <div style="padding:6px 12px 2px;font-size:10px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted)">Reading pane</div>
         <div class="filter-opt" id="vopt-pane-right" onclick="setViewPref('readingPane','right');event.stopPropagation()">✓ Right</div>
         <div class="filter-opt" id="vopt-pane-bottom" onclick="setViewPref('readingPane','bottom');event.stopPropagation()">○ Bottom</div>
@@ -1060,6 +1064,6 @@
 {{end}}
 
 {{define "scripts"}}
-<script src="/static/js/app.js?v=94"></script>
+<script src="/static/js/app.js?v=95"></script>
 <script src="/static/js/contacts_calendar.js?v=80"></script>
 {{end}}
