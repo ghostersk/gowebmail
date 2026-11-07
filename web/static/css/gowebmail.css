@@ -201,7 +201,7 @@ body.app-page{overflow:hidden}
   .mail-view .message-detail{display:block;width:100%;height:auto;background:#fff;color:#000;
     border:none;padding:16px}
   .message-detail *{color:#000}
-  .detail-actions{display:none}
+  .pane-footer{display:none}
 }
 
 /* Mail view wrapper (list + detail) — lets the reading-pane position be
@@ -343,7 +343,7 @@ body.app-page{overflow:hidden}
 .label-dropdown-actions button:hover{background:var(--surface2);color:var(--text)}
 .label-dropdown-new{padding:7px 12px;border-radius:5px;font-size:13px;cursor:pointer;color:var(--accent)}
 .label-dropdown-new:hover{background:var(--surface3)}
-.detail-labels{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:8px}
+.detail-labels{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:8px 14px}
 .label-chip{display:inline-flex;align-items:center;gap:5px;padding:2px 4px 2px 8px;border-radius:12px;
   font-size:11px;font-weight:500;border:1px solid transparent}
 .label-chip-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
@@ -383,14 +383,24 @@ body.app-page{overflow:hidden}
 .no-message svg{width:48px;height:48px;fill:var(--border2)}
 .no-message h3{font-family:var(--font);font-size:20px;color:var(--surface3)}
 .no-message p{font-size:13px}
-.detail-header{padding:12px 20px 10px;border-bottom:1px solid var(--border);flex-shrink:0}
-.detail-subject{font-family:var(--font);font-size:18px;margin-bottom:8px}
-.detail-meta{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
-.detail-from{font-size:13px}
-.detail-from strong{color:var(--text)}
-.detail-from span{color:var(--muted);font-size:12px}
-.detail-date{font-size:12px;color:var(--muted);flex-shrink:0}
-.detail-actions{padding:6px 20px;border-bottom:1px solid var(--border);display:flex;gap:5px;flex-shrink:0}
+/* ---- Outlook-style reading pane: title above a single card, footer actions below ---- */
+.pane-title{padding:14px 20px 8px;font-size:18px;font-weight:600;color:var(--text);flex-shrink:0;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.msg-card{margin:0 14px 14px;border:1px solid var(--border);border-radius:6px;background:var(--surface);
+  display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden}
+.msg-card-header{display:flex;align-items:flex-start;gap:10px;padding:12px 14px;border-bottom:1px solid var(--border)}
+.msg-card-id{flex:1;min-width:0}
+.msg-card-sender{font-size:13px}
+.msg-card-sender strong{color:var(--text)}
+.msg-card-email{color:var(--muted);font-size:12px}
+.msg-card-to{font-size:12px;color:var(--muted);margin-top:1px}
+.msg-card-side{display:flex;flex-direction:column;align-items:flex-end;gap:6px;flex-shrink:0}
+.msg-card-date{font-size:12px;color:var(--muted);white-space:nowrap}
+.msg-card-btns{display:flex;align-items:center;gap:6px}
+.hdr-menu-wrap{position:relative;display:inline-flex;align-items:center}
+.hdr-dropdown{position:absolute;top:calc(100% + 6px);right:0;z-index:250;min-width:190px;background:var(--surface2);
+  border:1px solid var(--border2);border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,.4);padding:4px 0}
+.pane-footer{display:flex;gap:8px;padding:0 14px 14px;flex-shrink:0}
 .action-btn{padding:3px 8px;background:var(--surface2);border:1px solid var(--border2);border-radius:5px;
   color:var(--text2);font-family:var(--font);font-size:11px;cursor:pointer;transition:background .15s}
 .action-btn:hover{background:var(--surface3);color:var(--text)}
@@ -541,8 +551,7 @@ body.admin-page{overflow:auto;background:var(--bg)}
   background:var(--surface3);border:1px solid var(--border2);border-radius:6px;font-size:12px;cursor:pointer;
   text-decoration:none;color:inherit}
 .attachment-chip:hover{background:var(--border2)}
-.attachments-bar{display:flex;align-items:center;flex-wrap:wrap;gap:6px;
-  padding:8px 14px;border-bottom:1px solid var(--border)}
+.attachments-bar{display:flex;align-items:center;flex-wrap:wrap;gap:6px;padding:8px 14px}
 .thread-btn-wrap{position:relative;display:inline-flex;align-items:center}
 .thread-dropdown{position:absolute;top:calc(100% + 6px);left:0;z-index:250;
   background:var(--surface2);border:1px solid var(--border2);border-radius:8px;
@@ -733,9 +742,10 @@ body.admin-page{overflow:auto;background:var(--bg)}
   }
   .mob-sidebar-backdrop.mob-open{display:block}
 
-  /* Message action row (Reply/Forward/Star/...): wrap instead of overflowing
-     horizontally — there's no room for 9+ buttons in one row on a phone. */
-  .detail-actions{flex-wrap:wrap}
+  /* Message footer (Reply/Reply all/Forward): wrap instead of overflowing
+     horizontally on a phone. */
+  .pane-footer{flex-wrap:wrap}
+  .msg-card{margin:0 8px 10px}
 
   /* Let the whole message view (subject/from/buttons + body) scroll together as one
      on a phone, instead of pinning the header/action row in place and squeezing the

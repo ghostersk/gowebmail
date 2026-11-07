@@ -1186,6 +1186,20 @@ function closeThreadPanel() {
   if (panel) panel.style.display = 'none';
 }
 
+// ⋯ dropdown in the message card header — same pattern as the Thread dropdown.
+function toggleHdrMenu(e) {
+  if (e) e.stopPropagation();
+  const panel = document.getElementById('hdr-menu');
+  if (!panel) return;
+  const isOpen = panel.style.display !== 'none';
+  panel.style.display = isOpen ? 'none' : 'block';
+  if (!isOpen) setTimeout(() => document.addEventListener('click', closeHdrMenu, { once: true }), 0);
+}
+function closeHdrMenu() {
+  const panel = document.getElementById('hdr-menu');
+  if (panel) panel.style.display = 'none';
+}
+
 function selectLabel(labelId, name) {
   closeLabelsDropdown();
   selectFolder('label:'+labelId, name);
@@ -1907,17 +1921,40 @@ function renderMessageDetail(msg, showRemoteContent) {
   }
 
 
+  // Outlook reading pane: title above a single card (avatar + sender + date in the card
+  // header), body/labels/attachments inside, and Reply/Reply all/Forward in a footer.
+  // Secondary actions (star, snooze, headers, download, …) live in the ⋯ dropdown.
   detail.innerHTML=`
-    <div class="detail-header">
-      <div class="detail-subject">${esc(msg.subject||'(no subject)')}</div>
-      <div class="detail-meta">
-        <div class="detail-from">
-          <strong>${esc(msg.from_name||msg.from_email)}</strong>
-          ${msg.from_name?`<span style="color:var(--muted);font-size:12px"> &lt;${esc(msg.from_email)}&gt;</span>`:''}
-          ${msg.to?`<div style="font-size:12px;color:var(--muted);margin-top:2px">To: ${esc(msg.to)}</div>`:''}
-          ${msg.cc?`<div style="font-size:12px;color:var(--muted)">CC: ${esc(msg.cc)}</div>`:''}
+    <div class="pane-title" title="${esc(msg.subject||'(no subject)')}">${esc(msg.subject||'(no subject)')}</div>
+    <div class="msg-card">
+      <div class="msg-card-header">
+        <div class="msg-avatar" style="background:${msg.account_color||'var(--surface3)'}" title="${esc(msg.from_email||'')}">${initials(msg.from_name||msg.from_email||'?')}</div>
+        <div class="msg-card-id">
+          <div class="msg-card-sender">
+            <strong>${esc(msg.from_name||msg.from_email)}</strong>
+            ${msg.from_name?`<span class="msg-card-email">&lt;${esc(msg.from_email)}&gt;</span>`:''}
+          </div>
+          ${msg.to?`<div class="msg-card-to">To: ${esc(msg.to)}</div>`:''}
+          ${msg.cc?`<div class="msg-card-to">CC: ${esc(msg.cc)}</div>`:''}
         </div>
-        <div class="detail-date">${formatFullDate(msg.date)}</div>
+        <div class="msg-card-side">
+          <div class="msg-card-date">${formatFullDate(msg.date)}</div>
+          <div class="msg-card-btns">
+            ${threadBtnHtml}
+            <div class="hdr-menu-wrap">
+              <button class="action-btn" onclick="toggleHdrMenu(event)" title="More actions">⋯</button>
+              <div class="hdr-dropdown" id="hdr-menu" style="display:none">
+                <div class="ctx-item" onclick="toggleStar(${msg.id})">${msg.is_starred?'★ Unstar':'☆ Star'}</div>
+                <div class="ctx-item" onclick="${S.currentFolder==='snoozed'?'unsnoozeMessage':'snoozeMessage'}(${msg.id})">⏰ ${S.currentFolder==='snoozed'?'Unsnooze':'Snooze'}</div>
+                <div class="ctx-item" onclick="openForwardAsAttachment()" title="Forward the original message as an .eml file attachment">↪ Fwd as Attachment</div>
+                <div class="ctx-item" onclick="showMessageHeaders(${msg.id})">⋮ Headers</div>
+                <div class="ctx-item" onclick="downloadEML(${msg.id})">⬇ Download</div>
+                ${(isSentFolderView()||isSpamFolderView())?'':`<div class="ctx-item" onclick="markAsSpam(${msg.id})" title="Move to Spam and block this sender">🚫 Mark as Spam</div>`}
+                <div class="ctx-item" onclick="deleteMessage(${msg.id})">🗑 Delete</div>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
       <div class="detail-labels">
         ${(msg.labels||[]).map(l=>`<span class="label-chip" style="background:${l.color}22;color:${l.color};border-color:${l.color}55">
@@ -1926,21 +1963,14 @@ function renderMessageDetail(msg, showRemoteContent) {
         </span>`).join('')}
         <button class="label-add-btn" onclick="toggleLabelPicker(event,${msg.id})">+ Label</button>
       </div>
+      <div class="detail-body">${bodyHtml}</div>
+      ${attachHtml}
     </div>
-    <div class="detail-actions">
-      <button class="action-btn" onclick="openReply()">↩ Reply</button>
-      <button class="action-btn" onclick="openForward()">↪ Forward</button>
-      <button class="action-btn" onclick="openForwardAsAttachment()" title="Forward the original message as an .eml file attachment">↪ Fwd as Attachment</button>
-      ${threadBtnHtml}
-      <button class="action-btn" onclick="toggleStar(${msg.id})">${msg.is_starred?'★ Unstar':'☆ Star'}</button>
-      <button class="action-btn" onclick="${S.currentFolder==='snoozed'?'unsnoozeMessage':'snoozeMessage'}(${msg.id})">⏰ ${S.currentFolder==='snoozed'?'Unsnooze':'Snooze'}</button>
-      <button class="action-btn" onclick="showMessageHeaders(${msg.id})">⋮ Headers</button>
-      <button class="action-btn" onclick="downloadEML(${msg.id})">⬇ Download</button>
-      ${(isSentFolderView()||isSpamFolderView())?'':`<button class="action-btn" onclick="markAsSpam(${msg.id})" title="Move to Spam and block this sender">🚫 Mark as Spam</button>`}
-      <button class="action-btn danger" onclick="deleteMessage(${msg.id})">🗑 Delete</button>
-    </div>
-    ${attachHtml}
-    <div class="detail-body">${bodyHtml}</div>`;
+    <div class="pane-footer">
+      <button class="btn-secondary" onclick="openReplyTo(${msg.id})">Reply</button>
+      <button class="btn-secondary" onclick="openReplyAll(${msg.id})">Reply all</button>
+      <button class="btn-secondary" onclick="openForward()">Forward</button>
+    </div>`;
 
   // Auto-size iframe via postMessage from injected height-reporting script.
   // We cannot use contentDocument (null without allow-same-origin in sandbox).
@@ -2143,7 +2173,7 @@ function resetDetail() {
   S.currentMessage=null;S.selectedMessageId=null;
   document.getElementById('message-detail').innerHTML=`<div class="no-message">
     <svg viewBox="0 0 24 24"><path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"/></svg>
-    <h3>Select a message</h3><p>Choose a message to read it</p></div>`;
+    <h3>Select an item to read</h3><p>Nothing is selected</p></div>`;
   updateRibbonState();
 }
 
