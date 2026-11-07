@@ -295,7 +295,8 @@ async function init() {
     } else if ((e.key==='#'||e.key==='Delete') && S.currentMessage) {
       e.preventDefault(); deleteMessage(S.currentMessage.id);
     } else if (e.key==='Escape') {
-      if (S.composeVisible) { e.preventDefault(); closeCompose(); }
+      if (dockTopWindow() && !document.querySelector('.modal-overlay.open')) { e.preventDefault(); dockCloseTop(); }
+      else if (S.composeVisible) { e.preventDefault(); closeCompose(); }
       else if (S.currentMessage) { e.preventDefault(); resetDetail(); renderMessageList(); mobBack(); }
     }
   });
@@ -304,6 +305,7 @@ async function init() {
   initPanelResize();
   initSidebarResize();
   layoutRibbonOverflow();
+  loadDock();
   startPoller();
   mobSetView('list'); // initialise mobile view state
 }
@@ -1591,6 +1593,7 @@ function renderMessageList() {
          data-id="${m.id}" data-idx="${i}"
          draggable="true"
          onclick="handleMsgClick(event,${m.id},${i})"
+         ondblclick="openMsgWindow(${m.id})"
          oncontextmenu="showMessageMenu(event,${m.id})"
          ondragstart="handleMsgDragStart(event,${m.id})">
       <div class="msg-avatar" style="background:${m.account_color}" title="${esc(m.account_email||'')}">${initials(m.from_name || m.from_email || acctLabel)}</div>
@@ -1736,12 +1739,120 @@ async function openMessage(id) {
   if (isDraftFolder(msg.folder_id)) { resumeDraft(msg); return; }
   S.currentMessage=msg;
   renderMessageDetail(msg, false);
+  markMsgRead(id);
+}
+
+function markMsgRead(id) {
   const li=S.messages.find(m=>m.id===id);
   if (li&&!li.is_read){
     li.is_read=true; renderMessageList();
     // Sync read status to server (enqueues IMAP op via backend)
     api('PUT','/messages/'+id+'/read',{read:true});
   }
+}
+
+// ── Message windows + footer dock ──────────────────────────────────────────
+// Double-clicking a row opens the message in a full-page window; minimizing keeps it as a
+// chip in the footer dock. Message windows persist across reloads (localStorage dock.v1);
+// compose minimizes into the same dock but is NOT persisted.
+const DOCK=[]; // {type:'msg', id, subject}
+let composeDocked=false;
+
+function makeMsgWin(id, subject) {
+  const w=document.createElement('div'); w.className='msg-win'; w.dataset.type='msg'; w.dataset.id=String(id);
+  w.innerHTML=`<div class="msg-win-header">
+      <span class="msg-win-subject">${esc(subject||'Loading…')}</span>
+      <button class="icon-btn" onclick="dockMinimizeTop()" title="Minimize">—</button>
+      <button class="icon-btn" onclick="dockCloseTop()" title="Close">×</button>
+    </div><div class="msg-win-body" id="msg-win-body-${id}" style="flex:1;overflow-y:auto"></div>`;
+  return w;
+}
+
+async function openMsgWindow(id) {
+  const win=document.getElementById('msg-window'); win.style.display='flex';
+  let w=[...win.querySelectorAll('.msg-win')].find(x=>x.dataset.id===String(id));
+  if(!w){
+    w=makeMsgWin(id, null);
+    win.appendChild(w);
+    DOCK.push({type:'msg', id});
+  }
+  // Only one window open at a time: close the others, this one becomes the active view.
+  win.querySelectorAll('.msg-win.open').forEach(x=>{ if(x!==w) x.classList.remove('open'); });
+  w.classList.add('open');
+  win.appendChild(w);
+  if(!w.dataset.loaded){
+    const body=w.querySelector('.msg-win-body');
+    body.innerHTML='<div class="spinner" style="margin:40px auto"></div>';
+    const msg=await api('GET','/messages/'+id);
+    if(!msg){
+      w.remove(); DOCK.splice(DOCK.findIndex(d=>d.type==='msg'&&d.id===id),1); renderDock(); saveDock();
+      return;
+    }
+    w._msg=msg;
+    renderMessageDetail(msg, false, 'msg-win-body-'+id);
+    w.querySelector('.msg-win-subject').textContent=(msg.subject||'(no subject)')+' · '+(msg.from_name||msg.from_email||'');
+    const entry=DOCK.find(d=>d.type==='msg'&&d.id===id);
+    if(entry) entry.subject=msg.subject||null;
+    w.dataset.loaded='1';
+    markMsgRead(id);
+  }
+  renderDock(); saveDock();
+}
+
+function dockTopWindow(){ return document.querySelector('#msg-window .msg-win.open'); }
+
+function dockMinimizeTop(){
+  const w=dockTopWindow(); if(!w) return;
+  w.classList.remove('open');
+  renderDock();
+}
+
+function dockCloseId(id) {
+  const w=document.querySelector(`#msg-window .msg-win[data-id="${id}"]`);
+  if(w) w.remove();
+  DOCK.splice(DOCK.findIndex(d=>d.type==='msg'&&d.id===+id),1);
+  if(!document.querySelector('#msg-window .msg-win')) document.getElementById('msg-window').style.display='none';
+  renderDock(); saveDock();
+}
+
+function dockCloseTop(){
+  const w=dockTopWindow(); if(!w) return;
+  dockCloseId(w.dataset.id);
+}
+
+function renderDock() {
+  const dock=document.getElementById('window-dock');
+  const chips=[];
+  DOCK.forEach(d=>{
+    const open=document.querySelector(`#msg-window .msg-win[data-id="${d.id}"]`)?.classList.contains('open');
+    chips.push(`<div class="dock-chip${open?' active':''}" onclick="openMsgWindow(${d.id})">
+      <span class="chip-ico">✉</span><span class="chip-subject">${esc(d.subject||'Message')}</span>
+      <span class="chip-x" title="Close" onclick="event.stopPropagation();dockCloseId(${d.id})">✕</span></div>`);
+  });
+  if(composeDocked){
+    chips.push(`<div class="dock-chip" onclick="restoreCompose()">
+      <span class="chip-ico">✎</span><span class="chip-subject">Compose</span>
+      <span class="chip-x" title="Close" onclick="event.stopPropagation();dockComposeClose()">✕</span></div>`);
+  }
+  dock.innerHTML=chips.join('');
+  dock.style.display=chips.length?'flex':'none';
+}
+
+function dockComposeClose(){ closeCompose(); }
+
+function saveDock(){
+  localStorage.setItem('dock.v1', JSON.stringify(DOCK));
+}
+
+function loadDock() {
+  let saved=[];
+  try { saved=JSON.parse(localStorage.getItem('dock.v1')||'[]'); } catch(e) {}
+  saved.filter(d=>d&&d.type==='msg'&&d.id).forEach(d=>{
+    DOCK.push({type:'msg', id:d.id, subject:d.subject||null});
+    const win=document.getElementById('msg-window'); win.style.display='flex';
+    win.appendChild(makeMsgWin(d.id, d.subject)); // created minimized; content fetched on restore
+  });
+  renderDock();
 }
 
 // Opening a message that lives in a Drafts folder resumes editing it (in the compose modal,
@@ -1865,8 +1976,8 @@ function restoreBlockedImages(html) {
   return html.replace(/src=""\s+data-blocked-src="([^"]*)"/gi, 'src="$1"');
 }
 
-function renderMessageDetail(msg, showRemoteContent) {
-  const detail=document.getElementById('message-detail');
+function renderMessageDetail(msg, showRemoteContent, targetId='message-detail') {
+  const detail=document.getElementById(targetId);
   const allowed=showRemoteContent||isRemoteContentAllowed(msg.from_email);
 
   const cssReset = `<style>html,body{background:#ffffff!important;color:#1a1a1a!important;` +
@@ -1941,7 +2052,7 @@ function renderMessageDetail(msg, showRemoteContent) {
       bodyHtml=`<div class="remote-content-banner">
         <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>
         Remote images blocked.
-        <button class="rcb-btn" onclick="renderMessageDetail(S.currentMessage,true)">Load images</button>
+        <button class="rcb-btn" onclick="reloadRemoteIn('${targetId}',${msg.id})">Load images</button>
         ${alwaysAllowBtn}
       </div>
       <iframe id="msg-frame" title="Message content" sandbox="${sandboxAttr}"
@@ -2046,20 +2157,22 @@ function renderMessageDetail(msg, showRemoteContent) {
   // Auto-size iframe via postMessage from injected height-reporting script.
   // We cannot use contentDocument (null without allow-same-origin in sandbox).
   if (msg.body_html) {
-    const frame = document.getElementById('msg-frame');
+    // Scope to this pane: message windows render their own #msg-frame (duplicate ids),
+    // and each frame must auto-size from its own height reports (matched via e.source).
+    const frame = detail.querySelector('iframe#msg-frame');
     if (frame) {
       // Clean up any previous listener/fallback timer
       if (window._frameMsgHandler) window.removeEventListener('message', window._frameMsgHandler);
       if (window._frameFallbackTimer) clearTimeout(window._frameFallbackTimer);
-      let lastH = 0, gotValidHeight = false;
+      let gotValidHeight = false;
       window._frameMsgHandler = (e) => {
         if (e.data?.type === 'gomail-frame-h' && e.data.h > 50) {
-          gotValidHeight = true;
+          // Which frame reported? Set its height (hysteresis tracked per frame).
+          const src=[...document.querySelectorAll('iframe#msg-frame')].find(f=>f.contentWindow===e.source);
+          if (!src) return;
+          if (src===frame) gotValidHeight = true;
           const h = e.data.h + 24;
-          if (Math.abs(h - lastH) > 4) {
-            lastH = h;
-            frame.style.height = h + 'px';
-          }
+          if (Math.abs(h - (src._lastH||0)) > 4) { src._lastH = h; src.style.height = h + 'px'; }
         } else if (e.data?.type === 'gomail-open-url' && e.data.url) {
           confirmExternalNav(e.data.url);
         }
@@ -2073,6 +2186,13 @@ function renderMessageDetail(msg, showRemoteContent) {
       }, 3500);
     }
   }
+}
+
+// "Load images" re-render: main pane uses S.currentMessage; a message window holds its own
+// full message on the window element (w._msg), set by openMsgWindow.
+function reloadRemoteIn(paneId, id) {
+  const m = paneId==='message-detail' ? S.currentMessage : document.getElementById(paneId)?.closest('.msg-win')?._msg;
+  if (m) renderMessageDetail(m, true, paneId);
 }
 
 // Download all attachments for a message sequentially
@@ -2422,7 +2542,6 @@ function openCompose(opts={}) {
   S.composeMode=opts.mode||'new'; S.composeReplyToId=opts.replyId||null;
   composeAttachments=[];
   document.getElementById('compose-title').textContent=opts.title||'New Message';
-  document.getElementById('compose-minimised-label').textContent=opts.title||'New Message';
   // Clear tag containers and re-init
   ['compose-to','compose-cc-tags','compose-bcc-tags'].forEach(id=>{
     const c=document.getElementById(id);
@@ -2451,21 +2570,20 @@ function openCompose(opts={}) {
 
 function showCompose() {
   const d=document.getElementById('compose-dialog');
-  const m=document.getElementById('compose-minimised');
   d.style.display='flex';
-  m.style.display='none';
   S.composeVisible=true; S.composeMinimised=false;
   initComposeDragDrop();
 }
 
 function minimizeCompose() {
   document.getElementById('compose-dialog').style.display='none';
-  document.getElementById('compose-minimised').style.display='flex';
   S.composeMinimised=true;
+  composeDocked=true; renderDock();
 }
 
 function restoreCompose() {
   showCompose();
+  composeDocked=false; renderDock();
 }
 
 function closeCompose(skipCheck) {
@@ -2489,9 +2607,9 @@ function closeCompose(skipCheck) {
 
 function _closeCompose() {
   document.getElementById('compose-dialog').style.display='none';
-  document.getElementById('compose-minimised').style.display='none';
   clearDraftAutosave();
   S.composeVisible=false; S.composeMinimised=false; S.draftDirty=false;
+  composeDocked=false; renderDock();
 }
 
 function showCCRow()  { document.getElementById('cc-row').style.display='flex'; document.getElementById('cc-toggle-btn').style.display='none'; }

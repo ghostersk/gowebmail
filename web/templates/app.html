@@ -419,11 +419,9 @@
   <div class="compose-resize" data-dir="ne"></div>
   <div class="compose-resize" data-dir="nw"></div>
 </div>
-<!-- Minimised pill (shown when user clicks – on header) -->
-<div class="compose-minimised" id="compose-minimised" onclick="restoreCompose()">
-  <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"/></svg>
-  <span id="compose-minimised-label">New Message</span>
-</div>
+<!-- Message windows (double-click a row) + footer dock (minimized windows & compose) -->
+<div id="msg-window" style="display:none"></div>
+<div id="window-dock" style="display:none"></div>
 
 <!-- ── Inline confirm (replaces browser confirm()) ───────────────────────── -->
 <div class="inline-confirm" id="inline-confirm" role="alertdialog" aria-modal="true" aria-describedby="inline-confirm-msg">
@@ -1054,6 +1052,6 @@
 {{end}}
 
 {{define "scripts"}}
-<script src="/static/js/app.js?v=105"></script>
+<script src="/static/js/app.js?v=106"></script>
 <script src="/static/js/contacts_calendar.js?v=81"></script>
 {{end}}
