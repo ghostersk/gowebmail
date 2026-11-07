@@ -2000,6 +2000,20 @@ func (d *DB) MoveMessage(messageID, userID, folderID int64) error {
 	return err
 }
 
+// MoveMessageRekey is the IMAP variant of MoveMessage: it also rekeys remote_uid to a
+// synthetic placeholder. IMAP UIDs are per-folder, so the old uid is meaningless in the
+// destination folder and can collide with a different message's uid there (unique index on
+// account+folder+uid). The delta sync inserts the row with the real new uid; the full-sync
+// purge removes this placeholder.
+func (d *DB) MoveMessageRekey(messageID, userID, folderID int64) error {
+	_, err := d.sql.Exec(`
+		UPDATE messages SET folder_id=?, remote_uid='tmp:'||id
+		WHERE id=? AND account_id IN (SELECT id FROM email_accounts WHERE user_id=?)`,
+		folderID, messageID, userID,
+	)
+	return err
+}
+
 func (d *DB) DeleteMessage(messageID, userID int64) error {
 	_, err := d.sql.Exec(`
 		DELETE FROM messages WHERE id=?

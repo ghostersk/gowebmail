@@ -1214,6 +1214,7 @@ function selectFolder(folderId, folderName) {
   document.getElementById('fav-f'+folderId)?.classList.add('active');
   mobCloseNav();
   mobSetView('list');
+  updateRibbonState();
   loadMessages();
 }
 
@@ -1411,6 +1412,7 @@ function renderMessageList() {
   if (!msgs.length){
     const emptyMsg = S.filterUnread ? 'No unread messages' : S.filterAttachment ? 'No messages with attachments' : 'No messages';
     list.innerHTML=`<div class="empty-state"><svg viewBox="0 0 24 24"><path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"/></svg><p>${emptyMsg}</p></div>`;
+    updateRibbonState();
     return;
   }
 
@@ -1522,6 +1524,7 @@ function updateBulkBar() {
   } else {
     bar.style.display='none';
   }
+  updateRibbonState();
 }
 
 async function bulkMarkRead(read) {
@@ -1952,7 +1955,7 @@ function downloadEML(id) {
 function showMessageMenu(e, id) {
   e.preventDefault(); e.stopPropagation();
   const msg = S.messages.find(m=>m.id===id);
-  const otherFolders = S.folders.filter(f=>!f.is_hidden&&f.id!==S.currentFolder).slice(0,16);
+  const otherFolders = S.folders.filter(f=>!f.is_hidden&&String(f.id)!==String(S.currentFolder)).slice(0,16);
   const moveItems = otherFolders.map(f=>`<div class="ctx-item ctx-sub-item" onclick="moveMessage(${id},${f.id});closeMenu()">${esc(f.name)}</div>`).join('');
   const moveSub = otherFolders.length ? `
     <div class="ctx-item ctx-has-sub">📂 Move to
@@ -2063,6 +2066,98 @@ function resetDetail() {
   document.getElementById('message-detail').innerHTML=`<div class="no-message">
     <svg viewBox="0 0 24 24"><path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"/></svg>
     <h3>Select a message</h3><p>Choose a message to read it</p></div>`;
+  updateRibbonState();
+}
+
+// ── Home ribbon ─────────────────────────────────────────────────────────────
+// Actions act on the multi-selection (SEL.ids) when present, otherwise on the
+// open message (S.selectedMessageId). Move reuses the shared context menu
+// (#ctx-menu), positioned at the click point by showCtxMenu().
+function ribbonAct(action) {
+  const sel = SEL.ids.size ? [...SEL.ids] : (S.selectedMessageId ? [S.selectedMessageId] : []);
+  switch (action) {
+    case 'delete': SEL.ids.size ? bulkDelete() : deleteMessage(S.selectedMessageId); break;
+    case 'archive': {
+      const arc = S.folders.find(f=>f.folder_type==='archive'&&!f.is_hidden);
+      if (!arc) { toast('No Archive folder','error'); break; }
+      sel.forEach(id=>moveMessage(id, arc.id, true));
+      break;
+    }
+    case 'reply': openReplyTo(S.selectedMessageId); break;
+    case 'replyall': openReplyAll(S.selectedMessageId); break;
+    case 'flag': sel.forEach(id=>toggleStar(id)); break;
+    case 'snooze': snoozeMessage(S.selectedMessageId); break;
+    case 'markallread': markFolderAllRead(S.currentFolder); break;
+    case 'print': window.print(); break;
+    case 'rules': openSettings(); showSettingsTab('rules'); break;
+  }
+}
+
+// "Move" target list — same folder set as the message context menu's "Move to".
+function ribbonMoveMenu(e) {
+  e.stopPropagation();
+  const otherFolders = S.folders.filter(f=>!f.is_hidden&&String(f.id)!==String(S.currentFolder)).slice(0,16);
+  if (!otherFolders.length) return;
+  const moveItems = otherFolders.map(f=>
+    `<div class="ctx-item ctx-sub-item" onclick="ribbonMoveTo(${f.id});closeMenu()">${esc(f.name)}</div>`).join('');
+  showCtxMenu(e, `
+    <div class="ctx-item ctx-has-sub">📂 Move to
+      <span class="ctx-sub-arrow">›</span>
+      <div class="ctx-submenu">${moveItems}</div>
+    </div>`);
+}
+
+function ribbonMoveTo(folderId) {
+  const ids = SEL.ids.size ? [...SEL.ids] : [S.selectedMessageId];
+  ids.forEach(id=>moveMessage(id, folderId, true));
+}
+
+// Reply-all CC = original's full recipient set (to + cc), deduped, minus the
+// signed-in account's own address so the sender isn't cc'd on their own reply.
+async function openReplyAll(msgId) {
+  let msg=(S.currentMessage?.id===msgId)?S.currentMessage:S.messages.find(m=>m.id===msgId);
+  if (!msg) return;
+  if (msg.body_html===undefined && msg.body_text===undefined) {
+    // Same fetch-as-need as openReplyTo: list summaries have no body fields.
+    const full = await api('GET', '/messages/'+msgId);
+    if (!full) return;
+    msg = full;
+  }
+  openCompose({
+    mode:'reply', replyId:msgId, title:'Reply All',
+    accountId: msg.account_id||null,
+    subject:msg.subject&&!msg.subject.startsWith('Re:')?'Re: '+msg.subject:(msg.subject||''),
+    quoteHtml:`<div><br></div><div class="quote-divider">—— Original message ——</div><blockquote>${quotedBodyHTML(msg)}</blockquote>`,
+  });
+  addTag('compose-to', msg.from_email||'');
+  const acc = S.accounts.find(a=>a.id===(msg.account_id||0));
+  const own = acc ? acc.email_address.toLowerCase() : '';
+  const cc=[]; const seen=new Set();
+  for (const raw of [...(msg.to||'').split(','), ...(msg.cc||'').split(',')]) {
+    const a=raw.trim();
+    if (!a) continue;
+    const k=a.toLowerCase();
+    if (k===own || seen.has(k)) continue;
+    seen.add(k); cc.push(a);
+  }
+  if (cc.length) { showCCRow(); cc.forEach(a=>addTag('compose-cc-tags', a)); }
+}
+
+function updateRibbonState() {
+  const ribbon=document.getElementById('ribbon');
+  if (!ribbon) return;
+  const hasMsg = SEL.ids.size || S.selectedMessageId;
+  const single = !SEL.ids.size && !!S.selectedMessageId; // reply/replyall/snooze/print need exactly one open message
+  const set = (id, dis) => { const el=ribbon.querySelector('#'+id); if (el) el.disabled = dis; };
+  set('rb-delete', !hasMsg);
+  set('rb-archive', !hasMsg);
+  set('rb-reply', !single);
+  set('rb-replyall', !single);
+  set('rb-move', !hasMsg);
+  set('rb-flag', !hasMsg);
+  set('rb-snooze', !single);
+  set('rb-print', !single);
+  set('rb-markallread', !/^\d+$/.test(String(S.currentFolder)));
 }
 
 function formatSize(b){if(!b)return'';if(b<1024)return b+' B';if(b<1048576)return Math.round(b/1024)+' KB';return(b/1048576).toFixed(1)+' MB';}

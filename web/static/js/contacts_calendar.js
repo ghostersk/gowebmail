@@ -17,6 +17,9 @@ function _setView(view) {
   ['rail-mail', 'rail-cal', 'rail-people'].forEach(id => {
     document.getElementById(id)?.classList.toggle('on', id === railFor);
   });
+  // Home ribbon is mail-only (Outlook shows it in the mail view)
+  const ribbon = document.getElementById('ribbon');
+  if (ribbon) ribbon.style.display = (view === 'mail') ? '' : 'none';
   // Show/hide panels — mail-view wraps the message list + reading pane together
   // so they hide/show as one unit rather than two separately-toggled panels.
   const mailView = document.getElementById('mail-view');

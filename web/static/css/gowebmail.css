@@ -171,6 +171,38 @@ body.app-page{overflow:hidden}
 .tb-initials{display:inline-flex;width:26px;height:26px;border-radius:50%;background:var(--accent);color:#fff;font-size:12px;font-weight:600;align-items:center;justify-content:center}
 .top-user-label{padding:8px 12px;font-size:12px;color:var(--muted);max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
+/* ---- Home ribbon (mail view, desktop only; hidden by _setView for cal/people) ---- */
+.ribbon{display:none;height:var(--ribbon-h);background:var(--surface);border-bottom:1px solid var(--border);
+  align-items:center;padding:0 8px;overflow-x:auto;flex-shrink:0;gap:2px}
+@media (min-width:701px){.ribbon{display:flex}}
+.ribbon-sep{width:1px;height:64px;background:var(--border);flex-shrink:0;margin:0 6px}
+.ribbon-group{display:flex;align-items:center;gap:2px;flex-shrink:0}
+.ribbon-btn{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;
+  min-width:64px;height:78px;padding:8px 10px;border:none;border-radius:4px;
+  background:none;color:#d6d6d6;font-family:var(--font);font-size:11px;cursor:pointer}
+.ribbon-btn:hover:not(:disabled){background:var(--hover);color:#fff}
+.ribbon-btn:active:not(:disabled){background:var(--surface3)}
+.ribbon-btn:disabled{opacity:.35;cursor:default}
+.ribbon-btn svg{width:22px;height:22px}
+.ribbon-new{min-width:76px}
+.ribbon-new svg{width:28px;height:28px}
+/* Split caret next to New — same menu as the old sidebar compose caret */
+.ribbon-caret{width:18px;height:78px;border:none;background:none;color:#d6d6d6;cursor:pointer;
+  border-radius:4px;font-size:12px;display:flex;align-items:center;justify-content:center}
+.ribbon-caret:hover{background:var(--hover);color:#fff}
+
+/* ---- Print: message pane only (ribbon Print button) ---- */
+@media print {
+  .topbar,.ribbon,.sidebar,.message-list-panel,.panel-resize-handle,.app-rail,
+  .mob-topbar,.mob-nav,#bulk-action-bar,.ctx-menu,#compose-dropdown{display:none!important}
+  html,body{background:#fff;color:#000}
+  .app,.mail-view{display:block;height:auto;overflow:visible}
+  .mail-view .message-detail{display:block;width:100%;height:auto;background:#fff;color:#000;
+    border:none;padding:16px}
+  .message-detail *{color:#000}
+  .detail-actions{display:none}
+}
+
 /* Mail view wrapper (list + detail) — lets the reading-pane position be
    flipped from the right (default) to the bottom without touching the
    sidebar column. */

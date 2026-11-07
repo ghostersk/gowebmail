@@ -843,14 +843,24 @@ func (h *APIHandler) MoveMessage(w http.ResponseWriter, r *http.Request) {
 	uid, srcPath, account, imapErr := h.db.GetMessageIMAPInfo(messageID, userID)
 	destFolder, _ := h.db.GetFolderByID(req.FolderID)
 
-	// Update local DB
-	if err := h.db.MoveMessage(messageID, userID, req.FolderID); err != nil {
-		h.writeError(w, http.StatusInternalServerError, "move failed")
-		return
-	}
-
 	// Route to Graph, JMAP, or IMAP
 	remoteID, _, remoteAcc, rerr := h.db.GetMessageGraphInfo(messageID, userID)
+	isRemoteIDStable := rerr == nil && remoteAcc != nil &&
+		(remoteAcc.Provider == models.ProviderOutlookPersonal || remoteAcc.Provider == models.ProviderJMAP)
+	// Update local DB. IMAP UIDs are per-folder, so the old uid is invalid in the destination
+	// and can collide with another row's uid there — rekey to a placeholder the sync replaces.
+	// Graph/JMAP ids are stable across folders, so the plain update upserts in place.
+	if isRemoteIDStable {
+		if err := h.db.MoveMessage(messageID, userID, req.FolderID); err != nil {
+			h.writeError(w, http.StatusInternalServerError, "move failed")
+			return
+		}
+	} else {
+		if err := h.db.MoveMessageRekey(messageID, userID, req.FolderID); err != nil {
+			h.writeError(w, http.StatusInternalServerError, "move failed")
+			return
+		}
+	}
 	if rerr == nil && remoteAcc != nil && remoteAcc.Provider == models.ProviderOutlookPersonal && destFolder != nil {
 		go graphpkg.New(remoteAcc).MoveMessage(context.Background(), remoteID, destFolder.FullPath)
 	} else if rerr == nil && remoteAcc != nil && remoteAcc.Provider == models.ProviderJMAP && destFolder != nil {
