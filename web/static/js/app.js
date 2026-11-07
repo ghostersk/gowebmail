@@ -108,7 +108,7 @@ function setViewPref(key, val) {
     if (val === 'off') threadSiblingsById = {}; // no grouped detail view while flat
     renderMessageList();
   }
-  closeViewDropdown();
+  closeTopMenus(); // closes the View dropdown (items stopPropagation, so outside-click can't)
 }
 // Quick manual toggle (header button + edge tab): flip between fully visible
 // and hidden. Doesn't touch 'auto' as a saved preference — pick that from the
