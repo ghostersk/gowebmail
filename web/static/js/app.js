@@ -105,8 +105,14 @@ function setViewPref(key, val) {
   uiPrefsSet(key, val);
   applyViewPrefs();
   if (key === 'conversations') {
-    if (val === 'off') threadSiblingsById = {}; // no grouped detail view while flat
-    renderMessageList();
+    if (val === 'off') {
+      threadSiblingsById = {}; // no grouped detail view while flat
+      document.querySelector('.thread-btn-wrap')?.remove();
+      renderMessageList();
+    } else {
+      renderMessageList();
+      if (S.selectedMessageId) openMessage(S.selectedMessageId); // restore Thread button if a message is open
+    }
   }
   closeTopMenus(); // closes the View dropdown (items stopPropagation, so outside-click can't)
 }
@@ -1502,23 +1508,24 @@ function renderMessageList() {
          onclick="handleMsgClick(event,${m.id},${i})"
          oncontextmenu="showMessageMenu(event,${m.id})"
          ondragstart="handleMsgDragStart(event,${m.id})">
-      <div class="msg-top">
-        <span class="msg-unread-dot" title="${m.is_read?'':'Unread'}"></span>
-        <span class="msg-dot" style="background:${m.account_color}" title="${esc(m.account_email||'')}"></span>
-        <span class="msg-account-name" title="${esc(m.account_email||'')}">${esc(acctLabel)}</span>
-        <span class="msg-from" title="${esc(fromLine)}">${esc(fromLine)}</span>
-        <span class="msg-date">${formatDate(m.date)}</span>
-      </div>
-      <div class="msg-line2">
-        <span class="msg-text" title="${esc(m.subject||'(no subject)')}">
-          <span class="msg-subject">${esc(m.subject||'(no subject)')}</span>${m._threadCount?` <span class="msg-thread-count">${m._threadCount}</span>`:''}${m.preview?` — <span class="msg-preview">${esc(m.preview)}</span>`:''}
-        </span>
-        <span class="msg-icons">
-          ${m.size?`<span class="msg-size">${formatSize(m.size)}</span>`:''}
-          ${m.has_attachment?'<svg width="11" height="11" viewBox="0 0 24 24" fill="var(--muted)"><path d="M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5c0-1.38 1.12-2.5 2.5-2.5s2.5 1.12 2.5 2.5v10.5c0 .55-.45 1-1 1s-1-.45-1-1V6H10v9.5c0 1.38 1.12 2.5 2.5 2.5s2.5-1.12 2.5-2.5V5c0-2.21-1.79-4-4-4S7 2.79 7 5v12.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5V6h-1.5z"/></svg>':''}
-          ${m.labels?.length?`<span class="msg-label-dots">${m.labels.map(l=>`<span class="msg-label-dot" style="background:${l.color}" title="${esc(l.name)}"></span>`).join('')}</span>`:''}
-          <span class="msg-star ${m.is_starred?'on':''}" onclick="toggleStar(${m.id},event)">${m.is_starred?'★':'☆'}</span>
-        </span>
+      <div class="msg-avatar" style="background:${m.account_color}" title="${esc(m.account_email||'')}">${initials(m.from_name || m.from_email || acctLabel)}</div>
+      <div class="msg-main">
+        <div class="msg-top">
+          <span class="msg-account-name" title="${esc(m.account_email||'')}">${esc(acctLabel)}</span>
+          <span class="msg-from" title="${esc(fromLine)}">${esc(fromLine)}</span>
+          <span class="msg-date">${formatDate(m.date)}</span>
+        </div>
+        <div class="msg-line2">
+          <span class="msg-text" title="${esc(m.subject||'(no subject)')}">
+            <span class="msg-subject">${esc(m.subject||'(no subject)')}</span>${m._threadCount?` <span class="msg-thread-count">${m._threadCount}</span>`:''}${m.preview?` — <span class="msg-preview">${esc(m.preview)}</span>`:''}
+          </span>
+          <span class="msg-icons">
+            ${m.size?`<span class="msg-size">${formatSize(m.size)}</span>`:''}
+            ${m.has_attachment?'<svg width="11" height="11" viewBox="0 0 24 24" fill="var(--muted)"><path d="M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5c0-1.38 1.12-2.5 2.5-2.5s2.5 1.12 2.5 2.5v10.5c0 .55-.45 1-1 1s-1-.45-1-1V6H10v9.5c0 1.38 1.12 2.5 2.5 2.5s2.5-1.12 2.5-2.5V5c0-2.21-1.79-4-4-4S7 2.79 7 5v12.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5V6h-1.5z"/></svg>':''}
+            ${m.labels?.length?`<span class="msg-label-dots">${m.labels.map(l=>`<span class="msg-label-dot" style="background:${l.color}" title="${esc(l.name)}"></span>`).join('')}</span>`:''}
+            <span class="msg-star ${m.is_starred?'on':''}" onclick="toggleStar(${m.id},event)">${m.is_starred?'★':'☆'}</span>
+          </span>
+        </div>
       </div>
     </div>`;
   }).join('')+(S.messages.length<S.totalMessages
@@ -1881,7 +1888,7 @@ function renderMessageDetail(msg, showRemoteContent) {
   // the actual message body down and shrinking the reading area.
   let threadBtnHtml='';
   const siblings=threadSiblingsById[msg.id];
-  if (siblings?.length>1) {
+  if (siblings?.length>1 && uiPrefsGet('conversations','on')==='on') {
     const rows=siblings.map(s=>`
       <div class="thread-sibling-row${s.id===msg.id?' active':''}${s.is_read?'':' unread'}" onclick="openMessage(${s.id})">
         <span class="msg-unread-dot" title="${s.is_read?'':'Unread'}"></span>

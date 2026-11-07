@@ -51,6 +51,13 @@ function esc(s) {
     .replace(/"/g,'&quot;');
 }
 
+// First letters of the first two words, uppercased; '?' if empty.
+function initials(name) {
+  const p = String(name || '').trim().split(/\s+/);
+  if (!p[0]) return '?';
+  return (p[0][0] + (p[1] ? p[1][0] : '')).toUpperCase();
+}
+
 // ---- Date formatting ----
 function formatDate(d) {
   if (!d) return '';
