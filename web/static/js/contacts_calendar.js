@@ -12,6 +12,11 @@ function _setView(view) {
   ['nav-unified','nav-starred','nav-contacts','nav-calendar'].forEach(id => {
     document.getElementById(id)?.classList.remove('active');
   });
+  // App rail active state (nav-contacts/nav-calendar no longer exist — rail replaced them)
+  const railFor = { mail: 'rail-mail', contacts: 'rail-people', calendar: 'rail-cal' }[view];
+  ['rail-mail', 'rail-cal', 'rail-people'].forEach(id => {
+    document.getElementById(id)?.classList.toggle('on', id === railFor);
+  });
   // Show/hide panels — mail-view wraps the message list + reading pane together
   // so they hide/show as one unit rather than two separately-toggled panels.
   const mailView = document.getElementById('mail-view');

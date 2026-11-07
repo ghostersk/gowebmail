@@ -151,6 +151,14 @@ body.app-page{overflow:hidden}
 #app-root{display:flex;flex-direction:column}
 .app-body{flex:1;display:flex;min-height:0;min-width:0}
 
+/* ---- App rail (Mail/Calendar/People; desktop only) ---- */
+.app-rail{width:48px;background:#0a0a0a;display:flex;flex-direction:column;align-items:center;padding-top:8px;gap:4px;flex-shrink:0}
+.app-rail button{width:40px;height:40px;border-radius:4px;border:none;background:none;display:flex;align-items:center;justify-content:center;color:#d6d6d6;cursor:pointer;position:relative}
+.app-rail button svg{width:20px;height:20px}
+.app-rail button:hover{background:var(--hover);color:#fff}
+.app-rail button.on{color:#479ef5}
+.app-rail button.on::before{content:'';position:absolute;left:-4px;top:6px;bottom:6px;width:3px;background:#479ef5;border-radius:2px}
+
 /* ---- Top command row (desktop only) ---- */
 .topbar{height:48px;background:#141414;display:flex;align-items:center;gap:2px;padding:0 8px;border-bottom:1px solid var(--border);flex-shrink:0}
 .tb-btn{font-size:14px;color:#d6d6d6;padding:8px 10px;border:none;background:none;border-radius:4px;cursor:pointer;font-family:var(--font)}
@@ -671,8 +679,9 @@ body.admin-page{overflow:auto;background:var(--bg)}
 
 /* ── Responsive layout ────────────────────────────────────────────────── */
 @media (max-width:700px){
-  /* Desktop top command row hidden on mobile (mobile top bar takes over) */
+  /* Desktop top command row + app rail hidden on mobile (mobile top bar takes over) */
   .topbar{display:none}
+  .app-rail{display:none}
   /* The in-list search bar is the mobile search (top-bar search is hidden) */
   .search-bar{display:block}
   /* Show mobile top bar */
