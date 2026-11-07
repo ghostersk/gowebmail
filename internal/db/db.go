@@ -205,6 +205,8 @@ func (d *DB) Migrate() error {
 		// Snooze: NULL = not snoozed; a future timestamp hides the message from normal
 		// folder views until it passes, at which point the background sweep clears it.
 		`ALTER TABLE messages ADD COLUMN snoozed_until DATETIME`,
+		// Pause/resume a pending scheduled send without losing it.
+		`ALTER TABLE scheduled_sends ADD COLUMN paused INTEGER NOT NULL DEFAULT 0`,
 	}
 	for _, stmt := range alterStmts {
 		d.sql.Exec(stmt) // ignore "duplicate column" errors intentionally
@@ -2532,7 +2534,7 @@ func (d *DB) CreateScheduledSend(s *models.ScheduledSend) (int64, error) {
 // ListScheduledSends returns userID's pending scheduled sends, soonest first.
 func (d *DB) ListScheduledSends(userID int64) ([]*models.ScheduledSend, error) {
 	rows, err := d.sql.Query(`
-		SELECT id, user_id, account_id, to_list, cc_list, bcc_list, subject, body_html, body_text, forward_from_ids, send_at, created_at
+		SELECT id, user_id, account_id, to_list, cc_list, bcc_list, subject, body_html, body_text, forward_from_ids, send_at, created_at, paused
 		FROM scheduled_sends WHERE user_id=? ORDER BY send_at ASC`, userID)
 	if err != nil {
 		return nil, err
@@ -2545,8 +2547,8 @@ func (d *DB) ListScheduledSends(userID int64) ([]*models.ScheduledSend, error) {
 // passed. Called by the background sweep.
 func (d *DB) ListDueScheduledSends() ([]*models.ScheduledSend, error) {
 	rows, err := d.sql.Query(`
-		SELECT id, user_id, account_id, to_list, cc_list, bcc_list, subject, body_html, body_text, forward_from_ids, send_at, created_at
-		FROM scheduled_sends WHERE send_at <= datetime('now') ORDER BY send_at ASC`)
+		SELECT id, user_id, account_id, to_list, cc_list, bcc_list, subject, body_html, body_text, forward_from_ids, send_at, created_at, paused
+		FROM scheduled_sends WHERE paused=0 AND send_at <= datetime('now') ORDER BY send_at ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -2560,7 +2562,7 @@ func (d *DB) scanScheduledSends(rows *sql.Rows) ([]*models.ScheduledSend, error)
 		s := &models.ScheduledSend{}
 		var toJSON, ccJSON, bccJSON, fwdJSON, subjectEnc, bodyHTMLEnc, bodyTextEnc string
 		if err := rows.Scan(&s.ID, &s.UserID, &s.AccountID, &toJSON, &ccJSON, &bccJSON,
-			&subjectEnc, &bodyHTMLEnc, &bodyTextEnc, &fwdJSON, &s.SendAt, &s.CreatedAt); err != nil {
+			&subjectEnc, &bodyHTMLEnc, &bodyTextEnc, &fwdJSON, &s.SendAt, &s.CreatedAt, &s.Paused); err != nil {
 			return nil, err
 		}
 		json.Unmarshal([]byte(toJSON), &s.To)
@@ -2585,6 +2587,38 @@ func (d *DB) DeleteScheduledSend(id, userID int64) error {
 		_, err = d.sql.Exec(`DELETE FROM scheduled_sends WHERE id=?`, id)
 	}
 	return err
+}
+
+// UpdateScheduledSend partially updates a pending send: reschedule (SendAt) and/or
+// pause/resume (Paused). Nil fields are left untouched. Scoped to userID; a no-op or a
+// row owned by another user reports not-found.
+func (d *DB) UpdateScheduledSend(id, userID int64, sendAt *time.Time, paused *bool) error {
+	sets, args := []string{}, []any{}
+	if sendAt != nil {
+		sets = append(sets, "send_at=?")
+		args = append(args, sendAt.UTC().Format("2006-01-02 15:04:05"))
+	}
+	if paused != nil {
+		v := 0
+		if *paused {
+			v = 1
+		}
+		sets = append(sets, "paused=?")
+		args = append(args, v)
+	}
+	if len(sets) == 0 {
+		return nil
+	}
+	args = append(args, id, userID)
+	res, err := d.sql.Exec(`UPDATE scheduled_sends SET `+strings.Join(sets, ", ")+` WHERE id=? AND user_id=?`, args...)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 // ---- Pending IMAP ops queue ----

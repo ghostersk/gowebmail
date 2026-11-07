@@ -4,7 +4,9 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -991,6 +993,40 @@ func (h *APIHandler) CancelScheduledSend(w http.ResponseWriter, r *http.Request)
 	id := pathInt64(r, "id")
 	if err := h.db.DeleteScheduledSend(id, userID); err != nil {
 		h.writeError(w, http.StatusInternalServerError, "cancel failed")
+		return
+	}
+	h.writeJSON(w, map[string]bool{"ok": true})
+}
+
+// UpdateScheduledSend reschedules a pending send and/or pauses/resumes it. The body may
+// carry either field: {"send_at":"2026-11-08T09:00:00Z"} and/or {"paused":true}.
+func (h *APIHandler) UpdateScheduledSend(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.GetUserID(r)
+	id := pathInt64(r, "id")
+	var body struct {
+		SendAt *string `json:"send_at"`
+		Paused *bool   `json:"paused"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || (body.SendAt == nil && body.Paused == nil) {
+		h.writeError(w, http.StatusBadRequest, "send send_at and/or paused")
+		return
+	}
+	var sendAt *time.Time
+	if body.SendAt != nil {
+		t, err := time.Parse(time.RFC3339, *body.SendAt)
+		if err != nil {
+			h.writeError(w, http.StatusBadRequest, "send_at must be RFC3339")
+			return
+		}
+		sendAt = &t
+	}
+	err := h.db.UpdateScheduledSend(id, userID, sendAt, body.Paused)
+	if errors.Is(err, sql.ErrNoRows) {
+		h.writeError(w, http.StatusNotFound, "scheduled send not found")
+		return
+	}
+	if err != nil {
+		h.writeError(w, http.StatusInternalServerError, "update failed")
 		return
 	}
 	h.writeJSON(w, map[string]bool{"ok": true})

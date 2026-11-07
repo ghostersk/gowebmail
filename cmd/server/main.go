@@ -275,6 +275,7 @@ func main() {
 	api.HandleFunc("/send-later", h.API.CreateScheduledSend).Methods("POST")
 	api.HandleFunc("/scheduled-sends", h.API.ListScheduledSends).Methods("GET")
 	api.HandleFunc("/scheduled-sends/{id:[0-9]+}", h.API.CancelScheduledSend).Methods("DELETE")
+	api.HandleFunc("/scheduled-sends/{id:[0-9]+}", h.API.UpdateScheduledSend).Methods("PUT")
 
 	// Folders
 	api.HandleFunc("/folders", h.API.ListFolders).Methods("GET")

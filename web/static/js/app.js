@@ -2642,12 +2642,32 @@ async function showScheduledSends() {
   list.innerHTML = items.map(s => `
     <div class="acct-row" style="align-items:flex-start">
       <div style="flex:1;min-width:0">
-        <div style="font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(s.subject||'(no subject)')}</div>
+        <div style="font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${s.paused ? '<span style="color:var(--muted);font-style:italic">Paused — </span>' : ''}${esc(s.subject||'(no subject)')}</div>
         <div style="font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">To: ${esc((s.to||[]).join(', '))}</div>
         <div style="font-size:11px;color:var(--accent)">Sends ${formatDate(s.send_at)}</div>
       </div>
-      <button class="btn-secondary" style="font-size:11px;flex-shrink:0" onclick="cancelScheduledSend(${s.id})">Cancel</button>
+      <div style="display:flex;gap:6px;flex-shrink:0">
+        <button class="btn-secondary" style="font-size:11px" onclick="rescheduleSend(${s.id})">${s.paused ? 'Resume' : 'Pause'}</button>
+        <button class="btn-secondary" style="font-size:11px" onclick="editSendTime(${s.id})">Edit time</button>
+        <button class="btn-secondary" style="font-size:11px" onclick="cancelScheduledSend(${s.id})">Cancel</button>
+      </div>
     </div>`).join('');
+}
+
+function editSendTime(id) {
+  inlineDateTimePrompt('New send time:', async (iso) => {
+    const r = await api('PUT','/scheduled-sends/'+id, {send_at: iso});
+    if (r?.ok) { toast('Send time updated','success'); showScheduledSends(); }
+    else toast(r?.error||'Failed to update send time','error');
+  }, 'Set');
+}
+
+async function rescheduleSend(id) {
+  const items = await api('GET','/scheduled-sends');
+  const s = (items||[]).find(x => x.id === id);
+  const r = await api('PUT','/scheduled-sends/'+id, {paused: !s?.paused});
+  if (r?.ok) { toast(s?.paused ? 'Send resumed' : 'Send paused','success'); showScheduledSends(); }
+  else toast(r?.error||'Failed','error');
 }
 
 async function cancelScheduledSend(id) {

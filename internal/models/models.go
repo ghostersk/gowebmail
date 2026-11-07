@@ -249,6 +249,7 @@ type ScheduledSend struct {
 	ForwardFromIDs []int64   `json:"forward_from_ids,omitempty"`
 	SendAt         time.Time `json:"send_at"`
 	CreatedAt      time.Time `json:"created_at"`
+	Paused         bool      `json:"paused"` // paused sends are skipped by the sweep until resumed
 }
 
 // ---- Compose ----
