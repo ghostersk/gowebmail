@@ -189,6 +189,8 @@ func main() {
 	app := r.PathPrefix("").Subrouter()
 	app.Use(middleware.RequireAuth(database, cfg))
 	app.HandleFunc("/", h.App.Index).Methods("GET")
+	app.HandleFunc("/calendar", h.App.Index).Methods("GET")
+	app.HandleFunc("/contacts", h.App.Index).Methods("GET")
 	app.HandleFunc("/message/{id:[0-9]+}", h.App.ViewMessage).Methods("GET")
 	app.HandleFunc("/compose", h.App.ComposePage).Methods("GET")
 

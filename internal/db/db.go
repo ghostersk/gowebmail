@@ -1389,19 +1389,15 @@ func (d *DB) SetUIPrefs(userID int64, prefs string) error {
 	return err
 }
 
-// UpdateFolderCountsDirect sets folder counts directly (used by Graph sync where
-// the server provides accurate counts without needing a local recount).
-func (d *DB) UpdateFolderCountsDirect(folderID int64, total, unread int) {
-	d.sql.Exec(`UPDATE folders SET total_count=?, unread_count=? WHERE id=?`,
-		total, unread, folderID)
-}
-
-// UpdateFolderCounts refreshes the unread/total counts for a folder.
+// UpdateFolderCounts refreshes the unread/total counts for a folder from local rows.
+// Local rows are what the message list shows, so sidebar counts always match the list
+// (server-side STATUS counts can diverge — e.g. freebede auto-saves Sent mail twice).
+// Excludes snoozed messages (they appear in the Snoozed virtual view instead).
 func (d *DB) UpdateFolderCounts(folderID int64) {
 	d.sql.Exec(`
 		UPDATE folders SET
-			total_count  = (SELECT COUNT(*) FROM messages WHERE folder_id=?),
-			unread_count = (SELECT COUNT(*) FROM messages WHERE folder_id=? AND is_read=0)
+			total_count  = (SELECT COUNT(*) FROM messages WHERE folder_id=? AND (snoozed_until IS NULL OR snoozed_until <= datetime('now'))),
+			unread_count = (SELECT COUNT(*) FROM messages WHERE folder_id=? AND is_read=0 AND (snoozed_until IS NULL OR snoozed_until <= datetime('now')))
 		WHERE id=?`, folderID, folderID, folderID)
 }
 

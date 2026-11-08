@@ -28,6 +28,13 @@ function _setView(view) {
   if (mailView) mailView.style.display = view === 'mail' ? '' : 'none';
   if (contacts) contacts.style.display = view === 'contacts' ? 'flex' : 'none';
   if (calendar) calendar.style.display = view === 'calendar' ? 'flex' : 'none';
+  // Hide sidebar in calendar/contacts views (Outlook-style: sidebar only in Mail)
+  const appRoot = document.getElementById('app-root');
+  if (appRoot) appRoot.setAttribute('data-sidebar-view', view);
+  // Bookmarkable URLs: /calendar and /contacts render the same app template;
+  // keep the address bar in sync so refresh/bookmark restores this view.
+  const urlFor = { mail: '/', contacts: '/contacts', calendar: '/calendar' }[view];
+  if (urlFor && location.pathname !== urlFor) history.replaceState({}, '', urlFor);
 }
 
 function showMail() {
@@ -180,8 +187,10 @@ const CAL = {
   view: 'month',
   cursor: new Date(),
   events: [],
+  expandedEvs: [],
   calendars: [],
   hidden: JSON.parse(localStorage.getItem('calVisible.v1') || '[]'),
+  panelOpen: false, // calendar list panel is a menu — closed by default
 };
 
 function calVisibleIds() {
@@ -190,10 +199,28 @@ function calVisibleIds() {
 
 function calSetView(v) {
   CAL.view = v;
-  document.getElementById('cal-btn-day')?.classList.toggle('active', v === 'day');
-  document.getElementById('cal-btn-month')?.classList.toggle('active', v === 'month');
-  document.getElementById('cal-btn-week')?.classList.toggle('active', v === 'week');
+  // Update dropdown button label
+  const label = document.getElementById('cal-view-label');
+  if (label) label.textContent = v.charAt(0).toUpperCase() + v.slice(1);
   calRender();
+}
+
+function toggleCalViewDropdown(e) {
+  e.stopPropagation();
+  const menu = document.getElementById('cal-view-dropdown-menu');
+  if (!menu) return;
+  const isOpen = menu.style.display === 'flex';
+  menu.style.display = isOpen ? 'none' : 'flex';
+  document.getElementById('cal-view-btn')?.setAttribute('aria-expanded', String(!isOpen));
+  if (!isOpen) {
+    document.addEventListener('click', closeCalViewDropdown, { once: true });
+  }
+}
+
+function closeCalViewDropdown() {
+  const menu = document.getElementById('cal-view-dropdown-menu');
+  if (menu) menu.style.display = 'none';
+  document.getElementById('cal-view-btn')?.setAttribute('aria-expanded', 'false');
 }
 
 function calNav(dir) {
@@ -234,23 +261,54 @@ async function loadCalendars() {
 function renderCalPanel() {
   const panel = document.getElementById('cal-cal-panel');
   if (!panel) return;
-  if (!CAL.calendars.length) { panel.style.display = 'none'; return; }
+  const btn = document.getElementById('cal-cal-btn');
+  if (btn) btn.classList.toggle('active', CAL.panelOpen);
+  if (!CAL.panelOpen || !CAL.calendars.length) { panel.style.display = 'none'; return; }
   panel.style.display = '';
   const accEmail = id => {
     const a = (S.accounts || []).find(x => x.id === id);
     return a ? a.email_address : '';
   };
-  panel.innerHTML = CAL.calendars.map(c => {
+  // Build calendar rows
+  const rows = CAL.calendars.map(c => {
     const email = c.account_id ? ` <span style="color:var(--muted);font-size:11px">${esc(accEmail(c.account_id))}</span>` : '';
-    return `<div class="cal-cal-row">
+    return `<div class="cal-cal-row" style="align-items:center;gap:8px;padding:4px 0">
       <input type="checkbox" ${CAL.hidden.includes(c.id) ? '' : 'checked'} style="width:auto" onchange="calToggleVisible(${c.id}, this.checked)">
       <span style="width:10px;height:10px;border-radius:50%;background:${esc(c.color)};flex-shrink:0"></span>
       <span style="flex:1;font-size:13px">${esc(c.name)}${email}</span>
-      <button class="icon-btn" style="width:22px;height:22px;font-size:12px" title="Edit calendar" onclick="calEdit(${c.id})">✎</button>
-      <button class="icon-btn" style="width:22px;height:22px;font-size:12px" title="Delete calendar" onclick="calDeleteCal(${c.id})">✕</button>
+      <button class="icon-btn" style="width:22px;height:22px;font-size:12px" title="Edit calendar" onclick="calEdit(${c.id});closeCalPanel()">✎</button>
+      <button class="icon-btn" style="width:22px;height:22px;font-size:12px" title="Delete calendar" onclick="calDeleteCal(${c.id});closeCalPanel()">✕</button>
     </div>`;
-  }).join('') +
-  `<div class="cal-cal-row" style="border-bottom:none"><span style="cursor:pointer;color:var(--accent);font-size:13px" onclick="calAddCal()">+ Add calendar</span></div>`;
+  }).join('');
+  panel.innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+      <span style="font-weight:600;font-size:12px;color:var(--muted)">Calendars</span>
+      <button class="icon-btn" onclick="closeCalPanel()" style="padding:4px;line-height:1" title="Close" aria-label="Close">✕</button>
+    </div>
+    ${rows}
+    <div class="cal-cal-row" style="border-top:1px solid var(--border);margin-top:4px;padding-top:8px">
+      <span style="cursor:pointer;color:var(--accent);font-size:13px" onclick="calAddCal();closeCalPanel()">+ Add calendar</span>
+    </div>
+  `;
+}
+
+function toggleCalPanel() {
+  CAL.panelOpen = !CAL.panelOpen;
+  if (CAL.panelOpen) renderCalPanel();
+  else {
+    const panel = document.getElementById('cal-cal-panel');
+    if (panel) panel.style.display = 'none';
+    const btn = document.getElementById('cal-cal-btn');
+    if (btn) btn.classList.remove('active');
+  }
+}
+
+function closeCalPanel() {
+  CAL.panelOpen = false;
+  const panel = document.getElementById('cal-cal-panel');
+  if (panel) panel.style.display = 'none';
+  const btn = document.getElementById('cal-cal-btn');
+  if (btn) btn.classList.remove('active');
 }
 
 function calCalForm(c) {
@@ -368,6 +426,7 @@ async function calRender() {
   }
   CAL.events = data || [];
   const evs = expandRecurrences(CAL.events, fmt(from), fmt(to));
+  CAL.expandedEvs = evs; // cached for the day-detail modal (calDayModal)
 
   const months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
   const titleEl = document.getElementById('cal-title');
@@ -458,7 +517,7 @@ function calRenderMonth(from, to, evs) {
     const dayEvents = evs.filter(e => e.start_time && evCovers(e, dateStr));
     const shown = dayEvents.slice(0, 3);
     const more = dayEvents.length - 3;
-    html += `<div class="cal-day${isToday?' today':''}${isOther?' other-month':''}" data-date="${dateStr}">
+    html += `<div class="cal-day${isToday?' today':''}${isOther?' other-month':''}" data-date="${dateStr}" ondblclick="calDayModal('${dateStr}')">
       <div class="cal-day-num" onclick="openEventForm(null,'${dateStr}T09:00')">${cur.getDate()}</div>
       ${shown.map(ev => {
         const isS = calDate(ev.start_time) === dateStr;
@@ -514,7 +573,7 @@ function calRenderWeek(weekStart, evs) {
     const d = new Date(weekStart.getTime()+i*86400000);
     const isT = d.getTime()===today.getTime();
     const timed = evs.filter(ev => !ev.all_day && ev.start_time && evCovers(ev, dateStr));
-    html += `<div class="cal-week-col${isT?' today':''}" onclick="calColClick('${dateStr}',event)">
+    html += `<div class="cal-week-col${isT?' today':''}" onclick="calColClick('${dateStr}',event)" ondblclick="event.stopPropagation();calDayModal('${dateStr}')">
       ${timed.map((ev,ix)=>{
         const isS = calDate(ev.start_time) === dateStr;
         const isE = evLastDay(ev) === dateStr;
@@ -533,9 +592,52 @@ function calRenderWeek(weekStart, evs) {
   document.getElementById('cal-grid').innerHTML = html;
 }
 
+let _colClickTimer = null;
 function calColClick(dateStr, e) {
   const h = Math.min(23, Math.max(0, Math.floor(e.offsetY / 48)));
-  openEventForm(null, `${dateStr}T${String(h).padStart(2,'0')}:00`);
+  // Delay so a double-click (day-detail modal) can cancel the single-click create.
+  clearTimeout(_colClickTimer);
+  _colClickTimer = setTimeout(() => openEventForm(null, `${dateStr}T${String(h).padStart(2,'0')}:00`), 250);
+}
+
+// Full-size day-detail modal: every event on the day with per-event edit/delete.
+function calDayModal(dateStr) {
+  clearTimeout(_colClickTimer);
+  const evs = (CAL.expandedEvs || []).filter(ev => ev.start_time && evCovers(ev, dateStr))
+    .sort((a, b) => (a.all_day === b.all_day ? calMin(a.start_time) - calMin(b.start_time) : a.all_day ? -1 : 1));
+  const d = new Date(dateStr + 'T00:00:00');
+  const title = `${['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][d.getDay()]}, ${dateStr}`;
+  document.getElementById('day-modal-title').textContent = title;
+  document.getElementById('day-modal-list').innerHTML = evs.length ? evs.map(ev => {
+    const isS = calDate(ev.start_time) === dateStr;
+    const isE = evLastDay(ev) === dateStr;
+    let range;
+    if (ev.all_day) range = 'All day';
+    else if (isS && isE) range = `${calTime(calHM(ev.start_time))} – ${calTime(calHM(ev.end_time))}`;
+    else if (isS) range = calTime(calHM(ev.start_time)) + ' →';
+    else range = '→ ' + (isE ? calTime(calHM(ev.end_time)) : '');
+    const loc = ev.location ? ` · ${esc(ev.location)}` : '';
+    const att = ev.attendees && ev.attendees.trim() ? ` · 👥${ev.attendees.split(',').filter(x=>x.trim()).length}` : '';
+    return `<div class="cal-day-modal-row" style="display:flex;align-items:center;gap:10px;padding:8px 4px;border-bottom:1px solid var(--border)">
+      <span style="width:10px;height:10px;border-radius:50%;background:${ev.color||'#0078D4'};flex-shrink:0"></span>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:13px;font-weight:600">${esc(ev.title)}</div>
+        <div style="font-size:12px;color:var(--muted)">${range}${loc}${att}</div>
+        ${ev.description?`<div style="font-size:12px;color:var(--text2);margin-top:2px;white-space:pre-wrap">${esc(ev.description)}</div>`:''}
+      </div>
+      <button class="btn-secondary" style="font-size:11px;padding:3px 10px" onclick="closeModal('day-modal');openEventForm(${ev.rbase||ev.id})">Edit</button>
+      <button class="btn-secondary" style="font-size:11px;padding:3px 10px" onclick="calDeleteDayEvent(${ev.rbase||ev.id})">Delete</button>
+    </div>`;
+  }).join('') : '<div style="padding:24px;text-align:center;color:var(--muted);font-size:13px">No events on this day</div>';
+  openModal('day-modal');
+}
+
+async function calDeleteDayEvent(id) {
+  if (!confirm('Delete this event?')) return;
+  await api('DELETE', `/calendar/events/${id}`);
+  closeModal('day-modal');
+  await calRender();
+  toast('Event deleted', 'success');
 }
 
 function calRenderDay(day, evs) {

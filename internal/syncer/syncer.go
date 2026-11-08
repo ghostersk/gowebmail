@@ -602,14 +602,10 @@ func (s *Scheduler) syncFolder(c *email.Client, account *models.EmailAccount, db
 	// Save sync state
 	s.db.SetFolderSyncState(dbFolder.ID, status.UIDValidity, maxUID)
 
-	// Use the server's real total/unread counts (STATUS), not just what's synced locally —
-	// with a limited sync_days window, the local messages table only holds a recent subset,
-	// which would otherwise undercount folders that have older mail sitting on the server.
-	if total, unread, cerr := c.GetFolderCounts(dbFolder.FullPath); cerr == nil {
-		s.db.UpdateFolderCountsDirect(dbFolder.ID, int(total), int(unread))
-	} else {
-		s.db.UpdateFolderCounts(dbFolder.ID)
-	}
+	// Count from local rows so the sidebar always matches what the message list shows.
+	// (Server STATUS counts can diverge — e.g. freebede auto-saves Sent mail twice,
+	// inflating the server total beyond the deduped local rows.)
+	s.db.UpdateFolderCounts(dbFolder.ID)
 
 	return newMessages, nil
 }
@@ -854,8 +850,8 @@ func (s *Scheduler) SyncFolderNow(accountID, folderID int64) (int, error) {
 				n++
 			}
 		}
-		// Update folder counts
-		s.db.UpdateFolderCountsDirect(folder.ID, len(msgs), 0)
+		// Count from local rows so sidebar matches the message list
+		s.db.UpdateFolderCounts(folder.ID)
 		return n, nil
 	}
 
@@ -887,7 +883,7 @@ func (s *Scheduler) SyncFolderNow(accountID, folderID int64) (int, error) {
 				n++
 			}
 		}
-		s.db.UpdateFolderCountsDirect(folder.ID, len(msgs), 0)
+		s.db.UpdateFolderCounts(folder.ID)
 		return n, nil
 	}
 
@@ -1029,8 +1025,8 @@ func (s *Scheduler) graphDeltaSync(account *models.EmailAccount) {
 			}
 		}
 
-		// Update folder counts from Graph (more accurate than counting locally)
-		s.db.UpdateFolderCountsDirect(dbFolderSaved.ID, gf.TotalCount, gf.UnreadCount)
+		// Count from local rows so sidebar matches the message list
+		s.db.UpdateFolderCounts(dbFolderSaved.ID)
 	}
 
 	s.db.UpdateAccountLastSync(account.ID)
@@ -1150,7 +1146,7 @@ func (s *Scheduler) jmapDeltaSync(account *models.EmailAccount) {
 			}
 		}
 
-		s.db.UpdateFolderCountsDirect(dbFolderSaved.ID, mb.TotalEmails, mb.UnreadEmails)
+		s.db.UpdateFolderCounts(dbFolderSaved.ID)
 	}
 
 	s.db.UpdateAccountLastSync(account.ID)

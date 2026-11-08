@@ -249,15 +249,23 @@
 
   <!-- ── Calendar panel ──────────────────────────────────────────────────── -->
   <div id="calendar-panel" style="display:none;flex:1;flex-direction:column;overflow:hidden;background:var(--bg)">
-    <div style="padding:12px 18px 10px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;flex-shrink:0">
+    <div style="padding:12px 18px 10px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;flex-shrink:0;flex-wrap:wrap">
       <button class="icon-btn" onclick="calNav(-1)" title="Previous" aria-label="Previous period">&#8249;</button>
-      <span id="cal-title" style="font-family:var(--font);font-size:17px;min-width:200px;text-align:center"></span>
+      <span id="cal-title" style="font-family:var(--font);font-size:17px;min-width:150px;text-align:center;flex:1"></span>
       <button class="icon-btn" onclick="calNav(1)" title="Next" aria-label="Next period">&#8250;</button>
-      <button class="btn-secondary" onclick="calGoToday()" style="font-size:12px;margin-left:4px">Today</button>
-      <div style="margin-left:auto;display:flex;gap:4px">
-        <button class="btn-secondary" id="cal-btn-day" onclick="calSetView('day')" style="font-size:12px">Day</button>
-        <button class="btn-secondary" id="cal-btn-month" onclick="calSetView('month')" style="font-size:12px">Month</button>
-        <button class="btn-secondary" id="cal-btn-week" onclick="calSetView('week')" style="font-size:12px">Week</button>
+      <button class="btn-secondary" onclick="calGoToday()" style="font-size:12px">Today</button>
+      <div style="display:flex;gap:4px;flex-wrap:wrap;flex:1;justify-content:flex-end">
+        <button class="btn-secondary" id="cal-cal-btn" onclick="toggleCalPanel()" style="font-size:12px" aria-haspopup="true">☰ Calendars</button>
+        <div class="cal-view-dropdown" style="position:relative;display:inline-flex">
+          <button class="btn-secondary" id="cal-view-btn" onclick="toggleCalViewDropdown(event)" style="font-size:12px" aria-haspopup="true" aria-expanded="false">
+            <span id="cal-view-label">Month</span> <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><path d="M7 10l5 5 5-5z"/></svg>
+          </button>
+          <div class="cal-view-dropdown-menu" id="cal-view-dropdown-menu" style="display:none;position:absolute;top:100%;left:0;min-width:120px;background:var(--surface);border:1px solid var(--border);border-radius:6px;box-shadow:0 4px 12px rgba(0,0,0,.15);z-index:100;padding:4px;flex-direction:column" role="menu">
+            <button class="btn-secondary" style="font-size:12px;text-align:left;width:100%;justify-content:flex-start;padding:8px 12px" onclick="calSetView('day');closeCalViewDropdown()" role="menuitem">Day</button>
+            <button class="btn-secondary" style="font-size:12px;text-align:left;width:100%;justify-content:flex-start;padding:8px 12px" onclick="calSetView('week');closeCalViewDropdown()" role="menuitem">Week</button>
+            <button class="btn-secondary" style="font-size:12px;text-align:left;width:100%;justify-content:flex-start;padding:8px 12px" onclick="calSetView('month');closeCalViewDropdown()" role="menuitem">Month</button>
+          </div>
+        </div>
         <button class="btn-secondary" onclick="openEventForm()" style="font-size:12px;background:var(--accent);color:white;border-color:var(--accent)">+ Event</button>
         <a class="icon-btn" id="cal-export-btn" href="/api/calendar/export.ics" download="gowebmail.ics" title="Export visible calendars as .ics" aria-label="Export .ics">⬇</a>
         <button class="icon-btn" title="Import .ics" aria-label="Import .ics" onclick="document.getElementById('cal-import-file').click()">⬆</button>
@@ -335,6 +343,17 @@
       <button id="ev-delete-btn" class="btn-secondary" style="color:var(--danger);display:none" onclick="deleteEvent()">Delete</button>
       <button id="ev-invite-btn" class="btn-secondary" style="display:none" onclick="inviteEvent()">Invite</button>
       <button class="modal-submit" onclick="saveEvent()">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Day detail modal (double-click a day) ──────────────────────────────── -->
+<div class="modal-overlay" id="day-modal" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="day-modal-title">
+  <div class="modal" style="max-width:900px;width:calc(100vw - 48px);height:85vh;display:flex;flex-direction:column">
+    <h2 id="day-modal-title" style="flex-shrink:0">Day</h2>
+    <div id="day-modal-list" style="flex:1;overflow-y:auto"></div>
+    <div class="modal-actions">
+      <button class="modal-cancel" onclick="closeModal('day-modal')">Close</button>
     </div>
   </div>
 </div>
@@ -1060,6 +1079,6 @@
 {{end}}
 
 {{define "scripts"}}
-<script src="/static/js/app.js?v=107"></script>
-<script src="/static/js/contacts_calendar.js?v=87"></script>
+<script src="/static/js/app.js?v=108"></script>
+<script src="/static/js/contacts_calendar.js?v=88"></script>
 {{end}}

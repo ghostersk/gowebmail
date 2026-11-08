@@ -262,6 +262,10 @@ body.app-page{overflow:hidden}
 #app-root[data-sidebar="collapsed"] .sidebar-resize,
 #app-root[data-sidebar="auto"] .sidebar-resize{display:none}
 @media (max-width:700px){.sidebar-resize{display:none}}
+
+/* Hide sidebar in calendar/contacts views (Outlook-style) */
+#app-root[data-sidebar-view="calendar"] .sidebar,
+#app-root[data-sidebar-view="contacts"] .sidebar { display: none; }
 .compose-btn{padding:6px 12px;background:var(--accent);border:none;border-radius:6px;
   color:white;font-family:var(--font);font-size:12px;font-weight:500;cursor:pointer;transition:opacity .15s}
 .compose-btn:hover{opacity:.85}
@@ -673,6 +677,7 @@ body.admin-page{overflow:auto;background:var(--bg)}
   padding:4px 9px;transition:all .1s;white-space:nowrap}
 .filter-dropdown-btn:hover{background:var(--surface3);color:var(--text)}
 .filter-dropdown-btn.active{border-color:rgba(91,141,239,.4);color:var(--accent);background:var(--accent-dim)}
+#cal-cal-btn.active{border-color:rgba(91,141,239,.4);color:var(--accent);background:var(--accent-dim)}
 .filter-dropdown-menu{position:absolute;top:calc(100% + 6px);right:0;
   background:var(--surface2);border:1px solid var(--border2);border-radius:8px;
   box-shadow:0 8px 28px rgba(0,0,0,.5);min-width:160px;padding:4px;

@@ -264,6 +264,10 @@ async function init() {
   const seedPoll = await api('GET', '/poll?since=0');
   if (seedPoll) POLLER.lastKnownID = seedPoll.newest_id || 0;
 
+  // Bookmarkable views: /calendar and /contacts render this same template — restore the view.
+  if (location.pathname === '/calendar') showCalendar();
+  else if (location.pathname === '/contacts') showContacts();
+
   const p = new URLSearchParams(location.search);
   if (p.get('connected')) {
     toast('Account connected! Loading…', 'success');
@@ -934,8 +938,8 @@ function renderFolders() {
         <svg viewBox="0 0 24 24" fill="currentColor">${FOLDER_ICONS[f.folder_type]||FOLDER_ICONS.custom}</svg>
         ${esc(f.name)}
         <span class="folder-count-group">
-          ${f.unread_count>0?`<span class="unread-badge">${f.unread_count}</span>`:''}
-          ${f.total_count>0?`<span class="folder-total-count">${f.unread_count>0?'/':''}${f.total_count}</span>`:''}
+          ${f.folder_type==='inbox' && f.unread_count>0 ? `<span class="unread-badge">${f.unread_count}</span>` : ''}
+          ${f.total_count>0?`<span class="folder-total-count">${f.folder_type==='inbox' && f.unread_count>0?'/':''}${f.total_count}</span>`:''}
         </span>
         ${!f.sync_enabled?'<span style="font-size:9px;color:var(--muted)" title="Sync disabled">\u29b8</span>':''}
       </div>`).join('');
@@ -1813,7 +1817,8 @@ function dockCloseId(id) {
   const w=document.querySelector(`#msg-window .msg-win[data-id="${id}"]`);
   if(w) w.remove();
   DOCK.splice(DOCK.findIndex(d=>d.type==='msg'&&d.id===+id),1);
-  if(!document.querySelector('#msg-window .msg-win')) document.getElementById('msg-window').style.display='none';
+  // Hide overlay when no OPEN window remains (minimized windows don't count as open)
+  if(!document.querySelector('#msg-window .msg-win.open')) document.getElementById('msg-window').style.display='none';
   renderDock(); saveDock();
 }
 
@@ -1854,6 +1859,8 @@ function loadDock() {
     const win=document.getElementById('msg-window');
     win.appendChild(makeMsgWin(d.id, d.subject)); // created minimized; content fetched on restore
   });
+  // All restored windows are minimized (no .open class) → hide the overlay
+  document.getElementById('msg-window').style.display='none';
   renderDock();
 }
 
