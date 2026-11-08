@@ -200,7 +200,8 @@ function calNav(dir) {
   if (CAL.view === 'month') {
     CAL.cursor = new Date(CAL.cursor.getFullYear(), CAL.cursor.getMonth() + dir, 1);
   } else if (CAL.view === 'day') {
-    CAL.cursor = new Date(CAL.cursor.getTime() + dir * 86400000);
+    // setDate handles 25h/23h DST days; ms-arithmetic would land on the same day.
+    CAL.cursor = new Date(CAL.cursor.getFullYear(), CAL.cursor.getMonth(), CAL.cursor.getDate() + dir);
   } else {
     CAL.cursor = new Date(CAL.cursor.getTime() + dir * 7 * 86400000);
   }
@@ -613,10 +614,16 @@ function fillEvCalendar(preferId) {
   if (pick) sel.value = String(pick.id);
 }
 
-function openEventForm(id, defaultStart) {
+async function openEventForm(id, defaultStart) {
   _editingEventId = id || null;
   const delBtn = document.getElementById('ev-delete-btn');
-  const ev = id ? CAL.events.find(e => e.id === id) : null;
+  let ev = id ? CAL.events.find(e => e.id === id) : null;
+  if (id && !ev) {
+    // Recurrence instances are emitted for the view range even when their base starts
+    // before it — fetch the base event so "Edit" can't save blanks over it.
+    ev = await api('GET', '/calendar/events/' + id);
+    if (!ev || !ev.id) { toast('Could not load event', 'error'); _editingEventId = null; return; }
+  }
   fillEvCalendar(ev ? ev.calendar_id : 0);
   _selectedEvColor = '#0078D4';
   document.querySelectorAll('#ev-colors span').forEach((s,i) => s.style.borderColor = i===0?'white':'transparent');

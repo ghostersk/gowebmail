@@ -382,9 +382,8 @@ func bytesCount(s, substr string) int {
 func TestParseICSEvents(t *testing.T) {
 	plain := "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:uid-1\r\nSUMMARY:Plain event\r\nLOCATION:Room 1\r\nDTSTART:20261105T090000\r\nDTEND:20261105T100000\r\nEND:VEVENT\r\nEND:VCALENDAR"
 	allDay := "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:uid-2\r\nSUMMARY:Holidays\r\nDTSTART;VALUE=DATE:20261110\r\nDTEND;VALUE=DATE:20261112\r\nEND:VEVENT\r\nEND:VCALENDAR"
-	folded := "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:uid-3\r\nSUMMARY:This is a very long summary line that " +
-		"exceeds the seventy-five character " +
-		"fold limit and must be unfolded again\r\nDTSTART:20261107T080000\r\nDTEND:20261107T090000\r\nEND:VEVENT\r\nEND:VCALENDAR"
+	folded := "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:uid-3\r\nSUMMARY:This is a very long summary line tha\r\n t exceeds the " +
+		"seventy-five character fold limit and must be unfolded again\r\nDTSTART:20261107T080000\r\nDTEND:20261107T090000\r\nEND:VEVENT\r\nEND:VCALENDAR"
 	tzid := "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:uid-4\r\nSUMMARY:Brussels meeting\r\nDTSTART;TZID=Europe/Brussels:20261105T090000\r\nDTEND;TZID=Europe/Brussels:20261105T100000\r\nEND:VEVENT\r\nEND:VCALENDAR"
 	rrule := "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:uid-5\r\nSUMMARY:Weekly standup\r\nDTSTART:20261103T090000\r\nDTEND:20261103T093000\r\nRRULE:FREQ=WEEKLY;COUNT=4\r\nSTATUS:CONFIRMED\r\nEND:VEVENT\r\nEND:VCALENDAR"
 	multi := "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:a1\r\nSUMMARY:First\r\nDTSTART:20261101T090000\r\nDTEND:20261101T100000\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:a2\r\nSUMMARY:Second\r\nDTSTART:20261102T090000\r\nDTEND:20261102T100000\r\nEND:VEVENT\r\nEND:VCALENDAR"
@@ -484,5 +483,24 @@ func TestInviteCalendarEvent_Guards(t *testing.T) {
 	h.InviteCalendarEvent(rec, authedRequest(t, "POST", "/calendar/events/invite", uid, map[string]string{"id": fmt.Sprintf("%d", noAtt.ID)}, nil))
 	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "no attendees") {
 		t.Fatalf("no attendees: want 400 'no attendees', got %d (%s)", rec.Code, rec.Body.String())
+	}
+
+	// Event pointing at another user's account must not send from it (finding: cross-user send).
+	foreign, err := d.CreateUser("other", "other@example.com", "otherpass", models.RoleUser)
+	if err != nil {
+		t.Fatalf("CreateUser(foreign): %v", err)
+	}
+	facc := &models.EmailAccount{UserID: foreign.ID, Provider: models.ProviderIMAPSMTP, EmailAddress: "other@example.com", DisplayName: "Other"}
+	if err := d.CreateAccount(facc); err != nil {
+		t.Fatalf("CreateAccount(foreign): %v", err)
+	}
+	forev := &models.CalendarEvent{UserID: uid, AccountID: &facc.ID, UID: "inv-3", Title: "Foreign", StartTime: "2026-12-20 09:00:00", EndTime: "2026-12-20 10:00:00", Attendees: "a@example.com"}
+	if err := d.UpsertCalendarEvent(forev); err != nil {
+		t.Fatalf("UpsertCalendarEvent(forev): %v", err)
+	}
+	rec = httptest.NewRecorder()
+	h.InviteCalendarEvent(rec, authedRequest(t, "POST", "/calendar/events/invite", uid, map[string]string{"id": fmt.Sprintf("%d", forev.ID)}, nil))
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "account not found") {
+		t.Fatalf("foreign account: want 400 'account not found', got %d (%s)", rec.Code, rec.Body.String())
 	}
 }

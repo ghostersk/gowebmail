@@ -1804,6 +1804,8 @@ function dockTopWindow(){ return document.querySelector('#msg-window .msg-win.op
 function dockMinimizeTop(){
   const w=dockTopWindow(); if(!w) return;
   w.classList.remove('open');
+  // No open window → the fixed overlay must hide or it blocks the whole app.
+  document.getElementById('msg-window').style.display='none';
   renderDock();
 }
 
@@ -1849,7 +1851,7 @@ function loadDock() {
   try { saved=JSON.parse(localStorage.getItem('dock.v1')||'[]'); } catch(e) {}
   saved.filter(d=>d&&d.type==='msg'&&d.id).forEach(d=>{
     DOCK.push({type:'msg', id:d.id, subject:d.subject||null});
-    const win=document.getElementById('msg-window'); win.style.display='flex';
+    const win=document.getElementById('msg-window');
     win.appendChild(makeMsgWin(d.id, d.subject)); // created minimized; content fetched on restore
   });
   renderDock();
@@ -2048,7 +2050,7 @@ function renderMessageDetail(msg, showRemoteContent, targetId='message-detail') 
       // a blanket "never" policy, so only the one-time "Load images" escape hatch shows there.
       const policy = uiPrefsGet('remoteImagePolicy', 'manual');
       const alwaysAllowBtn = policy === 'never' ? '' :
-        `<button class="rcb-btn" onclick="whitelistSender('${esc(msg.from_email)}')">Always allow from ${esc(msg.from_email)}</button>`;
+        `<button class="rcb-btn" onclick="whitelistSender('${esc(msg.from_email)}','${targetId}')">Always allow from ${esc(msg.from_email)}</button>`;
       bodyHtml=`<div class="remote-content-banner">
         <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>
         Remote images blocked.
@@ -2075,7 +2077,7 @@ function renderMessageDetail(msg, showRemoteContent, targetId='message-detail') 
       }
       return `<a class="attachment-chip" href="${url}" download="${esc(a.filename)}" title="Download ${esc(a.filename)}">${icon} <span>${esc(a.filename)}</span><span style="color:var(--muted);font-size:10px"> ${formatSize(a.size)}</span></a>`;
     }).join('');
-    const dlAll=`<button class="attachment-chip" onclick="downloadAllAttachments(${msg.id})" style="cursor:pointer;border:1px solid var(--border)">⬇ <span>Download all</span></button>`;
+    const dlAll=`<button class="attachment-chip" onclick="downloadAllAttachments(${msg.id},'${targetId}')" style="cursor:pointer;border:1px solid var(--border)">⬇ <span>Download all</span></button>`;
     attachHtml=`<div class="attachments-bar">${dlAll}${chips}</div>`;
   }
 
@@ -2128,7 +2130,7 @@ function renderMessageDetail(msg, showRemoteContent, targetId='message-detail') 
               <div class="hdr-dropdown" id="hdr-menu" style="display:none">
                 <div class="ctx-item" onclick="toggleStar(${msg.id})">${msg.is_starred?'★ Unstar':'☆ Star'}</div>
                 <div class="ctx-item" onclick="${S.currentFolder==='snoozed'?'unsnoozeMessage':'snoozeMessage'}(${msg.id})">⏰ ${S.currentFolder==='snoozed'?'Unsnooze':'Snooze'}</div>
-                <div class="ctx-item" onclick="openForwardAsAttachment()" title="Forward the original message as an .eml file attachment">↪ Fwd as Attachment</div>
+                <div class="ctx-item" onclick="openForwardAsAttachment('${targetId}')" title="Forward the original message as an .eml file attachment">↪ Fwd as Attachment</div>
                 <div class="ctx-item" onclick="showMessageHeaders(${msg.id})">⋮ Headers</div>
                 <div class="ctx-item" onclick="downloadEML(${msg.id})">⬇ Download</div>
                 ${(isSentFolderView()||isSpamFolderView())?'':`<div class="ctx-item" onclick="markAsSpam(${msg.id})" title="Move to Spam and block this sender">🚫 Mark as Spam</div>`}
@@ -2151,7 +2153,7 @@ function renderMessageDetail(msg, showRemoteContent, targetId='message-detail') 
     <div class="pane-footer">
       <button class="btn-secondary" onclick="openReplyTo(${msg.id})">Reply</button>
       <button class="btn-secondary" onclick="openReplyAll(${msg.id})">Reply all</button>
-      <button class="btn-secondary" onclick="openForward()">Forward</button>
+      <button class="btn-secondary" onclick="openForward('${targetId}')">Forward</button>
     </div>`;
 
   // Auto-size iframe via postMessage from injected height-reporting script.
@@ -2190,14 +2192,22 @@ function renderMessageDetail(msg, showRemoteContent, targetId='message-detail') 
 
 // "Load images" re-render: main pane uses S.currentMessage; a message window holds its own
 // full message on the window element (w._msg), set by openMsgWindow.
+// Message shown in a given detail pane: windows keep their msg on the .msg-win node,
+// the main pane uses global S.currentMessage (same resolution reloadRemoteIn uses).
+function detailPaneMsg(paneId){
+  return paneId && paneId!=='message-detail'
+    ? document.getElementById(paneId)?.closest('.msg-win')?._msg
+    : S.currentMessage;
+}
+
 function reloadRemoteIn(paneId, id) {
-  const m = paneId==='message-detail' ? S.currentMessage : document.getElementById(paneId)?.closest('.msg-win')?._msg;
+  const m = detailPaneMsg(paneId);
   if (m) renderMessageDetail(m, true, paneId);
 }
 
 // Download all attachments for a message sequentially
-async function downloadAllAttachments(msgId) {
-  const msg = S.currentMessage;
+async function downloadAllAttachments(msgId, paneId) {
+  const msg = detailPaneMsg(paneId);
   if (!msg?.attachments?.length) return;
   for (const a of msg.attachments) {
     const url = `/api/messages/${msgId}/attachments/${a.id}`;
@@ -2215,9 +2225,14 @@ async function downloadAllAttachments(msgId) {
   }
 }
 
-async function whitelistSender(sender) {
+async function whitelistSender(sender, paneId) {
   const r=await api('POST','/remote-content-whitelist',{sender});
-  if (r?.ok){S.remoteWhitelist.add(sender);toast('Always allowing content from '+sender,'success');if(S.currentMessage)renderMessageDetail(S.currentMessage,false);}
+  if (r?.ok){
+    S.remoteWhitelist.add(sender);
+    toast('Always allowing content from '+sender,'success');
+    const m=detailPaneMsg(paneId);
+    if(m) renderMessageDetail(m,false,paneId||'message-detail');
+  }
 }
 
 async function showMessageHeaders(id) {
@@ -2396,11 +2411,12 @@ function layoutRibbonOverflow(){
 function toggleRibbonOverflow(e){
   e.stopPropagation();
   const menu=document.getElementById('ribbon-overflow-menu');
-  if(menu.style.display==='block') return closeRibbonOverflow();
+  const wasOpen=menu.style.display==='flex';
+  menu.style.display='flex'; // offsetWidth reads 0 while display:none — show before measuring
+  if(wasOpen) return closeRibbonOverflow();
   const r=document.getElementById('ribbon-overflow-btn').getBoundingClientRect();
   menu.style.top=(r.bottom+6)+'px';
   menu.style.left=Math.max(8,r.right-menu.offsetWidth-8)+'px';
-  menu.style.display='flex';
   document.addEventListener('click',closeRibbonOverflow,{once:true});
 }
 function closeRibbonOverflow(){ const m=document.getElementById('ribbon-overflow-menu'); if(m) m.style.display='none'; }
@@ -2637,9 +2653,9 @@ async function openReplyTo(msgId) {
   addTag('compose-to', msg.from_email||'');
 }
 
-function openForward() {
-  if (!S.currentMessage) return;
-  const msg=S.currentMessage;
+function openForward(paneId) {
+  const msg = detailPaneMsg(paneId);
+  if (!msg) return;
   openCompose({
     mode:'forward', forwardId:msg.id, title:'Forward',
     accountId: msg.account_id||null,
@@ -2651,9 +2667,9 @@ function openForward() {
 // Opens a fresh compose with the current message attached as .eml. Once open, more emails
 // can be attached the same way — via drag-and-drop from the list, or the message context
 // menu's "Attach as .eml" entry — since attaching isn't tied to a dedicated compose mode.
-function openForwardAsAttachment() {
-  if (!S.currentMessage) return;
-  const msg=S.currentMessage;
+function openForwardAsAttachment(paneId) {
+  const msg = detailPaneMsg(paneId);
+  if (!msg) return;
   openCompose({
     mode:'forward', title:'Forward as Attachment',
     accountId: msg.account_id||null,

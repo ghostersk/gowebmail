@@ -138,6 +138,27 @@ func (h *APIHandler) GetCalendarEvent(w http.ResponseWriter, r *http.Request) {
 	h.writeJSON(w, ev)
 }
 
+// calendarOwned reports whether a non-zero calendar_id belongs to the user.
+func (h *APIHandler) calendarOwned(userID, calendarID int64) bool {
+	cals, err := h.db.ListCalendars(userID)
+	if err != nil {
+		return false
+	}
+	for _, c := range cals {
+		if c.ID == calendarID {
+			return true
+		}
+	}
+	return false
+}
+
+// accountOwned reports whether an account belongs to the user (trust-boundary
+// check — protects invite/compose paths from another user's account).
+func (h *APIHandler) accountOwned(userID, accountID int64) bool {
+	acc, err := h.db.GetAccount(accountID)
+	return err == nil && acc != nil && acc.UserID == userID
+}
+
 func (h *APIHandler) CreateCalendarEvent(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.GetUserID(r)
 	var req models.CalendarEvent
@@ -146,6 +167,14 @@ func (h *APIHandler) CreateCalendarEvent(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	req.UserID = userID
+	if req.CalendarID != 0 && !h.calendarOwned(userID, req.CalendarID) {
+		h.writeError(w, http.StatusBadRequest, "unknown calendar")
+		return
+	}
+	if req.AccountID != nil && !h.accountOwned(userID, *req.AccountID) {
+		h.writeError(w, http.StatusBadRequest, "unknown account")
+		return
+	}
 	if err := h.db.SeedCalendars(userID); err != nil {
 		h.writeError(w, http.StatusInternalServerError, "failed to seed calendars")
 		return
@@ -173,6 +202,14 @@ func (h *APIHandler) UpdateCalendarEvent(w http.ResponseWriter, r *http.Request)
 	req.ID = id
 	req.UserID = userID
 	req.UID = existing.UID // preserve original UID
+	if req.CalendarID != 0 && !h.calendarOwned(userID, req.CalendarID) {
+		h.writeError(w, http.StatusBadRequest, "unknown calendar")
+		return
+	}
+	if req.AccountID != nil && !h.accountOwned(userID, *req.AccountID) {
+		h.writeError(w, http.StatusBadRequest, "unknown account")
+		return
+	}
 	if err := h.db.SeedCalendars(userID); err != nil {
 		h.writeError(w, http.StatusInternalServerError, "failed to seed calendars")
 		return
@@ -297,7 +334,7 @@ func (h *APIHandler) InviteCalendarEvent(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	account, err := h.db.GetAccount(*ev.AccountID)
-	if err != nil || account == nil {
+	if err != nil || account == nil || account.UserID != userID {
 		h.writeError(w, http.StatusBadRequest, "account not found")
 		return
 	}
@@ -479,6 +516,10 @@ func (h *APIHandler) ImportCalendar(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Default to the user's General calendar when none given.
+	if req.CalendarID != 0 && !h.calendarOwned(userID, req.CalendarID) {
+		h.writeError(w, http.StatusBadRequest, "unknown calendar")
+		return
+	}
 	if req.CalendarID == 0 {
 		if cals, err := h.db.ListCalendars(userID); err == nil {
 			for _, c := range cals {
